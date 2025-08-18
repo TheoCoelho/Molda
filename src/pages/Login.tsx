@@ -1,67 +1,81 @@
 // src/pages/Login.tsx
-import { useState } from "react";
-import { Link, useNavigate } from "react-router-dom";
+import React, { useState } from "react";
 import { useAuth } from "@/contexts/AuthContext";
-import { Input } from "@/components/ui/input";
-import { Button } from "@/components/ui/button";
-import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
-import { Label } from "@/components/ui/label";
-import { toast } from "sonner";
-import { isEmail } from "@/lib/validators";
+import { Link, useNavigate, useLocation } from "react-router-dom";
 
-export default function Login() {
+const Login: React.FC = () => {
   const { signIn } = useAuth();
   const navigate = useNavigate();
-  const [loading, setLoading] = useState(false);
+  const location = useLocation();
+  const from = (location.state as any)?.from ?? "/";
+
   const [email, setEmail] = useState("");
   const [password, setPassword] = useState("");
+  const [loading, setLoading] = useState(false);
+  const [errMsg, setErrMsg] = useState<string | null>(null);
 
-  const handleSubmit = async (e: React.FormEvent) => {
+  const onSubmit = async (e: React.FormEvent) => {
     e.preventDefault();
-    if (!isEmail(email)) {
-      toast.error("E-mail inválido.");
-      return;
-    }
-    if (!password) {
-      toast.error("Informe a senha.");
+    setErrMsg(null);
+    setLoading(true);
+
+    const { error } = await signIn({ email, password });
+
+    setLoading(false);
+
+    if (error) {
+      setErrMsg(error.message ?? "Falha no login");
       return;
     }
 
-    setLoading(true);
-    try {
-      await signIn(email, password);
-      toast.success("Bem-vindo!");
-      navigate("/");
-    } catch (e: any) {
-      toast.error(e?.message ?? "Falha ao entrar.");
-    } finally {
-      setLoading(false);
-    }
+    navigate(from, { replace: true });
   };
 
   return (
-    <div className="w-full min-h-screen flex items-center justify-center p-4">
-      <Card className="w-full max-w-md">
-        <CardHeader>
-          <CardTitle>Entrar</CardTitle>
-        </CardHeader>
-        <CardContent>
-          <form onSubmit={handleSubmit} className="grid gap-4">
-            <div className="grid gap-2">
-              <Label htmlFor="email">E-mail</Label>
-              <Input id="email" type="email" value={email} onChange={(e) => setEmail(e.target.value)} required />
-            </div>
-            <div className="grid gap-2">
-              <Label htmlFor="password">Senha</Label>
-              <Input id="password" type="password" value={password} onChange={(e) => setPassword(e.target.value)} required />
-            </div>
-            <Button type="submit" disabled={loading}>{loading ? "Entrando..." : "Entrar"}</Button>
-            <p className="text-sm text-muted-foreground">
-              Não tem conta? <Link className="underline" to="/register">Criar conta</Link>
-            </p>
-          </form>
-        </CardContent>
-      </Card>
+    <div className="max-w-md mx-auto py-10">
+      <h1 className="text-2xl font-semibold mb-6">Entrar</h1>
+      <form onSubmit={onSubmit} className="space-y-4">
+        {errMsg && <div className="text-red-600 text-sm">{errMsg}</div>}
+
+        <div>
+          <label className="block text-sm mb-1">E-mail</label>
+          <input
+            type="email"
+            className="w-full border rounded p-2"
+            value={email}
+            onChange={(e) => setEmail(e.target.value)}
+            required
+            placeholder="voce@exemplo.com"
+          />
+        </div>
+
+        <div>
+          <label className="block text-sm mb-1">Senha</label>
+          <input
+            type="password"
+            className="w-full border rounded p-2"
+            value={password}
+            onChange={(e) => setPassword(e.target.value)}
+            required
+            minLength={6}
+            placeholder="••••••••"
+          />
+        </div>
+
+        <button
+          type="submit"
+          disabled={loading}
+          className="w-full rounded bg-black text-white py-2"
+        >
+          {loading ? "Entrando..." : "Entrar"}
+        </button>
+
+        <p className="text-sm text-gray-600">
+          Não tem conta? <Link to="/register" className="underline">Criar conta</Link>
+        </p>
+      </form>
     </div>
   );
-}
+};
+
+export default Login;
