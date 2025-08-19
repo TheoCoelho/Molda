@@ -2,27 +2,33 @@
 import React, { createContext, useContext, useEffect, useMemo, useState } from "react";
 import { supabase } from "@/integrations/supabase/client";
 
-type Profile = {
+export type Profile = {
   id: string;
   full_name: string;
   username: string;
+  email?: string | null;
   phone?: string | null;
   birth_date?: string | null; // yyyy-mm-dd
   cpf?: string | null;
-  created_at?: string;
-  updated_at?: string;
+  created_at?: string | null;
+  updated_at?: string | null;
+};
+
+type SignUpParams = {
+  email: string;
+  password: string;
+  full_name: string;
+  username: string;
+  phone: string;
+  birth_date: string; // yyyy-mm-dd
+  cpf: string;
 };
 
 type AuthContextType = {
   user: any;
   session: any;
   loading: boolean;
-  signUp: (params: {
-    email: string;
-    password: string;
-    full_name: string;
-    username: string;
-  }) => Promise<{ error: any }>;
+  signUp: (params: SignUpParams) => Promise<{ error: any }>;
   signIn: (params: { email: string; password: string }) => Promise<{ error: any }>;
   signOut: () => Promise<{ error: any }>;
   getProfile: () => Promise<Profile | null>;
@@ -31,25 +37,41 @@ type AuthContextType = {
 
 const AuthContext = createContext<AuthContextType>({} as any);
 
+// Persistência de seed entre registro -> confirmação de e-mail -> primeiro login
+const SEED_KEY = "cc_register_seed";
+
+function saveSeed(seed: Partial<Profile>) {
+  try {
+    localStorage.setItem(SEED_KEY, JSON.stringify(seed));
+  } catch {}
+}
+function readSeed(): Partial<Profile> | null {
+  try {
+    const raw = localStorage.getItem(SEED_KEY);
+    return raw ? (JSON.parse(raw) as Partial<Profile>) : null;
+  } catch {
+    return null;
+  }
+}
+function clearSeed() {
+  try {
+    localStorage.removeItem(SEED_KEY);
+  } catch {}
+}
+
 export const AuthProvider: React.FC<{ children: React.ReactNode }> = ({ children }) => {
   const [session, setSession] = useState<any>(null);
   const [user, setUser] = useState<any>(null);
   const [loading, setLoading] = useState(true);
 
-  // Garante que só vamos tocar em "profiles" quando houver sessão válida
   const ensureProfile = async (seed?: Partial<Profile>) => {
     const { data: sessData } = await supabase.auth.getSession();
-    const currentSession = sessData.session;
-    const currentUser = currentSession?.user;
-
-    if (!currentUser) {
-      // Sem sessão => sem auth.uid() => qualquer INSERT/UPDATE será bloqueado pela RLS
-      return;
-    }
+    const currentUser = sessData.session?.user;
+    if (!currentUser) return;
 
     const uid = currentUser.id as string;
 
-    // 1) Tentar obter o profile
+    // 1) Já existe?
     const { data: prof, error: selErr } = await supabase
       .from("profiles")
       .select("*")
@@ -57,45 +79,73 @@ export const AuthProvider: React.FC<{ children: React.ReactNode }> = ({ children
       .maybeSingle();
 
     if (selErr && selErr.code !== "PGRST116") {
-      // PGRST116 = no rows
       console.error("Falha ao consultar profiles:", selErr);
       return;
     }
+    if (prof) return; // nada a fazer
 
-    if (!prof) {
-      // 2) Inserir novo profile (id = auth.uid())
-      const newProfile: Profile = {
-        id: uid,
-        full_name: (seed?.full_name?.trim() || currentUser.user_metadata?.full_name || "Usuário") as string,
-        username:
-          (seed?.username?.trim() ||
-            currentUser.user_metadata?.username ||
-            `user_${uid.slice(0, 8)}`) as string,
-        phone: (seed?.phone ?? currentUser.user_metadata?.phone ?? null) as any,
-        birth_date: (seed?.birth_date ?? currentUser.user_metadata?.birth_date ?? null) as any,
-        cpf: (seed?.cpf ?? currentUser.user_metadata?.cpf ?? null) as any,
-      };
+    // 2) Montar dados a partir de: seed passado -> seed localStorage -> user_metadata -> auth.user
+    const lsSeed = readSeed() || undefined;
 
-      const { error: insErr } = await supabase.from("profiles").insert(newProfile);
-      if (insErr) {
-        // Se cair aqui com RLS, é porque perdemos a sessão (expirou) ou tentaram sem id = uid
-        console.error("Falha ao inserir profile:", insErr);
-      }
+    const fromSeed = {
+      full_name: seed?.full_name?.trim() ?? lsSeed?.full_name?.trim(),
+      username: seed?.username?.trim() ?? lsSeed?.username?.trim(),
+      email: seed?.email ?? lsSeed?.email ?? currentUser.email ?? null,
+      phone: seed?.phone?.toString().trim() ?? lsSeed?.phone?.toString().trim(),
+      birth_date: seed?.birth_date?.toString().trim() ?? lsSeed?.birth_date?.toString().trim(),
+      cpf: seed?.cpf?.toString().trim() ?? lsSeed?.cpf?.toString().trim(),
+    };
+
+    const fromMeta = {
+      full_name: currentUser.user_metadata?.full_name,
+      username: currentUser.user_metadata?.username,
+      phone: currentUser.user_metadata?.phone,
+      birth_date: currentUser.user_metadata?.birth_date,
+      cpf: currentUser.user_metadata?.cpf,
+    };
+
+    const safeFullName = fromSeed.full_name || fromMeta.full_name || "Usuário";
+    const baseUsername = fromSeed.username || fromMeta.username || `user_${uid.slice(0, 8)}`;
+    const safeEmail = fromSeed.email;
+    const safePhone = fromSeed.phone || fromMeta.phone;
+    const safeBirthDate = fromSeed.birth_date || fromMeta.birth_date;
+    const safeCpf = fromSeed.cpf || fromMeta.cpf;
+
+    // 3) Exigir obrigatórios
+    if (!safePhone || !safeBirthDate || !safeCpf) {
+      console.error("Campos obrigatórios ausentes para criar profile:", {
+        phone: !!safePhone,
+        birth_date: !!safeBirthDate,
+        cpf: !!safeCpf,
+      });
+      return;
+    }
+
+    // 4) Tentar inserir; se colidir username, tentar um fallback
+    const newProfile: Profile = {
+      id: uid,
+      full_name: safeFullName,
+      username: baseUsername,
+      email: safeEmail ?? null,
+      phone: safePhone,
+      birth_date: safeBirthDate,
+      cpf: safeCpf,
+    };
+
+    let insErr = (await supabase.from("profiles").insert(newProfile)).error;
+    if (insErr && String(insErr.code) === "23505" /* unique_violation em username */) {
+      const fallback = `${baseUsername}_${uid.slice(0, 6)}`;
+      const { error: retryErr } = await supabase
+        .from("profiles")
+        .insert({ ...newProfile, username: fallback });
+      insErr = retryErr || null;
+    }
+
+    if (insErr) {
+      console.error("Falha ao inserir profile:", insErr);
     } else {
-      // 3) Opcional: atualizar campos derivados do metadata se vieram no registro
-      if (seed && (seed.full_name || seed.username || seed.phone || seed.birth_date || seed.cpf)) {
-        const patch: Partial<Profile> = {};
-        if (seed.full_name) patch.full_name = seed.full_name;
-        if (seed.username) patch.username = seed.username;
-        if (seed.phone !== undefined) patch.phone = seed.phone;
-        if (seed.birth_date !== undefined) patch.birth_date = seed.birth_date as any;
-        if (seed.cpf !== undefined) patch.cpf = seed.cpf;
-
-        if (Object.keys(patch).length > 0) {
-          const { error: upErr } = await supabase.from("profiles").update(patch).eq("id", uid);
-          if (upErr) console.error("Falha ao atualizar profile:", upErr);
-        }
-      }
+      // sucesso: descarta seed local
+      clearSeed();
     }
   };
 
@@ -110,63 +160,55 @@ export const AuthProvider: React.FC<{ children: React.ReactNode }> = ({ children
       setLoading(false);
     })();
 
-    const { data: sub } = supabase.auth.onAuthStateChange(async (event, sess) => {
+    const { data: sub } = supabase.auth.onAuthStateChange((event, sess) => {
       setSession(sess);
       setUser(sess?.user ?? null);
-
-      // Só garantimos profile quando realmente assinou
       if (event === "SIGNED_IN") {
-        await ensureProfile(); // sem seed — no login normal criamos username padrão se precisar
-      }
-      if (event === "SIGNED_OUT") {
-        // nada a fazer
+        // roda em background, não trava UI
+        ensureProfile().catch(console.error);
       }
     });
 
     return () => {
       mounted = false;
-      sub.subscription.unsubscribe();
+      sub?.subscription?.unsubscribe();
     };
   }, []);
 
-  const signUp: AuthContextType["signUp"] = async ({ email, password, full_name, username }) => {
-    // Registro: preferimos mandar metadados junto, para reaproveitar mais tarde
+  const signUp: AuthContextType["signUp"] = async ({
+    email,
+    password,
+    full_name,
+    username,
+    phone,
+    birth_date,
+    cpf,
+  }) => {
+    // salva seed para sobreviver ao fluxo de confirmação por e-mail
+    saveSeed({ email, full_name, username, phone, birth_date, cpf });
+
     const { data, error } = await supabase.auth.signUp({
       email,
       password,
       options: {
-        data: {
-          full_name,
-          username,
-        },
+        data: { full_name, username, phone, birth_date, cpf },
       },
     });
 
     if (error) return { error };
 
-    // Se o projeto **NÃO** exige confirmação de e-mail, já teremos sessão aqui
-    // e podemos criar o profile imediatamente
     if (data.session?.user) {
-      await ensureProfile({ full_name, username });
+      // caso não haja confirmação de email, cria já
+      ensureProfile({ email, full_name, username, phone, birth_date, cpf }).catch(console.error);
     }
-    // Se exige confirmação, `data.session` será null.
-    // Nesse caso, o profile será criado assim que o usuário fizer SIGNED_IN
-    // (via onAuthStateChange no primeiro login após confirmar o e-mail).
-
     return { error: null };
   };
 
   const signIn: AuthContextType["signIn"] = async ({ email, password }) => {
-    const { data, error } = await supabase.auth.signInWithPassword({
-      email,
-      password,
-    });
-
+    const { error } = await supabase.auth.signInWithPassword({ email, password });
     if (error) return { error };
-
-    // Agora temos sessão => podemos garantir o profile
-    await ensureProfile();
-
+    // cria/ajusta profile em background
+    ensureProfile().catch(console.error);
     return { error: null };
   };
 
@@ -180,9 +222,14 @@ export const AuthProvider: React.FC<{ children: React.ReactNode }> = ({ children
     const uid = sess.session?.user?.id;
     if (!uid) return null;
 
-    const { data, error } = await supabase.from("profiles").select("*").eq("id", uid).maybeSingle();
+    const { data, error } = await supabase
+      .from("profiles")
+      .select("*")
+      .eq("id", uid)
+      .maybeSingle();
+
     if (error) {
-      console.error("getProfile error:", error);
+      console.error("Falha ao obter profile:", error);
       return null;
     }
     return (data as Profile) ?? null;
@@ -192,7 +239,6 @@ export const AuthProvider: React.FC<{ children: React.ReactNode }> = ({ children
     const { data: sess } = await supabase.auth.getSession();
     const uid = sess.session?.user?.id;
     if (!uid) return { error: new Error("Sem sessão") };
-
     const { error } = await supabase.from("profiles").update(payload).eq("id", uid);
     return { error };
   };
