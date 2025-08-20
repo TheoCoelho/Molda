@@ -1,4 +1,3 @@
-// src/contexts/AuthContext.tsx
 import React, { createContext, useContext, useEffect, useMemo, useState } from "react";
 import { supabase } from "@/integrations/supabase/client";
 
@@ -12,6 +11,7 @@ export type Profile = {
   cpf?: string | null;
   created_at?: string | null;
   updated_at?: string | null;
+  avatar_path?: string | null; // 👈 caminho do arquivo no bucket
 };
 
 type SignUpParams = {
@@ -84,7 +84,7 @@ export const AuthProvider: React.FC<{ children: React.ReactNode }> = ({ children
     }
     if (prof) return; // nada a fazer
 
-    // 2) Montar dados a partir de: seed passado -> seed localStorage -> user_metadata -> auth.user
+    // 2) Montar dados a partir de seed / metadados
     const lsSeed = readSeed() || undefined;
 
     const fromSeed = {
@@ -111,17 +111,11 @@ export const AuthProvider: React.FC<{ children: React.ReactNode }> = ({ children
     const safeBirthDate = fromSeed.birth_date || fromMeta.birth_date;
     const safeCpf = fromSeed.cpf || fromMeta.cpf;
 
-    // 3) Exigir obrigatórios
     if (!safePhone || !safeBirthDate || !safeCpf) {
-      console.error("Campos obrigatórios ausentes para criar profile:", {
-        phone: !!safePhone,
-        birth_date: !!safeBirthDate,
-        cpf: !!safeCpf,
-      });
+      console.error("Campos obrigatórios ausentes para criar profile");
       return;
     }
 
-    // 4) Tentar inserir; se colidir username, tentar um fallback
     const newProfile: Profile = {
       id: uid,
       full_name: safeFullName,
@@ -130,10 +124,11 @@ export const AuthProvider: React.FC<{ children: React.ReactNode }> = ({ children
       phone: safePhone,
       birth_date: safeBirthDate,
       cpf: safeCpf,
+      avatar_path: null, // 👈 começa vazio
     };
 
     let insErr = (await supabase.from("profiles").insert(newProfile)).error;
-    if (insErr && String(insErr.code) === "23505" /* unique_violation em username */) {
+    if (insErr && String(insErr.code) === "23505") {
       const fallback = `${baseUsername}_${uid.slice(0, 6)}`;
       const { error: retryErr } = await supabase
         .from("profiles")
@@ -144,7 +139,6 @@ export const AuthProvider: React.FC<{ children: React.ReactNode }> = ({ children
     if (insErr) {
       console.error("Falha ao inserir profile:", insErr);
     } else {
-      // sucesso: descarta seed local
       clearSeed();
     }
   };
@@ -164,7 +158,6 @@ export const AuthProvider: React.FC<{ children: React.ReactNode }> = ({ children
       setSession(sess);
       setUser(sess?.user ?? null);
       if (event === "SIGNED_IN") {
-        // roda em background, não trava UI
         ensureProfile().catch(console.error);
       }
     });
@@ -184,7 +177,6 @@ export const AuthProvider: React.FC<{ children: React.ReactNode }> = ({ children
     birth_date,
     cpf,
   }) => {
-    // salva seed para sobreviver ao fluxo de confirmação por e-mail
     saveSeed({ email, full_name, username, phone, birth_date, cpf });
 
     const { data, error } = await supabase.auth.signUp({
@@ -196,9 +188,7 @@ export const AuthProvider: React.FC<{ children: React.ReactNode }> = ({ children
     });
 
     if (error) return { error };
-
     if (data.session?.user) {
-      // caso não haja confirmação de email, cria já
       ensureProfile({ email, full_name, username, phone, birth_date, cpf }).catch(console.error);
     }
     return { error: null };
@@ -207,7 +197,6 @@ export const AuthProvider: React.FC<{ children: React.ReactNode }> = ({ children
   const signIn: AuthContextType["signIn"] = async ({ email, password }) => {
     const { error } = await supabase.auth.signInWithPassword({ email, password });
     if (error) return { error };
-    // cria/ajusta profile em background
     ensureProfile().catch(console.error);
     return { error: null };
   };
