@@ -125,15 +125,16 @@ const Register: React.FC = () => {
 
     setLoading(true);
 
-    const { error } = await signUp({
-      email: email.trim(),
-      password,
-      full_name: fullName.trim(),
-      username: username.trim(),
-      phone: normalizedPhone,
-      birth_date: birthDate,
-      cpf: normalizedCpf,
-    });
+const { error } = await signUp({
+  email: email.trim(),
+  password,
+  nickname: fullName.trim(),         // << TROCAR nickname -> nickname
+  username: username.trim(),
+  phone: normalizedPhone,
+  birth_date: birthDate,             // ou birthISO, mantenha o que você já usa
+  cpf: normalizedCpf,
+});
+
 
     setLoading(false);
 
@@ -179,16 +180,16 @@ const Register: React.FC = () => {
                 )}
 
                 <form onSubmit={onSubmit} className="grid grid-cols-1 md:grid-cols-2 gap-4">
-                  {/* Nome completo */}
+                  {/* Apelido */}
                   <div className="space-y-2 md:col-span-2">
-                    <Label htmlFor="full_name">Nome completo</Label>
+                    <Label htmlFor="nickname">Apelido </Label>
                     <div className="relative">
                       <User className="absolute left-3 top-1/2 -translate-y-1/2 size-4 text-gray-400" />
                       <Input
-                        id="full_name"
+                        id="nickname"
                         value={fullName}
                         onChange={(e) => setFullName(e.target.value)}
-                        placeholder="Seu nome"
+                        placeholder=""
                         className="pl-9"
                         required
                       />

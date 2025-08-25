@@ -7,6 +7,7 @@ import { Tabs, TabsContent, TabsList, TabsTrigger } from "@/components/ui/tabs";
 import { Badge } from "@/components/ui/badge";
 import { Avatar, AvatarFallback, AvatarImage } from "@/components/ui/avatar";
 import { Dialog, DialogContent, DialogHeader, DialogTitle, DialogFooter } from "@/components/ui/dialog";
+import { Input } from "@/components/ui/input";
 import { Settings, Pencil } from "lucide-react";
 import { useAuth } from "@/contexts/AuthContext";
 import { supabase } from "@/integrations/supabase/client";
@@ -39,6 +40,13 @@ const Profile = () => {
   const [previewUrl, setPreviewUrl] = useState<string>("");
   const [saving, setSaving] = useState(false);
 
+  // Edição de nickname/username
+  const [editing, setEditing] = useState({ nickname: false, username: false });
+  const [form, setForm] = useState({ nickname: "", username: "" });
+  const [usernameTaken, setUsernameTaken] = useState<boolean | null>(null);
+  const [checkingUsername, setCheckingUsername] = useState(false);
+  const [savingField, setSavingField] = useState<"nickname" | "username" | null>(null);
+
   // Dados mock das seções (restaurados)
   const [creations] = useState([
     { id: 1, title: "Camiseta Street", date: "10/01/2024", status: "finalizada" as const, thumbnail: "/api/placeholder/200/120" },
@@ -63,13 +71,12 @@ const Profile = () => {
       let display: ViewUser = {
         id: authUser?.id,
         name:
-          (authUser?.user_metadata as any)?.full_name ||
-          (authUser?.user_metadata as any)?.name ||
+          (authUser?.user_metadata as any)?.nickname ??
+          (authUser?.user_metadata as any)?.name ??
+          (authUser?.user_metadata as any)?.full_name ??
           "Usuário",
         username: (authUser?.user_metadata as any)?.username || "",
-        email: authUser?.email || "",
         avatar: "",
-        createdAt: createdAtStr || "Janeiro 2024",
       };
 
       try {
@@ -83,7 +90,7 @@ const Profile = () => {
 
           display = {
             ...display,
-            name: prof.full_name || display.name,
+            name: (prof.nickname ?? prof.full_name ?? display.name),
             username: prof.username || display.username,
             email: prof.email ?? display.email,
             avatar: avatarUrl,
@@ -92,6 +99,12 @@ const Profile = () => {
       } catch {
         /* silencioso */
       }
+
+      // Prepara os campos de edição com os valores atuais
+      setForm({
+        nickname: display.name || "",
+        username: display.username || "",
+      });
 
       setUser(display);
     };
@@ -110,10 +123,11 @@ const Profile = () => {
   };
 
   const getAvatarFallback = (name: string) => {
-    const parts = name.trim().split(" ");
+    const safe = (name || "U").trim();
+    const parts = safe.split(" ").filter(Boolean);
     return parts.length >= 2
       ? (parts[0][0] + parts[parts.length - 1][0]).toUpperCase()
-      : (name[0] || "U").toUpperCase();
+      : (safe[0] || "U").toUpperCase();
   };
 
   // ===== Upload (mantido) =====
@@ -160,10 +174,101 @@ const Profile = () => {
     }
   };
 
+  // ===== Username availability / save helpers =====
+  async function isUsernameAvailable(u: string): Promise<boolean> {
+    const candidate = (u || "").trim();
+    if (!candidate) return false;
+
+    // Tenta RPC (se existir)
+    try {
+      const { data, error } = await supabase.rpc("check_profile_availability", { username: candidate });
+      if (!error && data && typeof (data as any).username_taken !== "undefined") {
+        return !(data as any).username_taken;
+      }
+    } catch {
+      // ignora e cai no fallback
+    }
+
+    // Fallback: consulta direta
+    try {
+      const { data: rows, error } = await supabase
+        .from("profiles")
+        .select("id")
+        .eq("username", candidate)
+        .neq("id", authUser?.id || "")
+        .limit(1);
+
+      if (error) return false;
+      return !(rows && rows.length > 0);
+    } catch {
+      return false;
+    }
+  }
+
+  async function saveNickname() {
+    const newNick = form.nickname.trim();
+    if (!authUser?.id || !newNick) {
+      setEditing((e) => ({ ...e, nickname: false }));
+      return;
+    }
+
+    setSavingField("nickname");
+    try {
+      const { error } = await supabase
+        .from("profiles")
+        .update({ nickname: newNick, updated_at: new Date().toISOString() })
+        .eq("id", authUser.id);
+      if (error) throw error;
+
+      // (opcional) atualiza metadados do usuário
+      try { await supabase.auth.updateUser({ data: { nickname: newNick } }); } catch {}
+
+      setUser((prev) => ({ ...prev, name: newNick }));
+      setEditing((e) => ({ ...e, nickname: false }));
+    } catch {
+      // aqui você pode disparar um toast
+    } finally {
+      setSavingField(null);
+    }
+  }
+
+  async function saveUsername() {
+    const newUser = form.username.trim();
+    if (!authUser?.id || !newUser) {
+      setEditing((e) => ({ ...e, username: false }));
+      return;
+    }
+
+    setCheckingUsername(true);
+    const available = await isUsernameAvailable(newUser);
+    setCheckingUsername(false);
+    setUsernameTaken(!available);
+    if (!available) return;
+
+    setSavingField("username");
+    try {
+      const { error } = await supabase
+        .from("profiles")
+        .update({ username: newUser, updated_at: new Date().toISOString() })
+        .eq("id", authUser.id);
+      if (error) throw error;
+
+      // (opcional) atualiza metadados do usuário
+      try { await supabase.auth.updateUser({ data: { username: newUser } }); } catch {}
+
+      setUser((prev) => ({ ...prev, username: newUser }));
+      setEditing((e) => ({ ...e, username: false }));
+    } catch {
+      // aqui você pode disparar um toast
+    } finally {
+      setSavingField(null);
+    }
+  }
+
   return (
     <div className="min-h-screen bg-gray-50">
       <Header />
-<div className="h-20" /> {/* Espaçador para compensar o header fixo */}
+      <div className="h-20" /> {/* Espaçador para compensar o header fixo */}
       <main className="container mx-auto px-4 py-8 max-w-6xl">
         {/* Banner de perfil */}
         <Card className="mb-6">
@@ -187,17 +292,130 @@ const Profile = () => {
                 </div>
 
                 <div>
-                  <h1 className="text-2xl font-semibold">{user.name}</h1>
-                  <p className="text-gray-600 mb-1">{user.username || user.email}</p>
-                  <p className="text-sm text-gray-500">Membro desde {user.createdAt}</p>
+                  {/* Linha do NICKNAME com lápis no hover */}
+                  <div className="group flex items-center gap-2">
+                    {!editing.nickname ? (
+                      <>
+                        <h1 className="text-2xl font-semibold">{user.name}</h1>
+                        <button
+                          type="button"
+                          className="opacity-0 group-hover:opacity-100 transition"
+                          title="Editar nickname"
+                          onClick={() => {
+                            setForm((f) => ({ ...f, nickname: user.name || "" }));
+                            setEditing((e) => ({ ...e, nickname: true }));
+                          }}
+                        >
+                          <Pencil className="w-4 h-4 text-gray-500" />
+                        </button>
+                      </>
+                    ) : (
+                      <div className="flex items-center gap-2">
+                        <Input
+                          value={form.nickname}
+                          onChange={(e) => setForm((f) => ({ ...f, nickname: e.target.value }))}
+                          className="h-8 w-56"
+                          placeholder="Seu apelido"
+                        />
+                        <Button
+                          size="sm"
+                          onClick={saveNickname}
+                          disabled={savingField === "nickname"}
+                        >
+                          Salvar
+                        </Button>
+                        <Button
+                          size="sm"
+                          variant="ghost"
+                          onClick={() => {
+                            setEditing((e) => ({ ...e, nickname: false }));
+                            setForm((f) => ({ ...f, nickname: user.name || "" }));
+                          }}
+                        >
+                          Cancelar
+                        </Button>
+                      </div>
+                    )}
+                  </div>
+
+                  {/* Linha do USERNAME com lápis no hover */}
+                  <div className="group flex items-center gap-2">
+                    {!editing.username ? (
+                      <>
+                        <p className="text-gray-600 mb-1">@{user.username || "defina um usuário"}</p>
+                        <button
+                          type="button"
+                          className="opacity-0 group-hover:opacity-100 transition"
+                          title="Editar username"
+                          onClick={() => {
+                            setUsernameTaken(null);
+                            setForm((f) => ({ ...f, username: user.username || "" }));
+                            setEditing((e) => ({ ...e, username: true }));
+                          }}
+                        >
+                          <Pencil className="w-4 h-4 text-gray-500" />
+                        </button>
+                      </>
+                    ) : (
+                      <div className="flex items-center gap-2">
+                        <Input
+                          value={form.username}
+                          onChange={(e) => {
+                            setForm((f) => ({ ...f, username: e.target.value }));
+                            setUsernameTaken(null);
+                          }}
+                          onBlur={async () => {
+                            const v = form.username.trim();
+                            if (v && v !== (user.username || "")) {
+                              setCheckingUsername(true);
+                              const available = await isUsernameAvailable(v);
+                              setCheckingUsername(false);
+                              setUsernameTaken(!available);
+                            }
+                          }}
+                          className="h-8 w-56"
+                          placeholder="seu_usuario"
+                        />
+                        <Button
+                          size="sm"
+                          onClick={saveUsername}
+                          disabled={
+                            savingField === "username" ||
+                            checkingUsername ||
+                            usernameTaken === true
+                          }
+                        >
+                          {checkingUsername ? "Verificando..." : "Salvar"}
+                        </Button>
+                        <Button
+                          size="sm"
+                          variant="ghost"
+                          onClick={() => {
+                            setEditing((e) => ({ ...e, username: false }));
+                            setForm((f) => ({ ...f, username: user.username || "" }));
+                            setUsernameTaken(null);
+                          }}
+                        >
+                          Cancelar
+                        </Button>
+                        {usernameTaken === true && (
+                          <span className="text-xs text-red-600">Já em uso</span>
+                        )}
+                        {usernameTaken === false && (
+                          <span className="text-xs text-green-600">Disponível</span>
+                        )}
+                      </div>
+                    )}
+                  </div>
+
+                  {/* Linhas restantes (inalteradas) */}
+                  <p className="text-gray-600 mb-1"></p>
+                  <p className="text-sm text-gray-500"></p>
                 </div>
               </div>
 
               <div className="flex items-center gap-3">
-                <Button variant="outline" className="flex items-center gap-2">
-                  <Settings className="w-4 h-4" />
-                  Editar Perfil
-                </Button>
+
                 <div className="text-center">
                   <div className="text-2xl font-bold text-purple-600">{creations.length}</div>
                   <div className="text-xs text-gray-500">Criações</div>

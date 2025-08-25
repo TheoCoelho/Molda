@@ -3,7 +3,7 @@ import { supabase } from "@/integrations/supabase/client";
 
 export type Profile = {
   id: string;
-  full_name: string;
+  nickname: string; // renomeado de nickname
   username: string;
   email?: string | null;
   phone?: string | null;
@@ -11,13 +11,14 @@ export type Profile = {
   cpf?: string | null;
   created_at?: string | null;
   updated_at?: string | null;
-  avatar_path?: string | null; // 👈 caminho do arquivo no bucket
+  avatar_path?: string | null;
 };
+
 
 type SignUpParams = {
   email: string;
   password: string;
-  full_name: string;
+  nickname: string;
   username: string;
   phone: string;
   birth_date: string; // yyyy-mm-dd
@@ -88,7 +89,7 @@ export const AuthProvider: React.FC<{ children: React.ReactNode }> = ({ children
     const lsSeed = readSeed() || undefined;
 
     const fromSeed = {
-      full_name: seed?.full_name?.trim() ?? lsSeed?.full_name?.trim(),
+      nickname: seed?.nickname?.trim() ?? lsSeed?.nickname?.trim(),
       username: seed?.username?.trim() ?? lsSeed?.username?.trim(),
       email: seed?.email ?? lsSeed?.email ?? currentUser.email ?? null,
       phone: seed?.phone?.toString().trim() ?? lsSeed?.phone?.toString().trim(),
@@ -97,14 +98,14 @@ export const AuthProvider: React.FC<{ children: React.ReactNode }> = ({ children
     };
 
     const fromMeta = {
-      full_name: currentUser.user_metadata?.full_name,
+      nickname: currentUser.user_metadata?.nickname,
       username: currentUser.user_metadata?.username,
       phone: currentUser.user_metadata?.phone,
       birth_date: currentUser.user_metadata?.birth_date,
       cpf: currentUser.user_metadata?.cpf,
     };
 
-    const safeFullName = fromSeed.full_name || fromMeta.full_name || "Usuário";
+    const setNickname = fromSeed.nickname || fromMeta.nickname || "Usuário";
     const baseUsername = fromSeed.username || fromMeta.username || `user_${uid.slice(0, 8)}`;
     const safeEmail = fromSeed.email;
     const safePhone = fromSeed.phone || fromMeta.phone;
@@ -118,7 +119,7 @@ export const AuthProvider: React.FC<{ children: React.ReactNode }> = ({ children
 
     const newProfile: Profile = {
       id: uid,
-      full_name: safeFullName,
+      nickname: setNickname,
       username: baseUsername,
       email: safeEmail ?? null,
       phone: safePhone,
@@ -171,25 +172,25 @@ export const AuthProvider: React.FC<{ children: React.ReactNode }> = ({ children
   const signUp: AuthContextType["signUp"] = async ({
     email,
     password,
-    full_name,
+    nickname,
     username,
     phone,
     birth_date,
     cpf,
   }) => {
-    saveSeed({ email, full_name, username, phone, birth_date, cpf });
+    saveSeed({ email, nickname, username, phone, birth_date, cpf });
 
     const { data, error } = await supabase.auth.signUp({
       email,
       password,
       options: {
-        data: { full_name, username, phone, birth_date, cpf },
+        data: { nickname, username, phone, birth_date, cpf },
       },
     });
 
     if (error) return { error };
     if (data.session?.user) {
-      ensureProfile({ email, full_name, username, phone, birth_date, cpf }).catch(console.error);
+      ensureProfile({ email, nickname, username, phone, birth_date, cpf }).catch(console.error);
     }
     return { error: null };
   };
