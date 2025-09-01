@@ -1,10 +1,16 @@
-import { useState } from "react";
+import { useState, useMemo, useRef } from "react";
 import { useNavigate, useSearchParams } from "react-router-dom";
 import Header from "@/components/Header";
 import TShirt3D from "@/components/TShirt3D";
 import ExpandableSidebar from "@/components/ExpandableSidebar";
 import { Button } from "@/components/ui/button";
 import { Plus, X } from "lucide-react";
+import Editor2D, {
+  Editor2DHandle,
+  Tool,
+  BrushVariant,
+  ShapeKind,
+} from "@/components/Editor2D";
 
 type CanvasTab = { id: string; name: string; type: "2d" | "3d" };
 
@@ -16,46 +22,91 @@ const Creation = () => {
   const type = searchParams.get("type");
   const subtype = searchParams.get("subtype");
 
-  const [projectName, setProjectName] = useState("");
+  const [projectName, setProjectName] = useState("Meu Projeto");
   const [baseColor, setBaseColor] = useState("#ffffff");
   const [size, setSize] = useState("M");
-  const [fabric, setFabric] = useState("algodao");
+  const [fabric, setFabric] = useState("Algodão");
+  const [notes, setNotes] = useState("");
 
   const [canvasTabs, setCanvasTabs] = useState<CanvasTab[]>([
     { id: "3d", name: "3D", type: "3d" },
   ]);
   const [activeCanvasTab, setActiveCanvasTab] = useState("3d");
-  const [isSidebarExpanded, setIsSidebarExpanded] = useState(false);
 
-  const addNewCanvasTab = () => {
-    const newTabId = `2d-${Date.now()}`;
-    const newTab: CanvasTab = {
-      id: newTabId,
-      name: `2D - ${canvasTabs.filter((t) => t.type === "2d").length + 1}`,
-      type: "2d",
-    };
-    setCanvasTabs((prev) => [...prev, newTab]);
-    setActiveCanvasTab(newTabId);
+  // Ferramentas (controladas pela sidebar Pincel)
+  const [tool, setTool] = useState<Tool>("select");
+  const [brushVariant, setBrushVariant] = useState<BrushVariant>("pencil");
+  const [strokeColor, setStrokeColor] = useState("#000000");
+  const [fillColor, setFillColor] = useState("#ffffff");
+  const [strokeWidth, setStrokeWidth] = useState(4);
+  const [opacity, setOpacity] = useState(1);
+  // NOVO: modo de reta (reta única ou polilinha)
+  const [lineMode, setLineMode] = useState<"single" | "polyline">("single");
+
+  const editorRefs = useRef<Record<string, Editor2DHandle | null>>({});
+
+  const activeIs2D = useMemo(
+    () => canvasTabs.find((t) => t.id === activeCanvasTab)?.type === "2d",
+    [canvasTabs, activeCanvasTab]
+  );
+
+  const add2DTab = () => {
+    const id = `2d-${Date.now()}`;
+    const count = canvasTabs.filter((t) => t.type === "2d").length + 1;
+    setCanvasTabs((prev) => [...prev, { id, name: `2D - ${count}`, type: "2d" }]);
+    setActiveCanvasTab(id);
   };
 
   const removeCanvasTab = (tabId: string) => {
-    if (tabId === "3d") return; // não remover a 3D
+    if (tabId === "3d") return;
     const updated = canvasTabs.filter((t) => t.id !== tabId);
     setCanvasTabs(updated);
-    if (activeCanvasTab === tabId) setActiveCanvasTab(updated[0]?.id || "3d");
+    if (activeCanvasTab === tabId) setActiveCanvasTab("3d");
+    editorRefs.current[tabId] = null;
   };
 
-  const handleFinalize = () => {
-    const projectData = {
-      part,
-      type,
-      subtype,
+  const addShape = (shape: ShapeKind) => {
+    if (!activeIs2D) return;
+    editorRefs.current[activeCanvasTab]?.addShape(shape, {
+      strokeColor,
+      fillColor,
+      strokeWidth,
+      opacity,
+    });
+  };
+
+  const clearActive = () => {
+    if (!activeIs2D) return;
+    editorRefs.current[activeCanvasTab]?.clear();
+  };
+
+  const exportActive = () => {
+    if (!activeIs2D) return;
+    const dataUrl = editorRefs.current[activeCanvasTab]?.exportPNG();
+    if (!dataUrl) return;
+    const a = document.createElement("a");
+    a.href = dataUrl;
+    a.download = `${projectName || "projeto"}-${activeCanvasTab}.png`;
+    a.click();
+  };
+
+  const saveDraft = () => {
+    const payload = {
       projectName,
       baseColor,
       size,
       fabric,
+      notes,
+      part,
+      type,
+      subtype,
+      savedAt: new Date().toISOString(),
     };
-    localStorage.setItem("currentProject", JSON.stringify(projectData));
+    localStorage.setItem("currentProject", JSON.stringify(payload));
+  };
+
+  const finish = () => {
+    saveDraft();
     navigate("/finalize");
   };
 
@@ -63,140 +114,130 @@ const Creation = () => {
     <div className="min-h-screen bg-gray-50">
       <Header />
 
-      {/* espaçamento uniforme da página e entre os blocos */}
-      <main className="pt-20 pb-6 px-6 flex min-h-screen items-stretch gap-6">
-        {/* Sidebar (expansão notifica o pai, para ajustes de layout se preciso) */}
-        <ExpandableSidebar
-          projectName={projectName}
-          setProjectName={setProjectName}
-          baseColor={baseColor}
-          setBaseColor={setBaseColor}
-          size={size}
-          setSize={setSize}
-          fabric={fabric}
-          setFabric={setFabric}
-          onExpandChange={setIsSidebarExpanded}
-        />
+      <main className="container mx-auto px-4 py-6">
+        <section className="grid grid-cols-[auto,1fr] gap-6 h-[calc(100vh-140px)] min-h-[700px]">
+          <ExpandableSidebar
+            projectName={projectName}
+            setProjectName={setProjectName}
+            baseColor={baseColor}
+            setBaseColor={setBaseColor}
+            size={size}
+            setSize={setSize}
+            fabric={fabric}
+            setFabric={setFabric}
+            onExpandChange={() => {}}
+            /* ======= Somente a área "Pincel" usa estes props ======= */
+            tool={tool}
+            setTool={setTool}
+            brushVariant={brushVariant}
+            setBrushVariant={setBrushVariant}
+            strokeColor={strokeColor}
+            setStrokeColor={setStrokeColor}
+            fillColor={fillColor}
+            setFillColor={setFillColor}
+            strokeWidth={strokeWidth}
+            setStrokeWidth={setStrokeWidth}
+            opacity={opacity}
+            setOpacity={setOpacity}
+            addShape={addShape}
+            is2DActive={activeIs2D}
+            lineMode={lineMode}
+            setLineMode={setLineMode}
+          />
 
-        {/* Container principal (altura e margens casadas com a sidebar) */}
-        <section className="flex-1 my-6">
-          <div className="bg-white rounded-2xl shadow-lg h-[calc(100vh-5rem-3rem)] flex flex-col">
-            <div className="p-6 border-b">
-              <h2 className="text-2xl font-bold text-gray-800">
-                {type} - {subtype}
-              </h2>
-              <p className="text-gray-600">Personalize sua peça como desejar</p>
+          <div className="flex flex-col h-full space-y-4">
+            <div>
+              <h1 className="text-2xl font-semibold">Criação</h1>
+              <p className="text-sm text-gray-600">
+                Parte: <span className="font-medium">{part || "-"}</span> · Tipo:{" "}
+                <span className="font-medium">{type || "-"}</span> · Subtipo:{" "}
+                <span className="font-medium">{subtype || "-"}</span>
+              </p>
             </div>
 
-            {/* Tabs 2D/3D */}
-            <div className="px-6 pt-4">
-              <div className="flex items-center gap-2">
-                <div className="flex-1 flex items-center gap-1 bg-gray-100 p-1 rounded-lg overflow-x-auto">
-                  {canvasTabs.map((tab) => (
-                    <div
-                      key={tab.id}
-                      className={`flex items-center gap-2 px-3 py-2 rounded-md cursor-pointer transition-colors ${
-                        activeCanvasTab === tab.id
-                          ? "bg-white text-gray-900 shadow-sm"
-                          : "text-gray-600 hover:text-gray-900 hover:bg-gray-200"
-                      }`}
-                      onClick={() => setActiveCanvasTab(tab.id)}
-                    >
-                      <span className="text-sm font-medium whitespace-nowrap">
-                        {tab.name}
-                      </span>
-                      {tab.id !== "3d" && (
-                        <button
+            <div className="flex items-center gap-2">
+              {canvasTabs.map((tab) => {
+                const active = tab.id === activeCanvasTab;
+                return (
+                  <button
+                    key={tab.id}
+                    onClick={() => setActiveCanvasTab(tab.id)}
+                    className={`px-3 py-2 rounded-md border text-sm ${
+                      active ? "bg-white shadow-sm border-gray-300" : "bg-gray-100 border-transparent"
+                    }`}
+                  >
+                    <span className="inline-flex items-center gap-2">
+                      {tab.name}
+                      {tab.type === "2d" && (
+                        <X
+                          className="w-4 h-4 text-gray-400 hover:text-gray-700"
                           onClick={(e) => {
                             e.stopPropagation();
                             removeCanvasTab(tab.id);
                           }}
-                          className="ml-1 text-gray-400 hover:text-gray-600"
-                          aria-label={`Fechar ${tab.name}`}
-                        >
-                          <X className="w-3 h-3" />
-                        </button>
+                        />
                       )}
-                    </div>
-                  ))}
-                </div>
-
-                <Button
-                  size="sm"
-                  variant="outline"
-                  onClick={addNewCanvasTab}
-                  className="flex items-center gap-1 shrink-0"
-                >
-                  <Plus className="w-4 h-4" />
-                  <span className="hidden sm:inline">Nova Tab 2D</span>
-                </Button>
-              </div>
+                    </span>
+                  </button>
+                );
+              })}
+              <Button onClick={add2DTab} className="ml-2" size="sm">
+                <Plus className="w-4 h-4 mr-2" />
+                Nova Tab 2D
+              </Button>
             </div>
 
-            {/* Área de edição */}
-            <div className="flex-1 p-6">
-              <div className="relative w-full h-[520px] bg-gradient-to-br from-gray-100 to-gray-200 rounded-xl overflow-hidden">
-                {activeCanvasTab === "3d" ? (
-                  <>
-                    <div className="w-full h-full min-h-[500px]">
-                      <TShirt3D color={baseColor} />
-                    </div>
+            <div className="relative w-full flex-1 min-h-[520px] bg-white/70 border rounded-xl overflow-hidden">
+              {activeCanvasTab === "3d" ? (
+                <div className="w-full h-full relative">
+                  <TShirt3D color={baseColor} />
+                  <div className="absolute bottom-3 left-3 text-xs text-gray-600 bg-white/80 px-2 py-1 rounded">
+                    Arraste para rotacionar · Scroll para zoom
+                  </div>
+                </div>
+              ) : (
+                <div className="w-full h-full relative">
+                  <Editor2D
+                    key={activeCanvasTab}
+                    ref={(inst) => {
+                      editorRefs.current[activeCanvasTab] = inst;
+                    }}
+                    tool={tool}
+                    brushVariant={brushVariant}
+                    strokeColor={strokeColor}
+                    fillColor={fillColor}
+                    strokeWidth={strokeWidth}
+                    opacity={opacity}
+                    lineMode={lineMode}
+                  />
 
-                    <div className="absolute bottom-4 left-4 bg-white px-3 py-2 rounded-lg shadow-md">
-                      <div className="text-sm font-medium text-gray-700">
-                        {type} - {subtype}
-                      </div>
-                      <div className="text-xs text-gray-500">
-                        Clique e arraste para rotacionar • Scroll para zoom
-                      </div>
-                    </div>
-
-                    <div className="absolute bottom-4 right-4 flex gap-2">
-                      <Button size="sm" variant="outline" className="bg-white">
-                        Reset
-                      </Button>
-                    </div>
-                  </>
-                ) : (
-                  <>
-                    <div className="w-full h-full min-h-[500px] bg-white rounded-lg border-2 border-dashed border-gray-300 flex items-center justify-center">
-                      <div className="text-center text-gray-500">
-                        <div className="text-2xl font-bold mb-2">Canvas 2D</div>
-                        <div className="text-sm">
-                          {canvasTabs.find((t) => t.id === activeCanvasTab)?.name}
-                        </div>
-                        <div className="text-xs mt-2">Área para desenho e edição 2D</div>
-                      </div>
-                    </div>
-
-                    <div className="absolute bottom-4 right-4 flex gap-2">
-                      <Button size="sm" variant="outline" className="bg-white">
-                        Limpar
-                      </Button>
-                      <Button size="sm" variant="outline" className="bg-white">
-                        Exportar
-                      </Button>
-                    </div>
-                  </>
-                )}
-              </div>
+                  <div className="absolute bottom-3 left-3 flex gap-2">
+                    <button
+                      onClick={clearActive}
+                      className="px-3 py-2 text-sm rounded-md bg-white border hover:bg-gray-50"
+                    >
+                      Limpar
+                    </button>
+                    <button
+                      onClick={exportActive}
+                      className="px-3 py-2 text-sm rounded-md bg-gray-900 text-white hover:bg-black"
+                    >
+                      Exportar
+                    </button>
+                  </div>
+                </div>
+              )}
             </div>
 
-            {/* Rodapé */}
-            <div className="p-6 border-t bg-gray-50 rounded-b-2xl">
-              <div className="flex justify-between items-center">
-                <Button variant="outline" onClick={() => navigate("/create")}>
-                  Voltar
+            <div className="flex items-center justify-between">
+              <Button variant="outline" onClick={() => navigate(-1)}>
+                Voltar
+              </Button>
+              <div className="flex gap-2">
+                <Button variant="outline" onClick={saveDraft}>
+                  Salvar rascunho
                 </Button>
-                <div className="flex gap-3">
-                  <Button variant="outline">Salvar Rascunho</Button>
-                  <Button
-                    onClick={handleFinalize}
-                    className="bg-gradient-to-r from-purple-500 to-pink-500 hover:from-purple-600 hover:to-pink-600 text-white"
-                  >
-                    Finalizar
-                  </Button>
-                </div>
+                <Button onClick={finish}>Finalizar</Button>
               </div>
             </div>
           </div>

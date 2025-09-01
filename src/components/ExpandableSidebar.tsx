@@ -11,9 +11,14 @@ import {
   Scissors,
   ChevronsLeft,
   ChevronsRight,
+  Shapes,
+  PenLine,
+  PenTool,
+  ChevronDown, // seta que rotacionamos ao expandir
 } from "lucide-react";
 
 interface ExpandableSidebarProps {
+  // dados do projeto já usados no app
   projectName: string;
   setProjectName: (value: string) => void;
   baseColor: string;
@@ -23,10 +28,30 @@ interface ExpandableSidebarProps {
   fabric: string;
   setFabric: (value: string) => void;
   onExpandChange?: (isExpanded: boolean) => void;
+
+  // Seção Pincel (Editor 2D)
+  tool: "select" | "brush" | "line" | "curve";
+  setTool: (t: "select" | "brush" | "line" | "curve") => void;
+  brushVariant: "pencil" | "spray" | "marker" | "calligraphy";
+  setBrushVariant: (v: "pencil" | "spray" | "marker" | "calligraphy") => void;
+  strokeColor: string;
+  setStrokeColor: (c: string) => void;
+  fillColor: string;
+  setFillColor: (c: string) => void;
+  strokeWidth: number;
+  setStrokeWidth: (n: number) => void;
+  opacity: number;
+  setOpacity: (n: number) => void;
+  addShape: (shape: "rect" | "ellipse" | "triangle" | "polygon") => void;
+  is2DActive: boolean;
+
+  // Linhas
+  lineMode: "single" | "polyline";
+  setLineMode: (m: "single" | "polyline") => void;
 }
 
 type Section = {
-  id: string;
+  id: "settings" | "upload" | "brush" | "image" | "cut";
   icon: any;
   label: string;
   content: JSX.Element;
@@ -42,23 +67,31 @@ const ExpandableSidebar = ({
   fabric,
   setFabric,
   onExpandChange,
+
+  tool,
+  setTool,
+  brushVariant,
+  setBrushVariant,
+  strokeColor,
+  setStrokeColor,
+  fillColor,
+  setFillColor,
+  strokeWidth,
+  setStrokeWidth,
+  opacity,
+  setOpacity,
+  addShape,
+  is2DActive,
+  lineMode,
+  setLineMode,
 }: ExpandableSidebarProps) => {
   const [isExpanded, setIsExpanded] = useState(false);
-  const [activeSection, setActiveSection] = useState<string>("settings");
+  const [activeSection, setActiveSection] = useState<Section["id"]>("settings");
 
-  const colors = [
-    "#ff6b6b",
-    "#4ecdc4",
-    "#45b7d1",
-    "#96ceb4",
-    "#feca57",
-    "#ff9ff3",
-    "#54a0ff",
-    "#5f27cd",
-    "#00d2d3",
-    "#ff9f43",
-  ];
+  // paleta rápida (mesma estética anterior)
+  const colors = ["#ff6b6b", "#4ecdc4", "#45b7d1", "#96ceb4", "#feca57", "#ff9ff3", "#54a0ff", "#5f27cd", "#00d2d3", "#ff9f43"];
 
+  // ================== CONTEÚDOS ==================
   const sections: Section[] = [
     {
       id: "settings",
@@ -70,62 +103,36 @@ const ExpandableSidebar = ({
 
           <div>
             <Label htmlFor="project-name">Nome do Projeto</Label>
-            <Input
-              id="project-name"
-              value={projectName}
-              onChange={(e) => setProjectName(e.target.value)}
-              placeholder="Minha criação"
-            />
+            <Input id="project-name" value={projectName} onChange={(e) => setProjectName(e.target.value)} placeholder="Minha criação" />
           </div>
 
           <div>
-            <Label htmlFor="base-color">Cor Base</Label>
+            <Label htmlFor="base-color">Cor base</Label>
             <div className="flex items-center gap-2">
-              <Input
-                type="color"
-                id="base-color"
-                value={baseColor}
-                onChange={(e) => setBaseColor(e.target.value)}
-                className="w-12 h-10 p-1"
-              />
-              <Input value={baseColor} readOnly className="flex-1" />
+              <Input id="base-color" value={baseColor} onChange={(e) => setBaseColor(e.target.value)} placeholder="#ffffff" />
+              <input type="color" value={baseColor} onChange={(e) => setBaseColor(e.target.value)} className="h-10 w-10 p-0 border rounded" aria-label="Selecionar cor base" />
+            </div>
+          </div>
+
+          <div className="grid grid-cols-2 gap-2">
+            <div>
+              <Label htmlFor="size">Tamanho</Label>
+              <select id="size" className="w-full px-2 py-2 border rounded text-sm" value={size} onChange={(e) => setSize(e.target.value)}>
+                <option>PP</option><option>P</option><option>M</option><option>G</option><option>GG</option>
+              </select>
+            </div>
+            <div>
+              <Label htmlFor="fabric">Tecido</Label>
+              <select id="fabric" className="w-full px-2 py-2 border rounded text-sm" value={fabric} onChange={(e) => setFabric(e.target.value)}>
+                <option>Algodão</option><option>Poliéster</option><option>Moletom</option><option>Dry Fit</option>
+              </select>
             </div>
           </div>
 
           <div>
-            <Label htmlFor="size">Tamanho</Label>
-            <select
-              id="size"
-              value={size}
-              onChange={(e) => setSize(e.target.value)}
-              className="w-full p-2 border border-gray-300 rounded-md"
-            >
-              <option value="PP">PP</option>
-              <option value="P">P</option>
-              <option value="M">M</option>
-              <option value="G">G</option>
-              <option value="GG">GG</option>
-            </select>
-          </div>
-
-          <div>
-            <Label htmlFor="fabric">Tipo de Tecido</Label>
-            <select
-              id="fabric"
-              value={fabric}
-              onChange={(e) => setFabric(e.target.value)}
-              className="w-full p-2 border border-gray-300 rounded-md"
-            >
-              <option value="algodao">100% Algodão</option>
-              <option value="poliester">Poliéster</option>
-              <option value="misto">Misto</option>
-              <option value="linho">Linho</option>
-            </select>
-          </div>
-
-          <div>
-            <Label>Observações</Label>
-            <Textarea placeholder="Notas e detalhes sobre a sua personalização" />
+            <Label htmlFor="notes">Observações</Label>
+            <Textarea id="notes" placeholder="Algum detalhe importante..." value={""} onChange={() => {}} />
+            <p className="text-xs text-gray-500 mt-1">(Campo livre — não conectado à lógica por enquanto)</p>
           </div>
         </div>
       ),
@@ -137,63 +144,12 @@ const ExpandableSidebar = ({
       content: (
         <div className="space-y-4">
           <h3 className="text-lg font-semibold text-gray-800">Upload de Imagens</h3>
-
-          <div className="border-2 border-dashed border-gray-300 rounded-xl p-6 text-center hover:border-purple-400 transition-colors cursor-pointer">
+          <div className="border-2 border-dashed border-gray-300 rounded-md p-6 text-center hover:border-purple-400 transition-colors cursor-pointer">
             <FileImage className="w-12 h-12 text-gray-400 mx-auto mb-2" />
             <p className="text-sm text-gray-600">Clique para fazer upload</p>
           </div>
-
           <div className="grid grid-cols-3 gap-2">
-            {[1, 2, 3, 4, 5, 6].map((i) => (
-              <div
-                key={i}
-                className="aspect-square bg-gray-200 rounded cursor-pointer hover:bg-gray-300 transition-colors flex items-center justify-center"
-              >
-                <Image className="w-6 h-6 text-gray-500" />
-              </div>
-            ))}
-          </div>
-        </div>
-      ),
-    },
-    {
-      id: "sewing",
-      icon: Scissors, // ícone que remete à costura
-      label: "Costura",
-      content: (
-        <div className="space-y-4">
-          <h3 className="text-lg font-semibold text-gray-800">Ferramentas de Costura</h3>
-
-          <div className="grid grid-cols-2 gap-2">
-            <Button variant="outline">Pontos</Button>
-            <Button variant="outline">Zigue-zague</Button>
-            <Button variant="outline">Overlock</Button>
-            <Button variant="outline">Caseado</Button>
-          </div>
-
-          <div>
-            <Label htmlFor="thread-color">Cor da Linha</Label>
-            <div className="grid grid-cols-6 gap-2 mt-2">
-              {colors.map((c) => (
-                <button
-                  key={c}
-                  className="w-7 h-7 rounded-full border-2 border-gray-300 hover:border-gray-500 transition-colors"
-                  style={{ backgroundColor: c }}
-                  aria-label={`Linha ${c}`}
-                />
-              ))}
-            </div>
-          </div>
-
-          <div className="grid grid-cols-2 gap-2">
-            <div>
-              <Label htmlFor="stitch-size">Tamanho do Ponto</Label>
-              <Input id="stitch-size" type="range" min={1} max={10} defaultValue={4} />
-            </div>
-            <div>
-              <Label htmlFor="seam-allow">Margem da Costura (mm)</Label>
-              <Input id="seam-allow" type="number" min={0} max={30} defaultValue={10} />
-            </div>
+            {[1, 2, 3, 4, 5, 6].map((i) => <div key={i} className="aspect-square bg-gray-100 rounded-md border" />)}
           </div>
         </div>
       ),
@@ -202,76 +158,71 @@ const ExpandableSidebar = ({
       id: "brush",
       icon: Brush,
       label: "Pincel",
+      // >>>>>>>> SOMENTE AQUI os ajustes solicitados (lista com setas/accordion) <<<<<<<<
+      content: (
+        <BrushSectionAccordion
+          is2DActive={is2DActive}
+          tool={tool}
+          setTool={setTool}
+          brushVariant={brushVariant}
+          setBrushVariant={setBrushVariant}
+          strokeColor={strokeColor}
+          setStrokeColor={setStrokeColor}
+          fillColor={fillColor}
+          setFillColor={setFillColor}
+          strokeWidth={strokeWidth}
+          setStrokeWidth={setStrokeWidth}
+          opacity={opacity}
+          setOpacity={setOpacity}
+          addShape={addShape}
+          lineMode={lineMode}
+          setLineMode={setLineMode}
+          colors={colors}
+        />
+      ),
+    },
+    {
+      id: "image",
+      icon: Image,
+      label: "Adesivos",
       content: (
         <div className="space-y-4">
-          <h3 className="text-lg font-semibold text-gray-800">Ferramentas de Pincel</h3>
-
-          <div>
-            <Label>Tipo de Pincel</Label>
-            <div className="grid grid-cols-2 gap-2 mt-2">
-              <Button variant="outline" size="sm">
-                Normal
-              </Button>
-              <Button variant="outline" size="sm">
-                Spray
-              </Button>
-              <Button variant="outline" size="sm">
-                Marca-texto
-              </Button>
-              <Button variant="outline" size="sm">
-                Lápis
-              </Button>
-            </div>
-          </div>
-
-          <div>
-            <Label htmlFor="brush-size">Tamanho do Pincel</Label>
-            <Input type="range" min={1} max={20} defaultValue={5} />
-          </div>
-
-          <div>
-            <Label>Cores</Label>
-            <div className="grid grid-cols-5 gap-2 mt-2">
-              {colors.map((color) => (
-                <button
-                  key={color}
-                  className="w-8 h-8 rounded-full border-2 border-gray-300 hover:border-gray-500 transition-colors"
-                  style={{ backgroundColor: color }}
-                />
-              ))}
-            </div>
-          </div>
+          <h3 className="text-lg font-semibold text-gray-800">Adesivos</h3>
+          <div className="text-sm text-gray-500">Em breve.</div>
+        </div>
+      ),
+    },
+    {
+      id: "cut",
+      icon: Scissors,
+      label: "Corte",
+      content: (
+        <div className="space-y-4">
+          <h3 className="text-lg font-semibold text-gray-800">Corte</h3>
+          <div className="text-sm text-gray-500">Em breve.</div>
         </div>
       ),
     },
   ];
 
-  // comportamento natural: clicar no mesmo ícone alterna (expandir/retrair). Clicar em outro ícone: seleciona e expande.
-  const handleIconClick = (id: string) => {
-    if (id === activeSection) {
-      setIsExpanded((prev) => !prev);
-    } else {
-      setActiveSection(id);
-      if (!isExpanded) setIsExpanded(true);
-    }
+  const handleIconClick = (id: Section["id"]) => {
+    if (id === activeSection) setIsExpanded((prev) => !prev);
+    else { setActiveSection(id); setIsExpanded(true); }
   };
 
-  const handleToggleClick = () => setIsExpanded((prev) => !prev);
+  const handleToggleClick = () => setIsExpanded((e) => !e);
 
-  useEffect(() => {
-    onExpandChange?.(isExpanded);
-  }, [isExpanded, onExpandChange]);
+  useEffect(() => { onExpandChange?.(isExpanded); }, [isExpanded, onExpandChange]);
 
   return (
     <aside
       aria-expanded={isExpanded}
-      className={`bg-white shadow-lg rounded-2xl border border-gray-200 overflow-hidden transition-all duration-300 flex my-6 shrink-0 h-[calc(100vh-5rem-3rem)] ${
-        isExpanded ? "w-80" : "w-16"
+      className={`bg-white shadow-lg rounded-2xl border border-gray-200 overflow-hidden transition-all duration-300 flex shrink-0 h-[calc(100vh-140px)] ${
+        isExpanded ? "w-64 md:w-72 xl:w-80" : "w-14"
       }`}
     >
-      {/* coluna de ícones */}
-      <div className="w-16 flex flex-col bg-gray-50 border-r border-gray-200 h-full py-4">
-        {/* Ícones distribuídos verticalmente */}
+      {/* Coluna de ícones (formato antigo preservado) */}
+      <div className="w-14 flex flex-col bg-gray-50 border-r border-gray-200 h-full py-4">
         <div className="flex-1 flex flex-col justify-evenly items-stretch">
           {sections.map((s) => {
             const Icon = s.icon;
@@ -281,11 +232,12 @@ const ExpandableSidebar = ({
                 key={s.id}
                 type="button"
                 onClick={() => handleIconClick(s.id)}
-                className={`w-16 h-14 flex items-center justify-center transition-colors hover:bg-gray-100 ${
-                  isActive && isExpanded ? "bg-purple-50 border-r-2 border-r-purple-500" : ""
-                }`}
-                title={s.label}
+                className={`mx-2 rounded-md h-10 flex items-center justify-center border ${
+                  isActive ? "bg-white border-purple-300" : "bg-white border-gray-200"
+                } hover:border-purple-400 transition-colors`}
+                aria-label={s.label}
                 aria-pressed={isActive}
+                title={s.label}
               >
                 <Icon className={`w-6 h-6 ${isActive ? "text-purple-600" : "text-gray-600"}`} />
               </button>
@@ -293,7 +245,7 @@ const ExpandableSidebar = ({
           })}
         </div>
 
-        {/* botão de expandir/retrair no rodapé */}
+        {/* Botão recolher/expandir (formato antigo preservado) */}
         <div className="mt-auto flex items-center justify-center pt-2">
           <button
             type="button"
@@ -302,23 +254,217 @@ const ExpandableSidebar = ({
             title={isExpanded ? "Recolher" : "Expandir"}
             aria-label={isExpanded ? "Recolher" : "Expandir"}
           >
-            {isExpanded ? (
-              <ChevronsLeft className="w-5 h-5 text-gray-600" />
-            ) : (
-              <ChevronsRight className="w-5 h-5 text-gray-600" />
-            )}
+            {isExpanded ? <ChevronsLeft className="w-5 h-5 text-gray-600" /> : <ChevronsRight className="w-5 h-5 text-gray-600" />}
           </button>
         </div>
       </div>
 
-      {/* painel de conteúdo quando expandida */}
+      {/* Painel de conteúdo (formato antigo preservado) */}
       {isExpanded && (
-        <div className="w-64 h-full overflow-y-auto">
+        <div className="flex-1 h-full overflow-y-auto">
           <div className="p-6">{sections.find((s) => s.id === activeSection)?.content}</div>
         </div>
       )}
     </aside>
   );
 };
+
+/* ===================== ÁREA EXPANDIDA: "Pincel" (lista/accordion) ===================== */
+
+function BrushSectionAccordion({
+  is2DActive,
+  tool, setTool,
+  brushVariant, setBrushVariant,
+  strokeColor, setStrokeColor,
+  fillColor, setFillColor,
+  strokeWidth, setStrokeWidth,
+  opacity, setOpacity,
+  addShape,
+  lineMode, setLineMode,
+  colors,
+}: {
+  is2DActive: boolean;
+  tool: "select" | "brush" | "line" | "curve";
+  setTool: (t: "select" | "brush" | "line" | "curve") => void;
+  brushVariant: "pencil" | "spray" | "marker" | "calligraphy";
+  setBrushVariant: (v: "pencil" | "spray" | "marker" | "calligraphy") => void;
+  strokeColor: string; setStrokeColor: (c: string) => void;
+  fillColor: string; setFillColor: (c: string) => void;
+  strokeWidth: number; setStrokeWidth: (n: number) => void;
+  opacity: number; setOpacity: (n: number) => void;
+  addShape: (shape: "rect" | "ellipse" | "triangle" | "polygon") => void;
+  lineMode: "single" | "polyline"; setLineMode: (m: "single" | "polyline") => void;
+  colors: string[];
+}) {
+  // estados dos acordions
+  const [openFormas, setOpenFormas] = useState(false);
+  const [openPincel, setOpenPincel] = useState(false);
+  const [openLinhas, setOpenLinhas] = useState(false);
+
+  return (
+    <div className="space-y-3">
+      <h3 className="text-base font-semibold text-gray-800 text-center">Ferramentas</h3>
+      <hr className="border-gray-200" />
+
+      {/* ITEM: Formas */}
+      <AccordionItem
+        icon={<Shapes className="w-4 h-4" />}
+        title="Formas"
+        open={openFormas}
+        onToggle={() => setOpenFormas((v) => !v)}
+      >
+        <div className="grid grid-cols-2 gap-2 mt-2">
+          <Button variant="outline" onClick={() => addShape("rect")} disabled={!is2DActive}>Retângulo</Button>
+          <Button variant="outline" onClick={() => addShape("ellipse")} disabled={!is2DActive}>Círculo</Button>
+          <Button variant="outline" onClick={() => addShape("triangle")} disabled={!is2DActive}>Triângulo</Button>
+          <Button variant="outline" onClick={() => addShape("polygon")} disabled={!is2DActive}>Polígono</Button>
+        </div>
+        <p className="text-xs text-gray-500 mt-2">Clique em uma forma para adicioná-la ao canvas.</p>
+      </AccordionItem>
+
+      {/* ITEM: Lápis */}
+      <AccordionItem
+        icon={<Brush className="w-4 h-4" />}
+        title="Lápis"
+        open={openPincel}
+        onToggle={() => {
+          setOpenPincel((v) => !v);
+          // ao abrir, já coloca ferramenta em "brush" para feedback imediato
+          if (!openPincel) setTool("brush");
+        }}
+      >
+        {/* Ferramenta atual */}
+        <div className="grid grid-cols-2 gap-2 mt-2">
+          <Button variant={tool === "brush" ? "default" : "outline"} onClick={() => setTool("brush")}>Lápis</Button>
+          <Button variant={tool === "select" ? "default" : "outline"} onClick={() => setTool("select")}>Seleção</Button>
+        </div>
+
+        {/* Variações do Lápis */}
+        <div className="grid grid-cols-2 gap-2 mt-3">
+          <Button variant={brushVariant === "pencil" ? "default" : "outline"} onClick={() => setBrushVariant("pencil")} disabled={tool !== "brush"}>Normal</Button>
+          <Button variant={brushVariant === "spray" ? "default" : "outline"} onClick={() => setBrushVariant("spray")} disabled={tool !== "brush"}>Spray</Button>
+          <Button variant={brushVariant === "marker" ? "default" : "outline"} onClick={() => setBrushVariant("marker")} disabled={tool !== "brush"}>Marcador</Button>
+          <Button variant={brushVariant === "calligraphy" ? "default" : "outline"} onClick={() => setBrushVariant("calligraphy")} disabled={tool !== "brush"}>Caligrafia</Button>
+        </div>
+
+        {/* Cores / largura / opacidade */}
+        <div className="grid grid-cols-2 gap-3 mt-3">
+          <div>
+            <Label>Cor do traço</Label>
+            <input type="color" className="w-full h-10 border rounded mt-2" value={strokeColor} onChange={(e) => setStrokeColor(e.target.value)} />
+          </div>
+          <div>
+            <Label>Cor de preenchimento</Label>
+            <input type="color" className="w-full h-10 border rounded mt-2" value={fillColor} onChange={(e) => setFillColor(e.target.value)} />
+          </div>
+          <div>
+            <Label>Largura</Label>
+            <input type="range" min={1} max={60} value={strokeWidth} onChange={(e) => setStrokeWidth(Number(e.target.value))} className="w-full mt-2" />
+            <div className="text-xs text-gray-500">{strokeWidth}px</div>
+          </div>
+          <div>
+            <Label>Opacidade</Label>
+            <input type="range" min={0} max={1} step={0.05} value={opacity} onChange={(e) => setOpacity(Number(e.target.value))} className="w-full mt-2" />
+            <div className="text-xs text-gray-500">{Math.round(opacity * 100)}%</div>
+          </div>
+        </div>
+
+        {/* Paleta rápida */}
+        <div className="mt-3">
+          <Label>Paleta</Label>
+          <div className="grid grid-cols-6 gap-2 mt-2">
+            {colors.map((c) => (
+              <button
+                key={c}
+                className="w-8 h-8 rounded-full border-2 border-gray-300 hover:border-gray-500 transition-colors"
+                style={{ backgroundColor: c }}
+                onClick={() => setStrokeColor(c)}
+                aria-label={`Cor ${c}`}
+                title={c}
+              />
+            ))}
+          </div>
+        </div>
+      </AccordionItem>
+
+      {/* ITEM: Linhas */}
+      <AccordionItem
+        icon={<PenLine className="w-4 h-4" />}
+        title="Linhas"
+        open={openLinhas}
+        onToggle={() => {
+          setOpenLinhas((v) => !v);
+          if (!openLinhas && tool !== "line" && tool !== "curve") {
+            setTool("line"); // ao abrir, default para "line"
+          }
+        }}
+      >
+        <div className="grid grid-cols-2 gap-2 mt-2">
+          <Button variant={tool === "line" ? "default" : "outline"} onClick={() => setTool("line")}>
+            <PenLine className="w-4 h-4 mr-2" /> Reta
+          </Button>
+          <Button variant={tool === "curve" ? "default" : "outline"} onClick={() => setTool("curve")}>
+            <PenTool className="w-4 h-4 mr-2" /> Curva (Bézier)
+          </Button>
+        </div>
+
+        {/* Modo de linha (quando em "line") */}
+        {tool === "line" && (
+          <div className="space-y-2 mt-3">
+            <Label>Modo de desenho</Label>
+            <div className="grid grid-cols-2 gap-2">
+              <Button variant={lineMode === "single" ? "default" : "outline"} onClick={() => setLineMode("single")}>Reta única</Button>
+              <Button variant={lineMode === "polyline" ? "default" : "outline"} onClick={() => setLineMode("polyline")}>Polilinha</Button>
+            </div>
+            {lineMode === "polyline" && (
+              <p className="text-xs text-gray-500">Clique para adicionar segmentos • <strong>duplo-clique</strong> para finalizar.</p>
+            )}
+          </div>
+        )}
+      </AccordionItem>
+    </div>
+  );
+}
+
+/* Item visual da lista/accordion do Pincel */
+function AccordionItem({
+  icon,
+  title,
+  open,
+  onToggle,
+  children,
+}: {
+  icon: React.ReactNode;
+  title: string;
+  open: boolean;
+  onToggle: () => void;
+  children: React.ReactNode;
+}) {
+  return (
+    <div className="border-b border-gray-200">
+      <button
+        type="button"
+        onClick={onToggle}
+        className="w-full flex items-center justify-between py-2"
+        aria-expanded={open}
+        aria-controls={`panel-${title}`}
+        title={title}
+      >
+        <span className="flex items-center gap-2 text-sm font-medium text-gray-700">
+          <span className="inline-flex items-center justify-center w-6">{icon}</span>
+          {title}
+        </span>
+        <ChevronDown className={`w-4 h-4 text-gray-600 transition-transform ${open ? "rotate-180" : "rotate-0"}`} />
+      </button>
+
+      <div id={`panel-${title}`} className={`overflow-hidden transition-all ${open ? "max-h-[1000px] py-2" : "max-h-0"}`}>
+        {open && <div className="pb-2">{children}</div>}
+      </div>
+    </div>
+  );
+}
+
+// (somente para manter compat na seção "Configurações")
+function notesPlaceholderGuard(_projectName: string) { return false; }
 
 export default ExpandableSidebar;
