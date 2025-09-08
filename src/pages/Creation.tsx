@@ -1,16 +1,16 @@
 import { useState, useMemo, useRef } from "react";
 import { useNavigate, useSearchParams } from "react-router-dom";
-import Header from "@/components/Header";
-import TShirt3D from "@/components/TShirt3D";
-import ExpandableSidebar from "@/components/ExpandableSidebar";
-import { Button } from "@/components/ui/button";
+import Header from "../components/Header";
+import Canvas3DViewer from "../components/Canvas3DViewer";
+import ExpandableSidebar from "../components/ExpandableSidebar";
+import { Button } from "../components/ui/button";
 import { Plus, X } from "lucide-react";
 import Editor2D, {
   Editor2DHandle,
   Tool,
   BrushVariant,
   ShapeKind,
-} from "@/components/Editor2D";
+} from "../components/Editor2D";
 
 type CanvasTab = { id: string; name: string; type: "2d" | "3d" };
 
@@ -40,7 +40,6 @@ const Creation = () => {
   const [fillColor, setFillColor] = useState("#ffffff");
   const [strokeWidth, setStrokeWidth] = useState(4);
   const [opacity, setOpacity] = useState(1);
-  // NOVO: modo de reta (reta única ou polilinha)
   const [lineMode, setLineMode] = useState<"single" | "polyline">("single");
 
   const editorRefs = useRef<Record<string, Editor2DHandle | null>>({});
@@ -190,7 +189,7 @@ const Creation = () => {
             <div className="relative w-full flex-1 min-h-[520px] bg-white/70 border rounded-xl overflow-hidden">
               {activeCanvasTab === "3d" ? (
                 <div className="w-full h-full relative">
-                  <TShirt3D color={baseColor} />
+                  <Canvas3DViewer baseColor={baseColor} />
                   <div className="absolute bottom-3 left-3 text-xs text-gray-600 bg-white/80 px-2 py-1 rounded">
                     Arraste para rotacionar · Scroll para zoom
                   </div>
