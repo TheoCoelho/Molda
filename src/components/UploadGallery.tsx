@@ -1,11 +1,11 @@
 // src/components/upload/UploadGallery.tsx
 import React, { useEffect, useMemo, useRef, useState } from "react";
-import { getSupabase, STORAGE_BUCKET } from "@/lib/supabaseClient";
+import { getSupabase, STORAGE_BUCKET } from "../lib/supabaseClient";
 import type { SupabaseClient, User } from "@supabase/supabase-js";
 
-import { Button } from "@/components/ui/button";
-import { Slider } from "@/components/ui/slider";
-import { Switch } from "@/components/ui/switch";
+import { Button } from "../components/ui/button";
+import { Slider } from "../components/ui/slider";
+import { Switch } from "../components/ui/switch";
 import {
   Dialog,
   DialogContent,
@@ -13,7 +13,7 @@ import {
   DialogHeader,
   DialogTitle,
   DialogClose,
-} from "@/components/ui/dialog";
+} from "../components/ui/dialog";
 
 import { FileImage, Loader2 } from "lucide-react";
 

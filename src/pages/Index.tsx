@@ -11,7 +11,7 @@ const Index = () => {
     <div className="min-h-screen bg-gradient-to-br from-purple-50 via-white to-pink-50">
       <Header />
       
-      <main className="pt-20">
+      <main >
         {/* Hero Section */}
         <section className="container mx-auto px-6 py-20 text-center">
           <div className="max-w-4xl mx-auto">
