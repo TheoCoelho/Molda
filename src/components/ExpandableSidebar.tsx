@@ -3,6 +3,9 @@ import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
 import { Textarea } from "@/components/ui/textarea";
+// + NOVO import
+import UploadGallery from "../components/UploadGallery";
+
 import {
   Settings,
   FileImage,
@@ -141,18 +144,7 @@ const ExpandableSidebar = ({
       id: "upload",
       icon: FileImage,
       label: "Upload",
-      content: (
-        <div className="space-y-4">
-          <h3 className="text-lg font-semibold text-gray-800">Upload de Imagens</h3>
-          <div className="border-2 border-dashed border-gray-300 rounded-md p-6 text-center hover:border-purple-400 transition-colors cursor-pointer">
-            <FileImage className="w-12 h-12 text-gray-400 mx-auto mb-2" />
-            <p className="text-sm text-gray-600">Clique para fazer upload</p>
-          </div>
-          <div className="grid grid-cols-3 gap-2">
-            {[1, 2, 3, 4, 5, 6].map((i) => <div key={i} className="aspect-square bg-gray-100 rounded-md border" />)}
-          </div>
-        </div>
-      ),
+      content: <UploadGallery />,
     },
     {
       id: "brush",
