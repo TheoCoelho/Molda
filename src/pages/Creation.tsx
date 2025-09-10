@@ -1,4 +1,4 @@
-import { useState, useMemo, useRef } from "react";
+import { useState, useMemo, useRef, useEffect } from "react";
 import { useNavigate, useSearchParams } from "react-router-dom";
 import Header from "../components/Header";
 import Canvas3DViewer from "../components/Canvas3DViewer";
@@ -49,7 +49,40 @@ const Creation = () => {
     [canvasTabs, activeCanvasTab]
   );
 
+  // ====== snapshots por aba (JSON Fabric ou PNG fallback) ======
+  const [tabSnapshots, setTabSnapshots] = useState<Record<string, string>>({});
+
+  const saveActiveTabSnapshot = () => {
+    if (!activeIs2D) return;
+    const inst = editorRefs.current[activeCanvasTab];
+    const json = inst?.toJSON?.();
+    if (json) {
+      setTabSnapshots((s) => ({ ...s, [activeCanvasTab]: json }));
+    }
+  };
+
+  // Quando ativar uma aba 2D, restaura seu snapshot (se existir).
+  // Usamos requestAnimationFrame para garantir que a ref já foi atribuída após o mount.
+  useEffect(() => {
+    if (!activeIs2D) return;
+    const snap = tabSnapshots[activeCanvasTab];
+    if (!snap) return;
+
+    const restore = () => {
+      const inst = editorRefs.current[activeCanvasTab];
+      if (inst?.loadFromJSON) {
+        inst.loadFromJSON(snap).catch(() => {});
+      } else {
+        // tenta novamente no próximo frame se a ref ainda não estiver pronta
+        requestAnimationFrame(restore);
+      }
+    };
+    requestAnimationFrame(restore);
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [activeCanvasTab, activeIs2D]);
+
   const add2DTab = () => {
+    saveActiveTabSnapshot();
     const id = `2d-${Date.now()}`;
     const count = canvasTabs.filter((t) => t.type === "2d").length + 1;
     setCanvasTabs((prev) => [...prev, { id, name: `2D - ${count}`, type: "2d" }]);
@@ -58,6 +91,11 @@ const Creation = () => {
 
   const removeCanvasTab = (tabId: string) => {
     if (tabId === "3d") return;
+    setTabSnapshots((s) => {
+      const next = { ...s };
+      delete next[tabId];
+      return next;
+    });
     const updated = canvasTabs.filter((t) => t.id !== tabId);
     setCanvasTabs(updated);
     if (activeCanvasTab === tabId) setActiveCanvasTab("3d");
@@ -77,6 +115,11 @@ const Creation = () => {
   const clearActive = () => {
     if (!activeIs2D) return;
     editorRefs.current[activeCanvasTab]?.clear();
+    setTabSnapshots((s) => {
+      const next = { ...s };
+      delete next[activeCanvasTab];
+      return next;
+    });
   };
 
   const exportActive = () => {
@@ -90,6 +133,7 @@ const Creation = () => {
   };
 
   const saveDraft = () => {
+    saveActiveTabSnapshot();
     const payload = {
       projectName,
       baseColor,
@@ -99,6 +143,7 @@ const Creation = () => {
       part,
       type,
       subtype,
+      canvasSnapshots: tabSnapshots,
       savedAt: new Date().toISOString(),
     };
     localStorage.setItem("currentProject", JSON.stringify(payload));
@@ -160,7 +205,11 @@ const Creation = () => {
                 return (
                   <button
                     key={tab.id}
-                    onClick={() => setActiveCanvasTab(tab.id)}
+                    onClick={() => {
+                      // salva o estado da aba atual antes de trocar
+                      saveActiveTabSnapshot();
+                      setActiveCanvasTab(tab.id);
+                    }}
                     className={`px-3 py-2 rounded-md border text-sm ${
                       active ? "bg-white shadow-sm border-gray-300" : "bg-gray-100 border-transparent"
                     }`}
