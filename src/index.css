@@ -76,12 +76,8 @@
 }
 
 @layer base {
-  * {
-    @apply border-border;
-  }
-  html, body, #root {
-    height: 100%;
-  }
+  * { @apply border-border; }
+  html, body, #root { height: 100%; }
   body {
     @apply bg-background text-foreground;
     background-color: hsl(var(--background));
@@ -114,12 +110,10 @@ body::before {
   transform: translateY(-10%);
   animation: wave-slide 8s ease-in-out infinite alternate;
 }
-
 @keyframes wave-slide {
   0%   { transform: translateY(-10%) translateX(-2%); }
   100% { transform: translateY(-6%)  translateX(2%); }
 }
-
 @media (prefers-reduced-motion: reduce) {
   body::before { animation: none; }
 }
@@ -142,35 +136,60 @@ body::before {
 }
 
 /* brilho atravessando */
-.btn-shine::before {
-  content: "";
+/* ===========================
+   Linear Infinite Carousel (sem sombras)
+   =========================== */
+
+.lcar-container {
+  position: relative;
+  width: 100%;
+  max-width: 520px;   /* padrão do site */
+  height: 260px;      /* altura padrão */
+  margin: 0 auto;
+  user-select: none;
+  cursor: grab;
+}
+.lcar-container.is-dragging { cursor: grabbing; }
+
+.lcar-viewport {
+  position: relative;
+  width: 100%;
+  height: 100%;
+  overflow: hidden; /* recorta o que sai; fade é aplicado nos próprios cards */
+}
+
+.lcar-track {
   position: absolute;
   inset: 0;
-  transform: translateX(-120%);
-  background: linear-gradient(120deg, transparent 30%, rgba(255,255,255,.38) 50%, transparent 70%);
-  transition: transform 700ms ease;
-  pointer-events: none;
-}
-.btn-shine:hover::before {
-  transform: translateX(120%);
 }
 
-/* hover divertido */
-.btn-fun {
-  transition: transform 220ms ease, box-shadow 220ms ease, background-color 220ms ease;
+/* Card base — sem sombras; borda neutra */
+.lcar-card {
+  position: absolute;
+  top: 50%;
+  left: 50%;
+  transform-origin: center center;
+  border: 2px solid hsl(var(--border));
+  border-radius: 0.75rem;
+  background: linear-gradient(180deg, #ffffff 0%, #f8f8f8 100%);
+  box-shadow: none;                 /* sem sombras */
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  padding: 10px;                    /* leve respiro interno */
+  text-align: center;
+  will-change: transform, opacity;
+  transition: transform 140ms ease-out, opacity 140ms linear; /* suave/natural */
+  pointer-events: auto;
 }
-.btn-fun:hover {
-  animation: float 1.6s ease-in-out infinite, wiggle 1.4s ease-in-out infinite;
-  box-shadow:
-    0 6px 18px rgba(48,131,220,.25),
-    0 2px 6px rgba(0,0,0,.08);
-}
-.btn-fun:active {
-  animation: pop 180ms ease;
-}
+.lcar-card:hover { box-shadow: none; }
+.lcar-card.is-active { /* sem borda especial */ }
 
-/* cartões suaves */
-.section-soft {
-  background: hsl(var(--muted));
-  border-radius: 1rem;
+.lcar-label {
+  font-size: 1rem;           /* um pouco maior p/ caber melhor nos cards grandes */
+  font-weight: 700;
+  line-height: 1.2;
+  color: hsl(var(--foreground));
+  padding: 0 6px;
+  white-space: nowrap;
 }
