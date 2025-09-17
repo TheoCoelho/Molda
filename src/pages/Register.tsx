@@ -159,7 +159,7 @@ const { error } = await signUp({
   };
 
   return (
-    <div className="min-h-screen bg-gradient-to-br from-purple-50 via-white to-pink-50">
+    <div className="min-h-screen ">
       <Header />
       <main className="pt-24">
         <div className="container mx-auto px-6">

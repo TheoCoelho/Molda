@@ -163,7 +163,7 @@ const Create = () => {
   };
 
   return (
-    <div className="min-h-screen bg-gradient-to-b from-white to-slate-50">
+    <div className="min-h-screen ">
       <Header />
       <main className="max-w-6xl mx-auto px-4 py-8 min-h-[calc(100vh-120px)] flex flex-col justify-center">
         <h1 className="text-3xl font-semibold tracking-tight">Criar peça</h1>

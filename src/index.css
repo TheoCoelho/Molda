@@ -2,95 +2,76 @@
 @tailwind components;
 @tailwind utilities;
 
-/* Definition of the design system. All colors, gradients, fonts, etc should be defined here. 
-All colors MUST be HSL.
-*/
-
+/* ===========================
+   DESIGN TOKENS (shadcn + paleta do cliente)
+   =========================== */
 @layer base {
   :root {
+    /* Base surfaces */
     --background: 0 0% 100%;
-    --foreground: 222.2 84% 4.9%;
+    --foreground: 222.2 47.4% 11.2%;
 
-    --card: 0 0% 100%;
-    --card-foreground: 222.2 84% 4.9%;
+    /* Brand (a partir da paleta enviada) */
+    --brand-uv: 251 35% 39%;      /* #4E4187 */
+    --brand-blue: 211 71% 52%;    /* #3083DC */
+    --brand-lyellow: 76 100% 95%; /* #F8FFE5 */
+    --brand-green: 133 60% 68%;   /* #7DDE92 */
+    --brand-keppel: 169 61% 46%;  /* #2EBFA5 */
 
-    --popover: 0 0% 100%;
-    --popover-foreground: 222.2 84% 4.9%;
+    /* shadcn tokens (derivados da paleta) */
+    --muted: var(--brand-lyellow);
+    --muted-foreground: 222.2 47.4% 20%;
 
-    --primary: 222.2 47.4% 11.2%;
-    --primary-foreground: 210 40% 98%;
+    --popover: var(--background);
+    --popover-foreground: var(--foreground);
 
-    --secondary: 210 40% 96.1%;
-    --secondary-foreground: 222.2 47.4% 11.2%;
-
-    --muted: 210 40% 96.1%;
-    --muted-foreground: 215.4 16.3% 46.9%;
-
-    --accent: 210 40% 96.1%;
-    --accent-foreground: 222.2 47.4% 11.2%;
-
-    --destructive: 0 84.2% 60.2%;
-    --destructive-foreground: 210 40% 98%;
+    --card: var(--background);
+    --card-foreground: var(--foreground);
 
     --border: 214.3 31.8% 91.4%;
     --input: 214.3 31.8% 91.4%;
-    --ring: 222.2 84% 4.9%;
+    --ring: var(--brand-uv);
 
-    --radius: 0.5rem;
+    --primary: var(--brand-blue);
+    --primary-foreground: 0 0% 100%;
 
-    --sidebar-background: 0 0% 98%;
+    --secondary: var(--brand-keppel);
+    --secondary-foreground: 0 0% 100%;
 
-    --sidebar-foreground: 240 5.3% 26.1%;
+    --accent: var(--brand-green);
+    --accent-foreground: 222.2 47.4% 11.2%;
 
-    --sidebar-primary: 240 5.9% 10%;
+    --destructive: 0 84.2% 60.2%;
+    --destructive-foreground: 0 0% 98%;
 
-    --sidebar-primary-foreground: 0 0% 98%;
-
-    --sidebar-accent: 240 4.8% 95.9%;
-
-    --sidebar-accent-foreground: 240 5.9% 10%;
-
-    --sidebar-border: 220 13% 91%;
-
-    --sidebar-ring: 217.2 91.2% 59.8%;
+    --radius: 0.75rem;
   }
 
   .dark {
     --background: 222.2 84% 4.9%;
     --foreground: 210 40% 98%;
 
-    --card: 222.2 84% 4.9%;
-    --card-foreground: 210 40% 98%;
+    --muted: 220 14.3% 10%;
+    --muted-foreground: 217.9 10.6% 64.9%;
 
     --popover: 222.2 84% 4.9%;
     --popover-foreground: 210 40% 98%;
 
-    --primary: 210 40% 98%;
-    --primary-foreground: 222.2 47.4% 11.2%;
-
-    --secondary: 217.2 32.6% 17.5%;
-    --secondary-foreground: 210 40% 98%;
-
-    --muted: 217.2 32.6% 17.5%;
-    --muted-foreground: 215 20.2% 65.1%;
-
-    --accent: 217.2 32.6% 17.5%;
-    --accent-foreground: 210 40% 98%;
-
-    --destructive: 0 62.8% 30.6%;
-    --destructive-foreground: 210 40% 98%;
+    --card: 222.2 84% 4.9%;
+    --card-foreground: 210 40% 98%;
 
     --border: 217.2 32.6% 17.5%;
     --input: 217.2 32.6% 17.5%;
-    --ring: 212.7 26.8% 83.9%;
-    --sidebar-background: 240 5.9% 10%;
-    --sidebar-foreground: 240 4.8% 95.9%;
-    --sidebar-primary: 224.3 76.3% 48%;
-    --sidebar-primary-foreground: 0 0% 100%;
-    --sidebar-accent: 240 3.7% 15.9%;
-    --sidebar-accent-foreground: 240 4.8% 95.9%;
-    --sidebar-border: 240 3.7% 15.9%;
-    --sidebar-ring: 217.2 91.2% 59.8%;
+    --ring: var(--brand-uv);
+
+    --primary: var(--brand-blue);
+    --primary-foreground: 0 0% 100%;
+
+    --secondary: var(--brand-keppel);
+    --secondary-foreground: 0 0% 100%;
+
+    --accent: var(--brand-green);
+    --accent-foreground: 0 0% 10%;
   }
 }
 
@@ -98,8 +79,98 @@ All colors MUST be HSL.
   * {
     @apply border-border;
   }
-
+  html, body, #root {
+    height: 100%;
+  }
   body {
     @apply bg-background text-foreground;
+    background-color: hsl(var(--background));
   }
+}
+
+/* ===========================
+   PLANO DE FUNDO ANIMADO — “ONDA ABSTRATA”
+   =========================== */
+:root {
+  --wave-height: 42vh;
+  --wave-blur: 30px;
+}
+
+body::before {
+  content: "";
+  position: fixed;
+  inset: 0 auto auto 0;
+  left: -12%;
+  width: 124%;
+  height: var(--wave-height);
+  z-index: -1;
+  pointer-events: none;
+
+  background:
+    radial-gradient(60% 120% at 50% 100%, hsl(var(--brand-blue) / 0.60) 0%, transparent 70%),
+    radial-gradient(70% 130% at 20% 100%, hsl(var(--brand-keppel) / 0.55) 0%, transparent 72%),
+    radial-gradient(70% 130% at 80% 100%, hsl(var(--brand-green) / 0.55) 0%, transparent 72%);
+  filter: blur(var(--wave-blur));
+  transform: translateY(-10%);
+  animation: wave-slide 8s ease-in-out infinite alternate;
+}
+
+@keyframes wave-slide {
+  0%   { transform: translateY(-10%) translateX(-2%); }
+  100% { transform: translateY(-6%)  translateX(2%); }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  body::before { animation: none; }
+}
+
+/* ===========================
+   ANIMAÇÕES UTILITÁRIAS
+   =========================== */
+@keyframes wiggle {
+  0%, 100% { transform: rotate(-0.6deg) translateY(0); }
+  50%      { transform: rotate(0.6deg) translateY(-1px); }
+}
+@keyframes float {
+  0%, 100% { transform: translateY(0); }
+  50%      { transform: translateY(-2px); }
+}
+@keyframes pop {
+  0%   { transform: scale(1); }
+  40%  { transform: scale(1.035); }
+  100% { transform: scale(1); }
+}
+
+/* brilho atravessando */
+.btn-shine::before {
+  content: "";
+  position: absolute;
+  inset: 0;
+  transform: translateX(-120%);
+  background: linear-gradient(120deg, transparent 30%, rgba(255,255,255,.38) 50%, transparent 70%);
+  transition: transform 700ms ease;
+  pointer-events: none;
+}
+.btn-shine:hover::before {
+  transform: translateX(120%);
+}
+
+/* hover divertido */
+.btn-fun {
+  transition: transform 220ms ease, box-shadow 220ms ease, background-color 220ms ease;
+}
+.btn-fun:hover {
+  animation: float 1.6s ease-in-out infinite, wiggle 1.4s ease-in-out infinite;
+  box-shadow:
+    0 6px 18px rgba(48,131,220,.25),
+    0 2px 6px rgba(0,0,0,.08);
+}
+.btn-fun:active {
+  animation: pop 180ms ease;
+}
+
+/* cartões suaves */
+.section-soft {
+  background: hsl(var(--muted));
+  border-radius: 1rem;
 }

@@ -41,7 +41,7 @@ const Finalize = () => {
 
   if (!projectData) {
     return (
-      <div className="min-h-screen bg-gray-50">
+      <div className="min-h-screen ">
         <Header />
         <div className="pt-24 container mx-auto px-6 text-center">
           <p className="text-gray-600">Nenhum projeto encontrado.</p>
