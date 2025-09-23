@@ -1,0 +1,112 @@
+/* src/styles/marquee-carousel.css */
+/* Container: ocupa 100% da largura disponível do pai */
+.marquee-carousel {
+  position: relative;
+  width: 100%;
+  height: var(--carousel-item-height, 160px);
+  overflow: clip;
+
+  /* defaults; podem ser sobrescritos via style no componente */
+  --carousel-duration: 30s;
+  --carousel-item-width: 160px;
+  --carousel-item-height: 160px;
+  --carousel-item-gap: 16px;
+}
+
+/* duração levemente menor em telas maiores (similar ao CodePen) */
+@media (width > 600px) {
+  .marquee-carousel {
+    --carousel-duration: 24s;
+  }
+}
+
+/* fade nas laterais */
+.marquee-carousel[data-mask="true"] {
+  -webkit-mask-image: linear-gradient(
+    to right,
+    transparent,
+    black 10% 90%,
+    transparent
+  );
+  mask-image: linear-gradient(
+    to right,
+    transparent,
+    black 10% 90%,
+    transparent
+  );
+}
+
+/* pausa ao passar o mouse */
+.marquee-carousel:hover > .marquee-item {
+  animation-play-state: paused;
+}
+
+/* direção reversa (opcional, útil para segundo carrossel) */
+.marquee-carousel.is-reverse > .marquee-item {
+  animation-direction: reverse;
+}
+
+/* ITEM (célula) */
+.marquee-item {
+  position: absolute;
+  top: 0;
+  left: calc(100% + var(--carousel-item-gap));
+  width: var(--carousel-item-width);
+  height: var(--carousel-item-height);
+
+  display: grid;
+  place-items: center;
+
+  /* visual solicitado: quadrado, transparente, apenas borda colorida */
+  --border-color: rgb(0, 132, 209);
+  border: 2px solid var(--border-color);
+  background: transparent;
+  color: currentColor;
+  border-radius: 12px;
+
+  user-select: none;
+  cursor: pointer;
+
+  /* animação contínua */
+  will-change: transform;
+  animation-name: marquee-slide;
+  animation-duration: var(--carousel-duration);
+  animation-timing-function: linear;
+  animation-iteration-count: infinite;
+
+  /* escalonamento temporal por índice (definido em "--i" inline) */
+  animation-delay: calc(
+    (var(--carousel-duration) / var(--items)) * var(--i) * -1
+  );
+}
+
+/* rótulo central */
+.marquee-item .label {
+  font-size: clamp(0.9rem, 1.6vw, 1.2rem);
+  text-align: center;
+  padding: 0 0.5rem;
+  line-height: 1.2;
+}
+
+/* destaque do selecionado (suave, sem alterar layout) */
+.marquee-item.is-selected {
+  box-shadow: 0 0 0 4px color-mix(in oklab, var(--border-color) 45%, transparent);
+}
+
+/* acessibilidade: foco no teclado */
+.marquee-item:focus-visible {
+  outline: none;
+  box-shadow: 0 0 0 3px Highlight;
+}
+
+/* animação: desloca todos os itens para a esquerda em um "comprimento total" */
+@keyframes marquee-slide {
+  100% {
+    transform: translateX(
+      calc(
+        (var(--items) * (var(--carousel-item-width) + var(--carousel-item-gap))) *
+          -1
+      )
+    );
+  }
+}
