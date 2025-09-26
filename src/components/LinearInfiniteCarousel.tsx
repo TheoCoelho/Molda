@@ -1,207 +1,252 @@
-import React, { useEffect, useMemo, useRef, useState } from "react";
-import clsx from "clsx";
-import "../styles/marquee-carousel.css";
+import React, {
+  useCallback,
+  useEffect,
+  useMemo,
+  useRef,
+  useState,
+} from "react";
+import "@/styles/marquee-carousel.css";
 
-type GetLabel<T> = (item: T, index: number) => string;
-type GetKey<T> = (item: T, index: number) => React.Key;
-type GetBorderColor<T> = (item: T, index: number) => string | undefined;
-type GetId<T> = (item: T, index: number) => string;
+type Item = {
+  id: string;
+  label: string;
+  color?: string;
+};
 
-export interface LinearInfiniteCarouselProps<T = any> {
-  /** Classe adicional para o container */
-  className?: string;
-
-  /** Lista de itens */
-  items: T[];
-
-  /**
-   * Handler de seleção:
-   * - Modo por ID (compatível com seu Create.tsx): onSelect(id: string)
-   * - Modo por item: onSelect(item: T, index: number)
-   */
-  onSelect?: ((id: string, index?: number) => void) | ((item: T, index: number) => void);
-
-  /** Seleção por índice (modo item) */
-  selectedIndex?: number | null;
-
-  /** Seleção por função (modo item) */
-  selected?: (item: T, index: number) => boolean;
-
-  /** Seleção por ID (modo id) — compatível com Create.tsx */
+type Props = {
+  items: Item[];
   selectedId?: string | null;
-
-  /** Mapeadores opcionais */
-  getLabel?: GetLabel<T>;
-  getKey?: GetKey<T>;
-  getBorderColor?: GetBorderColor<T>;
-  getId?: GetId<T>;
-
-  /** Aparência/tempo do marquee */
-  durationSec?: number; // default 30
-  itemSize?: number; // lado do quadrado em px — default 160
-  gap?: number; // espaçamento em px — default 16
-  reverse?: boolean; // animação reversa (útil para 2º carrossel)
+  onSelect?: (id: string) => void;
   ariaLabel?: string;
 
-  /** Props legadas (aceitas para não quebrar Create.tsx) */
-  cardSize?: number;       // mapeado para itemSize
-  cardGapPx?: number;      // mapeado para gap
-  dragSensitivity?: number; // ignorado
-  scaleAmplitude?: number;  // ignorado
-  sigmaSteps?: number;      // ignorado
-}
+  cardSize?: number;
+  cardGapPx?: number;
+  durationSec?: number; // compat.
 
-/** Padrões robustos para diferentes formatos de item */
-function defaultGetLabel(item: any): string {
-  return (
-    item?.label ??
-    item?.name ??
-    item?.title ??
-    (typeof item === "string" ? item : String(item?.id ?? ""))
-  );
-}
+  // compat. (não usados para movimento)
+  dragSensitivity?: number;
+  scaleAmplitude?: number;
+  sigmaSteps?: number;
+};
 
-function defaultGetKey(item: any, i: number): React.Key {
-  return item?.id ?? item?.key ?? item?.value ?? defaultGetLabel(item) ?? i;
-}
-
-function defaultGetBorderColor(item: any): string | undefined {
-  return item?.color ?? item?.borderColor ?? undefined;
-}
-
-function defaultGetId(item: any, index: number): string {
-  // Por padrão usamos item.id; se não houver, usamos o label
-  return (item?.id ?? defaultGetLabel(item)) as string;
-}
-
-export default function LinearInfiniteCarousel<T = any>({
-  className,
+export default function LinearInfiniteCarousel({
   items,
+  selectedId,
   onSelect,
-  selectedIndex = null,
-  selected,
-  selectedId, // <- ativa "modo por id" quando definido
-  getLabel = defaultGetLabel,
-  getKey = defaultGetKey,
-  getBorderColor = defaultGetBorderColor,
-  getId = defaultGetId,
-  durationSec,
-  itemSize,
-  gap,
-  reverse = false,
-  ariaLabel,
+  ariaLabel = "Carrossel",
+  cardSize = 120,
+  cardGapPx = 12,
+  durationSec = 30,
+}: Props) {
+  const viewportRef = useRef<HTMLDivElement | null>(null);
 
-  // legados (não quebrar Create.tsx)
-  cardSize,
-  cardGapPx,
-}: LinearInfiniteCarouselProps<T>) {
-  const containerRef = useRef<HTMLDivElement>(null);
+  // ===== Métricas
+  const unit = cardSize + cardGapPx;
+  const baseLen = useMemo(() => items.length * unit, [items.length, unit]);
 
-  // Normalização dos tamanhos: prioriza novos props, cai nos legados se não vierem
-  const effectiveItemSize = itemSize ?? cardSize ?? 160;
-  const effectiveGap = gap ?? cardGapPx ?? 16;
-  const effectiveDuration = durationSec ?? 30;
+  // ===== Estado de deslocamento (px)
+  const [offsetPx, setOffsetPx] = useState(0);
 
-  const baseCount = Math.max(1, items?.length ?? 0);
-  const [repeat, setRepeat] = useState(1);
+  // ===== Drag + Inércia
+  const draggingRef = useRef(false);
+  const lastXRef = useRef(0);
+  const velocityRef = useRef(0); // px/frame
+  const rafRef = useRef<number | null>(null);
 
-  // Repetição automática para preencher espaço e manter o loop sem "buracos"
-  useEffect(() => {
-    const el = containerRef.current;
-    if (!el) return;
-    const ro = new ResizeObserver(() => {
-      const width = el.clientWidth || 0;
-      const unit = effectiveItemSize + effectiveGap; // px por item
-      // Queremos ~2 larguras de viewport para o loop ficar sempre preenchido
-      const minDistance = width * 2 + unit * 2;
-      const needed = Math.ceil(minDistance / unit);
-      const r = Math.max(1, Math.ceil(needed / baseCount));
-      setRepeat(Math.min(r, 8)); // limite de segurança
-    });
-    ro.observe(el);
-    return () => ro.disconnect();
-  }, [baseCount, effectiveItemSize, effectiveGap]);
+  // Tap slop para distinguir clique x arraste
+  const TAP_SLOP = 6; // px
+  const dragAccumRef = useRef(0);
+  const didDragRef = useRef(false);
 
-  const repeatedIndexes = useMemo(() => {
-    const total = baseCount * repeat;
-    return Array.from({ length: total }, (_, i) => i);
-  }, [baseCount, repeat]);
+  const FRICTION = 0.94;
+  const MIN_VELOCITY = 0.1;
 
-  const totalItems = baseCount * repeat;
+  // Normalização: manter translateX em [-baseLen, 0]
+  const normalizedOffset = useMemo(() => {
+    if (baseLen === 0) return 0;
+    let x = offsetPx % baseLen;
+    if (x > 0) x -= baseLen;
+    return x;
+  }, [offsetPx, baseLen]);
 
-  // Variáveis CSS do container (marquee)
-  const cssVars: React.CSSProperties = {
-    // @ts-expect-error custom props
-    "--items": totalItems,
-    "--carousel-duration": `${effectiveDuration}s`,
-    "--carousel-item-width": `${effectiveItemSize}px`,
-    "--carousel-item-height": `${effectiveItemSize}px`,
-    "--carousel-item-gap": `${effectiveGap}px`,
+  // Repetição tripla para loop bilateral
+  const triple = useMemo(() => [items, items, items] as const, [items]);
+
+  // RAF controle
+  const stopRaf = () => {
+    if (rafRef.current != null) {
+      cancelAnimationFrame(rafRef.current);
+      rafRef.current = null;
+    }
   };
 
-  const isIdMode = typeof selectedId !== "undefined";
+  const animateInertia = useCallback(() => {
+    stopRaf();
+    const step = () => {
+      if (Math.abs(velocityRef.current) < MIN_VELOCITY) {
+        stopRaf();
+        return;
+      }
+      setOffsetPx((prev) => prev + velocityRef.current);
+      velocityRef.current *= FRICTION;
+      rafRef.current = requestAnimationFrame(step);
+    };
+    rafRef.current = requestAnimationFrame(step);
+  }, []);
+
+  // ===== Pointer
+  const onPointerDown = useCallback((e: React.PointerEvent) => {
+    (e.target as Element).setPointerCapture?.(e.pointerId);
+    draggingRef.current = true;
+    lastXRef.current = e.clientX;
+    velocityRef.current = 0;
+    dragAccumRef.current = 0;
+    didDragRef.current = false;
+    stopRaf();
+  }, []);
+
+  const onPointerMove = useCallback((e: React.PointerEvent) => {
+    if (!draggingRef.current) return;
+    const dx = e.clientX - lastXRef.current;
+    lastXRef.current = e.clientX;
+
+    // acumula distância para detectar arraste
+    dragAccumRef.current += Math.abs(dx);
+    if (dragAccumRef.current > TAP_SLOP) didDragRef.current = true;
+
+    setOffsetPx((prev) => prev + dx);
+    velocityRef.current = dx; // velocidade instantânea
+  }, []);
+
+  const onPointerUp = useCallback((e: React.PointerEvent) => {
+    if (!draggingRef.current) return;
+    draggingRef.current = false;
+    (e.target as Element).releasePointerCapture?.(e.pointerId);
+    // inicia inércia com a velocidade atual
+    animateInertia();
+  }, [animateInertia]);
+
+  // ===== Wheel → move horizontalmente
+  const onWheel = useCallback((e: React.WheelEvent) => {
+    const delta = Math.abs(e.deltaX) > Math.abs(e.deltaY) ? e.deltaX : e.deltaY;
+    if (!delta) return;
+    e.preventDefault();
+    stopRaf();
+    velocityRef.current = 0;
+    didDragRef.current = true; // roda do mouse não deve contar como clique
+    setOffsetPx((prev) => prev - delta);
+  }, []);
+
+  // ===== A11y por teclado
+  const onKeyDown = useCallback(
+    (e: React.KeyboardEvent) => {
+      if (!items.length) return;
+      const idx = items.findIndex((it) => it.id === selectedId);
+      if (idx === -1) return;
+
+      if (e.key === "ArrowRight") {
+        const next = items[(idx + 1) % items.length];
+        onSelect?.(next.id);
+      } else if (e.key === "ArrowLeft") {
+        const prev = items[(idx - 1 + items.length) % items.length];
+        onSelect?.(prev.id);
+      } else if (e.key === "Enter" || e.key === " ") {
+        if (selectedId) onSelect?.(selectedId);
+      }
+    },
+    [items, selectedId, onSelect]
+  );
+
+  useEffect(() => stopRaf, []);
+
+  // Style aplicado ao trilho
+  const trackStyle: React.CSSProperties = {
+    transform: `translate3d(${normalizedOffset}px, 0, 0)`,
+    ["--item-size" as any]: `${cardSize}px`,
+    ["--gap" as any]: `${cardGapPx}px`,
+    ["--duration" as any]: `${durationSec}s`,
+  };
+
+  // Handler de clique que ignora quando houve arraste
+  const makeCellClick = useCallback(
+    (id: string) =>
+      (e: React.MouseEvent<HTMLButtonElement>) => {
+        if (didDragRef.current) {
+          e.preventDefault();
+          e.stopPropagation();
+          return; // ignorar "clique" após arraste
+        }
+        onSelect?.(id);
+      },
+    [onSelect]
+  );
 
   return (
     <div
-      ref={containerRef}
-      className={clsx("marquee-carousel", reverse && "is-reverse", className)}
-      style={cssVars}
-      data-mask="true"
-      aria-label={ariaLabel}
+      ref={viewportRef}
+      className="marquee-viewport"
       role="listbox"
+      aria-label={ariaLabel}
+      tabIndex={0}
+      onKeyDown={onKeyDown}
+      onWheel={onWheel}
+      onPointerDown={onPointerDown}
+      onPointerMove={onPointerMove}
+      onPointerUp={onPointerUp}
+      onPointerCancel={onPointerUp}
     >
-      {repeatedIndexes.map((idx) => {
-        const origIndex = idx % baseCount;
-        const item = items[origIndex];
-        const label = getLabel(item, origIndex);
-        const id = getId(item, origIndex);
-        const color = getBorderColor?.(item, origIndex);
-
-        const key = `${getKey(item, origIndex)}__rep${Math.floor(idx / baseCount)}_${origIndex}`;
-
-        const isSelected =
-          selected?.(item, origIndex) ??
-          (selectedIndex !== null && selectedIndex === origIndex) ??
-          (selectedId != null && id === selectedId);
-
-        const style: React.CSSProperties = {
-          // @ts-expect-error custom var
-          "--i": idx,
-          ...(color ? ({ ["--border-color" as any]: color } as any) : null),
-        };
-
-        const handleSelect = () => {
-          if (!onSelect) return;
-          // Compatibilidade: se selectedId foi fornecido, assumimos modo "por id"
-          if (isIdMode) {
-            (onSelect as (id: string, index?: number) => void)(id, origIndex);
-          } else {
-            (onSelect as (item: T, index: number) => void)(item, origIndex);
-          }
-        };
-
-        const handleKey = (e: React.KeyboardEvent) => {
-          if (e.key === "Enter" || e.key === " ") {
-            e.preventDefault();
-            handleSelect();
-          }
-        };
-
-        return (
-          <article
-            key={key}
-            className={clsx("marquee-item", isSelected && "is-selected")}
-            style={style}
+      <div className="marquee-track no-anim" style={trackStyle}>
+        {triple[0].map((item, i) => (
+          <button
+            key={`prev-${item.id}-${i}`}
+            className={cellClass(item, selectedId)}
             role="option"
-            aria-selected={!!isSelected}
-            tabIndex={0}
-            onClick={handleSelect}
-            onKeyDown={handleKey}
+            aria-selected={selectedId === item.id}
+            onClick={makeCellClick(item.id)}
+            style={cellStyle(item)}
           >
-            <span className="label">{label}</span>
-          </article>
-        );
-      })}
+            <span className="marquee-cell-label">{item.label}</span>
+          </button>
+        ))}
+
+        {triple[1].map((item, i) => (
+          <button
+            key={`base-${item.id}-${i}`}
+            className={cellClass(item, selectedId)}
+            role="option"
+            aria-selected={selectedId === item.id}
+            onClick={makeCellClick(item.id)}
+            style={cellStyle(item)}
+          >
+            <span className="marquee-cell-label">{item.label}</span>
+          </button>
+        ))}
+
+        {triple[2].map((item, i) => (
+          <button
+            key={`next-${item.id}-${i}`}
+            className={cellClass(item, selectedId)}
+            role="option"
+            aria-selected={selectedId === item.id}
+            onClick={makeCellClick(item.id)}
+            style={cellStyle(item)}
+          >
+            <span className="marquee-cell-label">{item.label}</span>
+          </button>
+        ))}
+      </div>
     </div>
   );
+}
+
+function cellClass(item: Item, selectedId?: string | null) {
+  const isSelected = selectedId === item.id;
+  return ["marquee-cell", isSelected ? "is-selected" : ""]
+    .filter(Boolean)
+    .join(" ");
+}
+
+function cellStyle(item: Item): React.CSSProperties {
+  const color = item.color || "#8884d8";
+  return { ["--cell-accent" as any]: color };
 }
