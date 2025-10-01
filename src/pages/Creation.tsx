@@ -5,6 +5,8 @@ import Canvas3DViewer from "../components/Canvas3DViewer";
 import ExpandableSidebar from "../components/ExpandableSidebar";
 import { Button } from "../components/ui/button";
 import { Plus, X } from "lucide-react";
+import FloatingEditorToolbar from "../components/FloatingEditorToolbar"; // + NOVO
+
 import Editor2D, {
   Editor2DHandle,
   Tool,
@@ -242,6 +244,10 @@ const Creation = () => {
                   <div className="absolute bottom-3 left-3 text-xs text-gray-600 bg-white/80 px-2 py-1 rounded">
                     Arraste para rotacionar · Scroll para zoom
                   </div>
+                  {/* Toolbar flutuante centralizada no canvas 3D, corrigida para ficar acima do limite inferior */}
+                  <div className="absolute left-1/2 z-10" style={{ bottom: '80px', maxWidth: '95%', transform: 'translateX(-50%)' }}>
+                    <FloatingEditorToolbar />
+                  </div>
                 </div>
               ) : (
                 <div className="w-full h-full relative">
@@ -272,6 +278,10 @@ const Creation = () => {
                     >
                       Exportar
                     </button>
+                  </div>
+                  {/* Toolbar flutuante centralizada no canvas 2D, corrigida para ficar acima do limite inferior */}
+                  <div className="absolute left-1/2 z-10" style={{ bottom: '80px', maxWidth: '95%', transform: 'translateX(-50%)' }}>
+                    <FloatingEditorToolbar />
                   </div>
                 </div>
               )}
