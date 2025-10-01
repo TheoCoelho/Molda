@@ -81,6 +81,7 @@ export default function FloatingEditorToolbar({ mode = "2D" }: Props) {
   // painel e hover
   const [isColorPanelOpen, setIsColorPanelOpen] = useState(false);
   const [showSwatchBar, setShowSwatchBar] = useState(false);
+  const swatchBarTimeout = useRef<NodeJS.Timeout | null>(null);
 
   // cores recomendadas (dinâmicas)
   const [recents, setRecents] = useState<string[]>(["#1677FF", ...DEFAULT_COLORS]);
@@ -180,17 +181,57 @@ export default function FloatingEditorToolbar({ mode = "2D" }: Props) {
           <div
             ref={dropWrapRef}
             className="relative"
-            onMouseEnter={() => !isColorPanelOpen && setShowSwatchBar(true)}
-            onMouseLeave={() => !isColorPanelOpen && setShowSwatchBar(false)}
           >
-            <button
-              type="button"
-              aria-label="Selecionar cor"
-              className="h-10 w-10 grid place-items-center rounded-xl border border-black/5 dark:border-white/10 bg-white/80 dark:bg-neutral-900/70 hover:bg-white hover:shadow transition"
-              onClick={() => { setIsColorPanelOpen((v) => !v); setShowSwatchBar(false); }}
+            {/* Novo container para hover */}
+            <div
+              onMouseEnter={() => {
+                if (!isColorPanelOpen) {
+                  if (swatchBarTimeout.current) clearTimeout(swatchBarTimeout.current);
+                  setShowSwatchBar(true);
+                }
+              }}
+              onMouseLeave={() => {
+                if (!isColorPanelOpen) {
+                  if (swatchBarTimeout.current) clearTimeout(swatchBarTimeout.current);
+                  swatchBarTimeout.current = setTimeout(() => {
+                    setShowSwatchBar(false);
+                  }, 180); // 180ms de tolerância
+                }
+              }}
+              style={{ display: "inline-block" }}
             >
-              <Droplet className="h-5 w-5" />
-            </button>
+              <button
+                type="button"
+                aria-label="Selecionar cor"
+                className="h-10 w-10 grid place-items-center rounded-xl border border-black/5 dark:border-white/10 bg-white/80 dark:bg-neutral-900/70 hover:bg-white hover:shadow transition"
+                onClick={() => { setIsColorPanelOpen((v) => !v); setShowSwatchBar(false); }}
+              >
+                <Droplet className="h-5 w-5" />
+              </button>
+
+              {/* ===== FAIXA DE CORES (ACIMA), começa sobre a gota e cresce à direita ===== */}
+              {showSwatchBar && !isColorPanelOpen && (
+                <div
+                  className="absolute left-0 bottom-full mb-2"
+                  style={{ width: swatchWidth ? `${swatchWidth}px` : undefined }}
+                >
+                  <div className="rounded-xl px-3 py-2 bg-white/90 dark:bg-neutral-900/90 backdrop-blur border border-black/5 dark:border-white/10 shadow">
+                    <div className="flex items-center justify-between gap-0 flex-nowrap">
+                      {displayPalette.map((c, idx) => (
+                        <button
+                          key={`${c}-${idx}`}
+                          type="button"
+                          className="h-7 w-7 rounded-full border border-black/10 dark:border-white/10 shadow-sm shrink-0"
+                          style={{ backgroundColor: c }}
+                          onClick={() => applyPickedColor(c)}
+                          aria-label={`Usar cor ${c}`}
+                        />
+                      ))}
+                    </div>
+                  </div>
+                </div>
+              )}
+            </div>
 
             {/* ===== PAINEL DE COR (ACIMA) ===== */}
             {isColorPanelOpen && (
@@ -239,29 +280,6 @@ export default function FloatingEditorToolbar({ mode = "2D" }: Props) {
                     <button type="button" className="h-10 w-10 rounded-xl border bg-white/80 dark:bg-neutral-900/70 grid place-items-center" title="Conta-gotas do sistema (visual)">
                       <Pipette className="h-5 w-5" />
                     </button>
-                  </div>
-                </div>
-              </div>
-            )}
-
-            {/* ===== FAIXA DE CORES (ACIMA), começa sobre a gota e cresce à direita ===== */}
-            {showSwatchBar && !isColorPanelOpen && (
-              <div
-                className="absolute left-0 bottom-full mb-2"
-                style={{ width: swatchWidth ? `${swatchWidth}px` : undefined }}
-              >
-                <div className="rounded-xl px-3 py-2 bg-white/90 dark:bg-neutral-900/90 backdrop-blur border border-black/5 dark:border-white/10 shadow">
-                  <div className="flex items-center justify-between gap-0 flex-nowrap">
-                    {displayPalette.map((c, idx) => (
-                      <button
-                        key={`${c}-${idx}`}
-                        type="button"
-                        className="h-7 w-7 rounded-full border border-black/10 dark:border-white/10 shadow-sm shrink-0"
-                        style={{ backgroundColor: c }}
-                        onClick={() => applyPickedColor(c)}
-                        aria-label={`Usar cor ${c}`}
-                      />
-                    ))}
                   </div>
                 </div>
               </div>

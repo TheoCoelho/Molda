@@ -193,12 +193,13 @@ const Creation = () => {
 
           <div className="flex flex-col h-full space-y-4">
             <div>
-              <h1 className="text-2xl font-semibold">Criação</h1>
-              <p className="text-sm text-gray-600">
-                Parte: <span className="font-medium">{part || "-"}</span> · Tipo:{" "}
-                <span className="font-medium">{type || "-"}</span> · Subtipo:{" "}
-                <span className="font-medium">{subtype || "-"}</span>
-              </p>
+              {/* Título removido conforme solicitado */}
+              {/* Exibe o nome da peça ou subpeça acima do campo de nome da criação */}
+              {subtype ? (
+                <div className="text-lg font-medium text-gray-700 mb-1">{subtype}</div>
+              ) : part ? (
+                <div className="text-lg font-medium text-gray-700 mb-1">{part}</div>
+              ) : null}
             </div>
 
             <div className="flex items-center gap-2">

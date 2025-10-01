@@ -38,7 +38,7 @@ const Header = () => {
       <div className="container mx-auto px-6 h-16 flex items-center justify-between">
         <Link to="/" className="inline-flex items-center gap-2">
           <div className="h-7 w-7 rounded-lg bg-[linear-gradient(135deg,hsl(var(--primary))_0%,hsl(var(--brand-keppel))_100%)]" />
-          <span className="font-semibold tracking-tight">Custom Couture Lab</span>
+          <span className="font-semibold tracking-tight">Molda</span>
         </Link>
 
         <nav className="hidden md:flex items-center gap-6 text-sm">
