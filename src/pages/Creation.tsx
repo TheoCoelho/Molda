@@ -189,6 +189,11 @@ const Creation = () => {
             is2DActive={activeIs2D}
             lineMode={lineMode}
             setLineMode={setLineMode}
+            onImageInsert={(src, opts) => {
+              if (!activeIs2D) return;
+              // Se for drag & drop, usar opts.x/y; se for click, centralizar
+              editorRefs.current[activeCanvasTab]?.addImage(src, opts);
+            }}
           />
 
           <div className="flex flex-col h-full space-y-4">
@@ -251,7 +256,23 @@ const Creation = () => {
                   </div>
                 </div>
               ) : (
-                <div className="w-full h-full relative">
+                <div
+                  className="w-full h-full relative"
+                  onDragOver={(e) => {
+                    e.preventDefault();
+                  }}
+                  onDrop={(e) => {
+                    e.preventDefault();
+                    const src = e.dataTransfer.getData("text/plain");
+                    // Calcula posição relativa ao canvas
+                    const rect = e.currentTarget.getBoundingClientRect();
+                    const x = e.clientX - rect.left;
+                    const y = e.clientY - rect.top;
+                    if (src && activeIs2D) {
+                      editorRefs.current[activeCanvasTab]?.addImage(src, { x, y });
+                    }
+                  }}
+                >
                   <Editor2D
                     key={activeCanvasTab}
                     ref={(inst) => {

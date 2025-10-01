@@ -51,6 +51,7 @@ interface ExpandableSidebarProps {
   // Linhas
   lineMode: "single" | "polyline";
   setLineMode: (m: "single" | "polyline") => void;
+  onImageInsert?: (src: string, opts?: { x?: number; y?: number; scale?: number }) => void;
 }
 
 type Section = {
@@ -87,6 +88,7 @@ const ExpandableSidebar = ({
   is2DActive,
   lineMode,
   setLineMode,
+  onImageInsert,
 }: ExpandableSidebarProps) => {
   const [isExpanded, setIsExpanded] = useState(false);
   const [activeSection, setActiveSection] = useState<Section["id"]>("settings");
@@ -144,7 +146,7 @@ const ExpandableSidebar = ({
       id: "upload",
       icon: FileImage,
       label: "Upload",
-      content: <UploadGallery />,
+  content: <UploadGallery onImageInsert={onImageInsert} />,
     },
     {
       id: "brush",

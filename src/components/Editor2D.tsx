@@ -22,6 +22,7 @@ export type Editor2DHandle = {
       opacity?: number;
     }
   ) => void;
+  addImage: (src: string, opts?: { x?: number; y?: number; scale?: number; }) => void;
 
   toJSON: () => string;
   loadFromJSON: (json: string) => Promise<void>;
@@ -114,6 +115,35 @@ const Editor2D = forwardRef<Editor2DHandle, Props>(function Editor2D(
   const roRef = useRef<ResizeObserver | null>(null);
 
   const listenersRef = useRef<{ down?: any; move?: any; up?: any }>({});
+  
+  // Adiciona imagem como objeto dinâmico no canvas
+  const addImage = (src: string, opts?: { x?: number; y?: number; scale?: number; }) => {
+    const c = canvasRef.current;
+    const fabric = fabricRef.current;
+    if (c && fabric) {
+      fabric.Image.fromURL(
+        src,
+        (img: any) => {
+          // Centraliza se não houver posição
+          const x = opts?.x ?? c.getWidth() / 2;
+          const y = opts?.y ?? c.getHeight() / 2;
+          img.set({
+            left: x - img.width / 2,
+            top: y - img.height / 2,
+            scaleX: opts?.scale ?? 1,
+            scaleY: opts?.scale ?? 1,
+            selectable: true,
+            evented: true,
+            objectCaching: false,
+          });
+          c.add(img);
+          c.setActiveObject(img);
+          c.requestRenderAll();
+        },
+        { crossOrigin: "anonymous" }
+      );
+    }
+  };
 
   // ---------- utils ----------
   const setHostCursor = (cursor: string) => {
@@ -763,6 +793,7 @@ const Editor2D = forwardRef<Editor2DHandle, Props>(function Editor2D(
     clear,
     exportPNG,
     addShape,
+    addImage,
     toJSON,
     loadFromJSON,
   }));

@@ -40,7 +40,11 @@ const dataUrlToBlob = async (dataUrl: string): Promise<Blob> => {
   return await res.blob();
 };
 
-export default function UploadGallery() {
+type Props = {
+  onImageInsert?: (src: string, opts?: { x?: number; y?: number }) => void;
+};
+
+export default function UploadGallery({ onImageInsert }: Props) {
   // ===== Supabase client (pode ser null se envs ausentes)
   const supabase: SupabaseClient | null = getSupabase();
 
@@ -338,7 +342,15 @@ export default function UploadGallery() {
           </div>
         ) : (
           gallery.map((item) => (
-            <div key={item.id} className="relative aspect-square overflow-hidden rounded-md border bg-white">
+            <div
+              key={item.id}
+              className="relative aspect-square overflow-hidden rounded-md border bg-white cursor-pointer"
+              draggable
+              onClick={() => onImageInsert?.(item.previewUrl)}
+              onDragStart={(e) => {
+                e.dataTransfer.setData("text/plain", item.previewUrl);
+              }}
+            >
               <img
                 src={item.previewUrl}
                 alt={item.originalName}
