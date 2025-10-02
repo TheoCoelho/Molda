@@ -1,4 +1,3 @@
-
 import { Toaster } from "@/components/ui/toaster";
 import { Toaster as Sonner } from "@/components/ui/sonner";
 import { TooltipProvider } from "@/components/ui/tooltip";
@@ -14,26 +13,37 @@ import Profile from "./pages/Profile";
 import Login from "./pages/Login";
 import Register from "./pages/Register";
 
+// ⬇️ FUNDO ANIMADO
+import ShaderBackground from "@/components/ShaderBackground";
+
 const queryClient = new QueryClient();
 
 const App = () => (
   <QueryClientProvider client={queryClient}>
     <TooltipProvider>
       <AuthProvider>
-        <Toaster />
-        <Sonner />
-        <BrowserRouter>
-          <Routes>
-            <Route path="/" element={<Index />} />
-            <Route path="/create" element={<Create />} />
-            <Route path="/creation" element={<Creation />} />
-            <Route path="/finalize" element={<Finalize />} />
-            <Route path="/profile" element={<Profile />} />
-            <Route path="/login" element={<Login />} />
-            <Route path="/register" element={<Register />} />
-            <Route path="*" element={<NotFound />} />
-          </Routes>
-        </BrowserRouter>
+        {/* Canvas do fundo (fixo e atrás de tudo) */}
+        <ShaderBackground />
+
+        {/* Conteúdo do app acima do fundo */}
+        <div className="relative z-10 min-h-screen">
+          <BrowserRouter>
+            <Routes>
+              <Route path="/" element={<Index />} />
+              <Route path="/create" element={<Create />} />
+              <Route path="/creation" element={<Creation />} />
+              <Route path="/finalize" element={<Finalize />} />
+              <Route path="/profile" element={<Profile />} />
+              <Route path="/login" element={<Login />} />
+              <Route path="/register" element={<Register />} />
+              <Route path="*" element={<NotFound />} />
+            </Routes>
+          </BrowserRouter>
+
+          {/* Toasters mantidos normalmente */}
+          <Toaster />
+          <Sonner />
+        </div>
       </AuthProvider>
     </TooltipProvider>
   </QueryClientProvider>
