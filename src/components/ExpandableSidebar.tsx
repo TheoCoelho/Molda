@@ -328,9 +328,8 @@ function BrushSectionAccordion({
         }}
       >
         {/* Ferramenta atual */}
-        <div className="grid grid-cols-2 gap-2 mt-2">
+        <div className="grid grid-cols-1 gap-2 mt-2">
           <Button variant={tool === "brush" ? "default" : "outline"} onClick={() => setTool("brush")}>Lápis</Button>
-          <Button variant={tool === "select" ? "default" : "outline"} onClick={() => setTool("select")}>Seleção</Button>
         </div>
 
         {/* Variações do Lápis */}
@@ -341,27 +340,7 @@ function BrushSectionAccordion({
           <Button variant={brushVariant === "calligraphy" ? "default" : "outline"} onClick={() => setBrushVariant("calligraphy")} disabled={tool !== "brush"}>Caligrafia</Button>
         </div>
 
-        {/* Cores / largura / opacidade */}
-        <div className="grid grid-cols-2 gap-3 mt-3">
-          <div>
-            <Label>Cor do traço</Label>
-            <input type="color" className="w-full h-10 border rounded mt-2" value={strokeColor} onChange={(e) => setStrokeColor(e.target.value)} />
-          </div>
-          <div>
-            <Label>Cor de preenchimento</Label>
-            <input type="color" className="w-full h-10 border rounded mt-2" value={fillColor} onChange={(e) => setFillColor(e.target.value)} />
-          </div>
-          <div>
-            <Label>Largura</Label>
-            <input type="range" min={1} max={60} value={strokeWidth} onChange={(e) => setStrokeWidth(Number(e.target.value))} className="w-full mt-2" />
-            <div className="text-xs text-gray-500">{strokeWidth}px</div>
-          </div>
-          <div>
-            <Label>Opacidade</Label>
-            <input type="range" min={0} max={1} step={0.05} value={opacity} onChange={(e) => setOpacity(Number(e.target.value))} className="w-full mt-2" />
-            <div className="text-xs text-gray-500">{Math.round(opacity * 100)}%</div>
-          </div>
-        </div>
+        {/* Controles de cor, largura e opacidade agora estão na FloatingEditorToolbar */}
 
         {/* Paleta rápida */}
         <div className="mt-3">

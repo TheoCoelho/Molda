@@ -17,6 +17,13 @@ import Editor2D, {
 type CanvasTab = { id: string; name: string; type: "2d" | "3d" };
 
 const Creation = () => {
+  const [isTrashMode, setTrashModeRaw] = useState(false);
+
+  // Wrapper para setTrashMode que também desativa ferramenta
+  const setTrashMode = (v: boolean) => {
+    setTrashModeRaw(v);
+    if (v) setTool("select"); // desativa ferramenta ao ativar lixeira
+  };
   const [searchParams] = useSearchParams();
   const navigate = useNavigate();
 
@@ -252,7 +259,19 @@ const Creation = () => {
                   </div>
                   {/* Toolbar flutuante centralizada no canvas 3D, corrigida para ficar acima do limite inferior */}
                   <div className="absolute left-1/2 z-10" style={{ bottom: '80px', maxWidth: '95%', transform: 'translateX(-50%)' }}>
-                    <FloatingEditorToolbar />
+                    <FloatingEditorToolbar
+                      strokeColor={strokeColor}
+                      setStrokeColor={setStrokeColor}
+                      strokeWidth={strokeWidth}
+                      setStrokeWidth={setStrokeWidth}
+                      opacity={opacity}
+                      setOpacity={setOpacity}
+                      tool={tool}
+                      setTool={setTool}
+                      isTrashMode={isTrashMode}
+                      setTrashMode={setTrashMode}
+                      editor2DRef={editorRefs.current[activeCanvasTab]}
+                    />
                   </div>
                 </div>
               ) : (
@@ -285,6 +304,8 @@ const Creation = () => {
                     strokeWidth={strokeWidth}
                     opacity={opacity}
                     lineMode={lineMode}
+                    isTrashMode={isTrashMode}
+                    onTrashDelete={() => setTool("select")}
                   />
 
                   <div className="absolute bottom-3 left-3 flex gap-2">
@@ -303,7 +324,18 @@ const Creation = () => {
                   </div>
                   {/* Toolbar flutuante centralizada no canvas 2D, corrigida para ficar acima do limite inferior */}
                   <div className="absolute left-1/2 z-10" style={{ bottom: '80px', maxWidth: '95%', transform: 'translateX(-50%)' }}>
-                    <FloatingEditorToolbar />
+                    <FloatingEditorToolbar
+                      strokeColor={strokeColor}
+                      setStrokeColor={setStrokeColor}
+                      strokeWidth={strokeWidth}
+                      setStrokeWidth={setStrokeWidth}
+                      opacity={opacity}
+                      setOpacity={setOpacity}
+                      tool={tool}
+                      setTool={setTool}
+                      isTrashMode={isTrashMode}
+                      setTrashMode={setTrashMode}
+                    />
                   </div>
                 </div>
               )}

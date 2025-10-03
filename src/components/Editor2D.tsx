@@ -36,6 +36,8 @@ type Props = {
   strokeWidth: number;
   opacity: number;
   lineMode: "single" | "polyline";
+  isTrashMode?: boolean;
+  onTrashDelete?: () => void;
 };
 
 type FabricCanvas = any;
@@ -105,9 +107,99 @@ function loadFabricRuntime(): Promise<any> {
 }
 
 const Editor2D = forwardRef<Editor2DHandle, Props>(function Editor2D(
-  { tool, brushVariant, strokeColor, fillColor, strokeWidth, opacity },
+  { tool, brushVariant, strokeColor, fillColor, strokeWidth, opacity, isTrashMode, onTrashDelete },
   ref
 ) {
+  // ...hooks já declarados acima...
+
+  // Exclui objeto selecionado
+  const deleteSelection = () => {
+    const c = canvasRef.current;
+    if (!c) return;
+    const active = c.getActiveObject?.();
+    if (active) {
+      c.remove(active);
+      c.discardActiveObject();
+      c.requestRenderAll?.();
+    }
+  };
+  // ...hooks já declarados acima...
+  // Excluir objeto selecionado ao ativar lixeira
+  React.useEffect(() => {
+    const c = canvasRef.current;
+    if (!c || !isTrashMode) return;
+    const active = c.getActiveObject?.();
+    if (active) {
+      c.remove(active);
+      c.discardActiveObject();
+      c.requestRenderAll?.();
+      if (onTrashDelete) onTrashDelete();
+    }
+  }, [isTrashMode, onTrashDelete]);
+
+  // Modo trash: excluir objetos clicados
+  useEffect(() => {
+    const c = canvasRef.current;
+    if (!c) return;
+    function handleTrashClick(e: any) {
+      if (!isTrashMode) return;
+      const target = c.findTarget(e, false);
+      if (target) {
+        c.remove(target);
+        c.requestRenderAll?.();
+      }
+    }
+    if (isTrashMode) {
+      c.on("mouse:down", handleTrashClick);
+    } else {
+      c.off("mouse:down", handleTrashClick);
+    }
+    return () => {
+      c.off("mouse:down", handleTrashClick);
+    };
+  }, [isTrashMode]);
+
+  // Atualiza objeto selecionado ao mudar largura/opacidade
+  React.useEffect(() => {
+    const c = canvasRef.current;
+    if (!c) return;
+    const active = c.getActiveObject?.();
+    if (active) {
+      let changed = false;
+      // Atualiza largura (strokeWidth) se aplicável
+      if (typeof active.set === "function" && active.strokeWidth !== strokeWidth) {
+        active.set({ strokeWidth });
+        changed = true;
+      }
+      // Atualiza opacidade se aplicável
+      if (typeof active.set === "function" && active.opacity !== opacity) {
+        active.set({ opacity });
+        changed = true;
+      }
+      // Atualiza cor do traço se aplicável
+      if (typeof active.set === "function" && active.stroke !== strokeColor) {
+        active.set({ stroke: strokeColor });
+        changed = true;
+      }
+      // Atualiza cor de preenchimento apenas para formas geométricas
+      const fillableTypes = ["rect", "ellipse", "triangle", "polygon"];
+      if (
+        typeof active.set === "function" &&
+        active.fill !== fillColor &&
+        fillableTypes.includes(active.type)
+      ) {
+        active.set({ fill: fillColor });
+        changed = true;
+      }
+      if (changed) {
+        // Reaplica seleção sem disparar eventos extras
+        setTimeout(() => {
+          c.setActiveObject(active);
+          c.requestRenderAll?.();
+        }, 0);
+      }
+    }
+  }, [strokeWidth, opacity]);
   const hostRef = useRef<HTMLDivElement | null>(null);
   const canvasRef = useRef<FabricCanvas | null>(null);
   const domCanvasRef = useRef<HTMLCanvasElement | null>(null);
@@ -674,8 +766,9 @@ const Editor2D = forwardRef<Editor2DHandle, Props>(function Editor2D(
       if (obj) {
         obj.selectable = true;
         obj.evented = true;
-        c.add(obj);
-        c.setActiveObject(obj);
+      obj.set({ opacity }); // Garante opacidade reativa na criação
+      c.add(obj);
+      c.setActiveObject(obj);
         c.renderAll();
       }
       return;
@@ -796,6 +889,7 @@ const Editor2D = forwardRef<Editor2DHandle, Props>(function Editor2D(
     addImage,
     toJSON,
     loadFromJSON,
+    deleteSelection,
   }));
 
   return (

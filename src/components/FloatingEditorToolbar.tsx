@@ -11,7 +11,20 @@ import {
 } from "lucide-react";
 
 /** ===== Tipos ===== */
-type Props = { mode?: "2D" | "3D" };
+type Props = {
+  isTrashMode: boolean;
+  setTrashMode: (v: boolean) => void;
+  mode?: "2D" | "3D";
+  strokeColor: string;
+  setStrokeColor: (c: string) => void;
+  strokeWidth: number;
+  setStrokeWidth: (n: number) => void;
+  opacity: number;
+  setOpacity: (n: number) => void;
+  tool: "select" | "brush" | "line" | "curve";
+  setTool: (t: "select" | "brush" | "line" | "curve") => void;
+  editor2DRef?: any;
+};
 
 /** ===== Utils ===== */
 const clamp = (n: number, min: number, max: number) =>
@@ -63,7 +76,20 @@ const DEFAULT_COLORS = [
 ].map((s) => s.toUpperCase());
 
 /** ===== Componente ===== */
-export default function FloatingEditorToolbar({ mode = "2D" }: Props) {
+export default function FloatingEditorToolbar({
+  mode = "2D",
+  strokeColor,
+  setStrokeColor,
+  strokeWidth,
+  setStrokeWidth,
+  opacity,
+  setOpacity,
+  tool,
+  setTool,
+  isTrashMode,
+  setTrashMode,
+  editor2DRef,
+}: Props) {
   // refs e medidas
   const barRef = useRef<HTMLDivElement>(null);
   const dropWrapRef = useRef<HTMLDivElement>(null);
@@ -72,9 +98,18 @@ export default function FloatingEditorToolbar({ mode = "2D" }: Props) {
   const [swatchWidth, setSwatchWidth] = useState<number>(0);
 
   // cor atual (HSV + HEX)
+  // Sincroniza cor do traço com estado global
   const [h, setH] = useState<number>(0);
   const [s, setS] = useState<number>(1);
   const [v, setV] = useState<number>(1);
+  useEffect(() => {
+    const hsv = hexToHsv(strokeColor);
+    if (hsv) {
+      setH(hsv[0]);
+      setS(hsv[1]);
+      setV(hsv[2]);
+    }
+  }, [strokeColor]);
   const currentHex = useMemo(() => hsvToHex(h, s, v), [h, s, v]);
   const [hexInput, setHexInput] = useState<string>(currentHex);
 
@@ -144,6 +179,7 @@ export default function FloatingEditorToolbar({ mode = "2D" }: Props) {
         const noDup = prev.filter((c) => c.toUpperCase() !== hex.toUpperCase());
         return [hex.toUpperCase(), ...noDup].slice(0, 64);
       });
+      setStrokeColor(hex.toUpperCase());
     }
   };
 
@@ -289,11 +325,23 @@ export default function FloatingEditorToolbar({ mode = "2D" }: Props) {
           {/* 2) Lixeira (visual) */}
           <button
             type="button"
-            aria-label="Excluir objeto selecionado"
-            className="h-10 w-10 grid place-items-center rounded-xl border border-black/5 dark:border-white/10 bg-white/80 dark:bg-neutral-900/70 hover:bg-white hover:shadow transition cursor-not-allowed"
-            disabled
+            aria-label={isTrashMode ? "Desativar modo lixeira" : "Excluir objeto selecionado ou ativar modo lixeira"}
+            className={`h-10 w-10 grid place-items-center rounded-xl border ${isTrashMode ? "border-red-500 bg-red-100" : "border-black/5 dark:border-white/10 bg-white/80 dark:bg-neutral-900/70"} hover:bg-white hover:shadow transition`}
+            onClick={() => {
+              if (editor2DRef && typeof editor2DRef.deleteSelection === "function") {
+                // Tenta excluir seleção; se não houver, ativa/desativa trash mode
+                const c = editor2DRef;
+                // Verifica se há seleção
+                if (c && c.deleteSelection) {
+                  c.deleteSelection();
+                  setTool("select");
+                  return;
+                }
+              }
+              setTrashMode(!isTrashMode);
+            }}
           >
-            <Trash2 className="h-5 w-5" />
+            <Trash2 className={`h-5 w-5 ${isTrashMode ? "text-red-500" : ""}`} />
           </button>
 
           {/* Separador */}
@@ -304,12 +352,14 @@ export default function FloatingEditorToolbar({ mode = "2D" }: Props) {
             <div className="h-10 grid place-items-center">
               <SlidersHorizontal className="h-5 w-5 opacity-90" />
             </div>
-            <input type="range" min={1} max={100} defaultValue={30} className="w-28 accent-current cursor-not-allowed" disabled aria-label="Largura" />
+            <input type="range" min={1} max={60} value={strokeWidth} onChange={e => setStrokeWidth(Number(e.target.value))} className="w-28 accent-current" aria-label="Largura" />
+            <span className="ml-2 text-xs text-gray-500">{strokeWidth}px</span>
           </div>
 
           {/* 4) Opacidade (visual) */}
           <div className="flex items-center">
-            <input type="range" min={1} max={100} defaultValue={80} className="w-28 accent-current cursor-not-allowed" disabled aria-label="Opacidade" />
+            <input type="range" min={0} max={1} step={0.05} value={opacity} onChange={e => setOpacity(Number(e.target.value))} className="w-28 accent-current" aria-label="Opacidade" />
+            <span className="ml-2 text-xs text-gray-500">{Math.round(opacity * 100)}%</span>
           </div>
 
           {/* Separador */}
@@ -329,7 +379,12 @@ export default function FloatingEditorToolbar({ mode = "2D" }: Props) {
           <div className="mx-1 h-6 w-px bg-black/10 dark:bg-white/15" />
 
           {/* 7) Cursor (visual) */}
-          <button type="button" aria-label="Ferramenta de seleção" className="h-10 w-10 grid place-items-center rounded-xl border border-black/5 dark:border-white/10 bg-white/80 dark:bg-neutral-900/70 hover:bg-white hover:shadow transition cursor-not-allowed" disabled>
+          <button
+            type="button"
+            aria-label="Ferramenta de seleção"
+            className={`h-10 w-10 grid place-items-center rounded-xl border ${tool === "select" ? "border-violet-500" : "border-black/5 dark:border-white/10"} bg-white/80 dark:bg-neutral-900/70 hover:bg-white hover:shadow transition`}
+            onClick={() => setTool("select")}
+          >
             <MousePointer2 className="h-5 w-5" />
           </button>
         </div>
