@@ -10,6 +10,11 @@ import React, {
 import { FONT_LIBRARY, DEFAULT_PREVIEW_TEXT, type FontItem } from "../fonts/library";
 import { ensureFontForFabric, wantVariantsFor } from "../utils/fonts";
 import { toast } from "../hooks/use-toast";
+import {
+  fetchUserFavorites,
+  addFavoriteFont,
+  removeFavoriteFont,
+} from "../api/fontFavorites";
 
 // Cache simples para evitar recarregar a mesma família várias vezes
 const fontLoadCache = new Map<string, Promise<void>>();
@@ -75,7 +80,7 @@ function normalizeName(family?: string) {
 /** Ícones SVG simples (sem libs) */
 function StarIcon({ filled }: { filled: boolean }) {
   return filled ? (
-    <svg viewBox="0 0 24 24" width="18" height="18" aria-hidden="true">
+    <svg viewBox="0 0 24 24" width="18" height="18" aria-hidden="true" fill="currentColor">
       <path d="M12 17.27 18.18 21l-1.64-7.03L22 9.24l-7.19-.61L12 2 9.19 8.63 2 9.24l5.46 4.73L5.82 21z" />
     </svg>
   ) : (
@@ -85,25 +90,24 @@ function StarIcon({ filled }: { filled: boolean }) {
   );
 }
 
-// ====== Config da lista virtual ======
-const ITEM_HEIGHT = 56; // altura fixa por item (px)
-const OVERSCAN = 6;
-
 /** Item (memoizado) — com content-visibility + carregamento automático ao entrar em viewport */
 const FontRow = memo(function FontRow({
   item,
   isActive,
+  starred,
+  onToggleStar,
   onClick,
   previewFallback,
 }: {
   item: FontItem;
   isActive: boolean;
+  starred: boolean;
+  onToggleStar: (family: string, next: boolean) => void;
   onClick: () => void;
   previewFallback: string;
 }) {
   const liRef = useRef<HTMLLIElement | null>(null);
   const [ready, setReady] = useState<boolean>(false);
-  const [starred, setStarred] = useState<boolean>(false); // UI apenas
 
   // --- 1) Se a fonte já estiver disponível (cache do navegador), aplica de imediato
   useEffect(() => {
@@ -123,9 +127,7 @@ const FontRow = memo(function FontRow({
     const triggerLoad = () => {
       loadFamilyOnce(item, previewFallback)
         .catch(() => {})
-        .finally(() => {
-          if (!cancelled) setReady(true);
-        });
+        .finally(() => { if (!cancelled) setReady(true); });
     };
 
     // Se já está visível, dispara direto
@@ -153,14 +155,14 @@ const FontRow = memo(function FontRow({
     return () => { cancelled = true; io.disconnect(); };
   }, [item, previewFallback]);
 
-  // --- 3) Fallback: mesmo que a promessa demore/pendure, aplicamos a family após 4s
+  // --- 3) Fallback: aplica family após 4s (display: swap cuida do resto)
   useEffect(() => {
     if (ready) return;
     const t = setTimeout(() => setReady(true), 4000);
     return () => clearTimeout(t);
   }, [ready]);
 
-  // Prefetch em hover/focus (acelera, mas não é necessário mais)
+  // Prefetch em hover/focus (acelera)
   const handlePrefetch = useCallback(() => {
     if (ready) return;
     loadFamilyOnce(item, previewFallback)
@@ -168,7 +170,6 @@ const FontRow = memo(function FontRow({
       .finally(() => setReady(true));
   }, [item, ready, previewFallback]);
 
-  // família só no ready; travas de altura/linhas evitam variação de layout
   const familyStyle = ready ? { fontFamily: item.family } : undefined;
 
   // category ou categories
@@ -178,6 +179,12 @@ const FontRow = memo(function FontRow({
 
   const display = (item as any).label || item.family;
 
+  const handleStarClick: React.MouseEventHandler<HTMLButtonElement> = (e) => {
+    e.stopPropagation();
+    e.preventDefault();
+    onToggleStar(item.family, !starred);
+  };
+
   return (
     <li
       ref={liRef}
@@ -185,9 +192,7 @@ const FontRow = memo(function FontRow({
       style={{
         // 🚀 evita trabalhos fora da viewport
         contentVisibility: "auto" as any,
-        containIntrinsicSize: `${ITEM_HEIGHT}px 320px`,
-        height: ITEM_HEIGHT, // 🔒 altura fixa
-        display: "block",
+        containIntrinsicSize: "48px 320px",
       }}
     >
       <div
@@ -196,13 +201,8 @@ const FontRow = memo(function FontRow({
           isActive ? "bg-purple-50/60" : "hover:bg-white/5",
           "rounded-md",
         ].join(" ")}
-        style={{
-          height: ITEM_HEIGHT - 8,
-          display: "flex",
-          alignItems: "center",
-        }}
       >
-        <div className="flex items-center gap-2 w-full">
+        <div className="flex items-center gap-2">
           <button
             type="button"
             data-font-item="1"
@@ -214,40 +214,30 @@ const FontRow = memo(function FontRow({
             onMouseEnter={handlePrefetch}
             onFocus={handlePrefetch}
             title={display}
-            style={{ lineHeight: 1.2 }}
           >
             <div className="flex items-center justify-between">
-              <span
-                className="truncate"
-                style={{
-                  ...familyStyle,
-                  whiteSpace: "nowrap", // 🔒 1 linha (evita crescer)
-                }}
-              >
+              <span className="truncate" style={familyStyle}>
                 {display}
                 {category && <span className="ml-2 text-xs text-gray-500">({category})</span>}
               </span>
             </div>
 
-            <div
-              className="mt-1 text-xs text-gray-500 truncate"
-              style={{ ...familyStyle, whiteSpace: "nowrap" }} // 🔒 1 linha
-            >
+            <div className="mt-1 text-xs text-gray-500 truncate" style={familyStyle}>
               {item.previewText || previewFallback}
             </div>
 
-            {/* Skeleton leve (não altera altura) */}
+            {/* Skeleton leve enquanto a fonte ainda não está pronta */}
             {!ready && (
               <div className="mt-1 h-3 w-24 rounded bg-black/10 animate-pulse" aria-hidden />
             )}
           </button>
 
-          {/* ⭐ Botão estrela (UI somente) */}
+          {/* ⭐ Botão estrela — agora controlado pelo pai (favoritos reais) */}
           <button
             type="button"
             aria-label={starred ? "Remover dos favoritos" : "Adicionar aos favoritos"}
-            title="Favoritar"
-            onClick={() => setStarred((v) => !v)}
+            title={starred ? "Remover dos favoritos" : "Adicionar aos favoritos"}
+            onClick={handleStarClick}
             className={[
               "ml-1 shrink-0 inline-flex items-center justify-center",
               "h-8 w-8 rounded-md border border-transparent",
@@ -264,12 +254,12 @@ const FontRow = memo(function FontRow({
 });
 
 /**
- * FontPicker com:
+ * FontPicker:
  * - Virtualização simples (renderiza só o que está visível + overscan)
  * - content-visibility nos itens (pula layout/pintura fora da viewport)
  * - subsetting de glifos no carregamento (&text=)
  * - carregamento automático por IntersectionObserver (sem depender de hover)
- * - **corrigido scroll subindo** usando container + translateY (sem penalizar performance)
+ * - Favoritos persistentes por usuário (Flask)
  */
 export default function FontPicker({
   fonts,
@@ -281,9 +271,29 @@ export default function FontPicker({
 }: Props) {
   const [internalSelected, setInternalSelected] = useState<string>("");
   const [query, setQuery] = useState("");
-  const [filterTag, setFilterTag] = useState<"favoritos" | "recentes" | "">(""); // UI apenas
+  const [filterTag, setFilterTag] = useState<"favoritos" | "recentes" | "">(""); // agora “favoritos” funciona de verdade
   const [showFilterMenu, setShowFilterMenu] = useState(false);
   const scrollRef = useRef<HTMLDivElement | null>(null);
+
+  // ===== NEW: favoritos do usuário =====
+  const [favorites, setFavorites] = useState<Set<string>>(new Set());
+
+  // carrega favoritos ao montar
+  useEffect(() => {
+    let alive = true;
+    (async () => {
+      try {
+        const list = await fetchUserFavorites(); // string[]
+        if (!alive) return;
+        setFavorites(new Set(list.map((s) => s.trim())));
+      } catch (err) {
+        // silencioso; se quiser, exiba um toast light:
+        // toast({ title: "Não foi possível carregar favoritos", variant: "default" });
+        console.warn("fetchUserFavorites failed", err);
+      }
+    })();
+    return () => { alive = false; };
+  }, []);
 
   const data = fonts && fonts.length ? fonts : FONT_LIBRARY;
 
@@ -292,7 +302,8 @@ export default function FontPicker({
     [value, internalSelected]
   );
 
-  const filtered = useMemo(() => {
+  // Aplica filtro textual primeiro
+  const baseFiltered = useMemo(() => {
     const q = query.trim().toLowerCase();
     if (!q) return data;
     return data.filter((f) => {
@@ -308,6 +319,13 @@ export default function FontPicker({
       return parts.includes(q);
     });
   }, [data, query]);
+
+  // Aplica filtro “favoritos” (quando selecionado)
+  const filtered = useMemo(() => {
+    if (filterTag !== "favoritos") return baseFiltered;
+    if (!favorites.size) return [];
+    return baseFiltered.filter((f) => favorites.has(f.family));
+  }, [baseFiltered, filterTag, favorites]);
 
   // sincroniza com Editor2D via eventos
   useEffect(() => {
@@ -338,6 +356,9 @@ export default function FontPicker({
   }, [value]);
 
   // ======================= VIRTUALIZAÇÃO =======================
+  const ITEM_HEIGHT = 56; // px (aprox.) — mantenha consistente com o CSS
+  const OVERSCAN = 6;
+
   const [viewportH, setViewportH] = useState(0);
   const [scrollTop, setScrollTop] = useState(0);
 
@@ -359,8 +380,6 @@ export default function FontPicker({
   };
 
   const total = filtered.length;
-  const totalHeight = total * ITEM_HEIGHT;
-
   const startIndex = Math.max(
     0,
     Math.floor(scrollTop / ITEM_HEIGHT) - OVERSCAN
@@ -370,9 +389,40 @@ export default function FontPicker({
     Math.floor((scrollTop + viewportH) / ITEM_HEIGHT) + OVERSCAN
   );
   const renderSlice = filtered.slice(startIndex, endIndex + 1);
-  const offsetY = startIndex * ITEM_HEIGHT;
+  const paddingTop = startIndex * ITEM_HEIGHT;
+  const paddingBottom = (total - (endIndex + 1)) * ITEM_HEIGHT;
 
   // =============================================================
+
+  // Toggle favorito com UI otimista
+  const toggleFavorite = useCallback(async (family: string, next: boolean) => {
+    // otimista
+    setFavorites((prev) => {
+      const copy = new Set(prev);
+      if (next) copy.add(family);
+      else copy.delete(family);
+      return copy;
+    });
+
+    try {
+      if (next) await addFavoriteFont(family);
+      else await removeFavoriteFont(family);
+    } catch (err) {
+      // rollback
+      setFavorites((prev) => {
+        const copy = new Set(prev);
+        if (next) copy.delete(family);
+        else copy.add(family);
+        return copy;
+      });
+      toast({
+        title: "Erro ao atualizar favoritos",
+        description: "Tente novamente em instantes.",
+        variant: "destructive",
+      });
+      console.error("favorite toggle failed", err);
+    }
+  }, []);
 
   // navegação por teclado (apenas sobre o slice atual)
   const onKeyDown: React.KeyboardEventHandler<HTMLDivElement> = (e) => {
@@ -474,54 +524,54 @@ export default function FontPicker({
           }}
         >
           {filtered.length === 0 && (
-            <div className="py-6 text-center text-sm text-gray-500">Nenhuma fonte encontrada.</div>
+            <div className="py-6 text-center text-sm text-gray-500">
+              {filterTag === "favoritos" ? "Você ainda não marcou nenhuma fonte como favorita." : "Nenhuma fonte encontrada."}
+            </div>
           )}
 
-          {/* Virtual list:
-              - Um container com altura total mantém a barra de rolagem estável
-              - O conteúdo visível é deslocado via translateY (offsetY)
-           */}
-          <div style={{ height: totalHeight, position: "relative" }}>
-            <div style={{ position: "absolute", inset: 0, transform: `translateY(${offsetY}px)` }}>
-              <ul className="divide-y divide-gray-100 px-2 py-1">
-                {renderSlice.map((f, i) => {
-                  const actualIndex = startIndex + i;
-                  const isActive =
-                    normalizeName(value != null ? value : internalSelected) === normalizeName(f.family);
-                  return (
-                    <FontRow
-                      key={f.family + "-" + actualIndex}
-                      item={f}
-                      isActive={isActive}
-                      onClick={async () => {
-                        // Atualiza seleção imediatamente (não bloqueia a UI)
-                        if (value == null) setInternalSelected(f.family);
-                        onSelect?.(f.family);
+          {/* Virtual list: usa padding para manter o scroll e só renderiza o slice */}
+          <div style={{ paddingTop, paddingBottom }}>
+            <ul className="divide-y divide-gray-100 px-2 py-1">
+              {renderSlice.map((f, i) => {
+                const actualIndex = startIndex + i;
+                const isActive =
+                  normalizeName(value != null ? value : internalSelected) === normalizeName(f.family);
+                const isStarred = favorites.has(f.family);
+                return (
+                  <FontRow
+                    key={f.family + "-" + actualIndex}
+                    item={f}
+                    isActive={isActive}
+                    starred={isStarred}
+                    onToggleStar={toggleFavorite}
+                    onClick={async () => {
+                      // Atualiza seleção imediatamente (não bloqueia a UI)
+                      if (value == null) setInternalSelected(f.family);
+                      onSelect?.(f.family);
 
-                        // Dispara carregamento em background (com subsetting)
-                        const variants =
-                          f.source === "local"
-                            ? { weights: toNumberArray(f.weights as any) ?? [400, 700], styles: (f.styles?.length ? f.styles : ["normal"]) as any }
-                            : wantVariantsFor(f.family);
+                      // Dispara carregamento em background (com subsetting)
+                      const variants =
+                        f.source === "local"
+                          ? { weights: toNumberArray(f.weights as any) ?? [400, 700], styles: (f.styles?.length ? f.styles : ["normal"]) as any }
+                          : wantVariantsFor(f.family);
 
-                        const text = previewSubsetText(f.previewText || DEFAULT_PREVIEW_TEXT);
-                        ensureFontForFabric(f.family, f.source || "google", { ...variants, text }).catch((err) => {
-                          // Não bloqueia — apenas informa (opcional)
-                          toast({
-                            title: "Fonte selecionada. Carregando em segundo plano…",
-                            description: `Se a fonte não aparecer imediatamente, aguarde um instante (display: swap).`,
-                            variant: "default",
-                          });
-                          // eslint-disable-next-line no-console
-                          console.warn("Falha ao carregar imediatamente a fonte", f.family, err);
+                      const text = previewSubsetText(f.previewText || DEFAULT_PREVIEW_TEXT);
+                      ensureFontForFabric(f.family, f.source || "google", { ...variants, text }).catch((err) => {
+                        // Não bloqueia — apenas informa (opcional)
+                        toast({
+                          title: "Fonte selecionada. Carregando em segundo plano…",
+                          description: `Se a fonte não aparecer imediatamente, aguarde um instante (display: swap).`,
+                          variant: "default",
                         });
-                      }}
-                      previewFallback={DEFAULT_PREVIEW_TEXT}
-                    />
-                  );
-                })}
-              </ul>
-            </div>
+                        // eslint-disable-next-line no-console
+                        console.warn("Falha ao carregar imediatamente a fonte", f.family, err);
+                      });
+                    }}
+                    previewFallback={DEFAULT_PREVIEW_TEXT}
+                  />
+                );
+              })}
+            </ul>
           </div>
         </div>
       </div>
