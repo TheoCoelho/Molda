@@ -1,0 +1,417 @@
+@tailwind base;
+@tailwind components;
+@tailwind utilities;
+@import url("https://fonts.googleapis.com/css2?family=Inter:ital,wght@0,400;0,700;1,400;1,700&display=swap");
+
+@layer base {
+  html, body {
+    font-family: "Inter", ui-sans-serif, system-ui, -apple-system, "Segoe UI", Roboto, "Helvetica Neue", Arial, "Noto Sans", "Apple Color Emoji", "Segoe UI Emoji", "Segoe UI Symbol", sans-serif;
+  }
+}
+
+/* ===========================
+   DESIGN TOKENS (shadcn + paleta do cliente)
+   =========================== */
+@layer base {
+  :root {
+    /* Base surfaces */
+    --background: 0 0% 100%;
+    --foreground: 222.2 47.4% 11.2%;
+
+    /* Brand (a partir da paleta enviada) */
+    --brand-uv: 251 35% 39%;      /* #4E4187 */
+    --brand-blue: 211 71% 52%;    /* #3083DC */
+    --brand-lyellow: 76 100% 95%; /* #F8FFE5 */
+    --brand-green: 133 60% 68%;   /* #7DDE92 */
+    --brand-keppel: 169 61% 46%;  /* #2EBFA5 */
+
+    /* shadcn tokens (derivados da paleta) */
+    --muted: var(--brand-lyellow);
+    --muted-foreground: 222.2 47.4% 20%;
+
+    --popover: var(--background);
+    --popover-foreground: var(--foreground);
+
+    --card: var(--background);
+    --card-foreground: var(--foreground);
+
+    --primary: var(--brand-blue);
+    --primary-foreground: 210 40% 98%;
+
+    --secondary: 210 40% 96.1%;
+    --secondary-foreground: 222.2 47.4% 11.2%;
+
+    --accent: 210 40% 96.1%;
+    --accent-foreground: 222.2 47.4% 11.2%;
+
+    --destructive: 0 84.2% 60.2%;
+    --destructive-foreground: 210 40% 98%;
+
+    --border: 214.3 31.8% 91.4%;
+    --input: 214.3 31.8% 91.4%;
+    --ring: var(--brand-blue);
+    --radius: 0.75rem;
+  }
+
+  .dark {
+    --background: 222.2 84% 4.9%;
+    --foreground: 210 40% 98%;
+
+    --muted: 217.2 32.6% 17.5%;
+    --muted-foreground: 215 20.2% 65.1%;
+
+    --popover: 222.2 84% 4.9%;
+    --popover-foreground: 210 40% 98%;
+
+    --card: 222.2 84% 5.5%;
+    --card-foreground: 210 40% 96%;
+
+    --primary: var(--brand-keppel);
+    --primary-foreground: 222.2 47.4% 11.2%;
+
+    --secondary: 217.2 32.6% 17.5%;
+    --secondary-foreground: 210 40% 98%;
+
+    --accent: 217.2 32.6% 17.5%;
+    --accent-foreground: 210 40% 98%;
+
+    --destructive: 0 62.8% 30.6%;
+    --destructive-foreground: 210 40% 98%;
+
+    --border: 217.2 32.6% 22%;
+    --input: 217.2 32.6% 22%;
+    --ring: var(--brand-keppel);
+  }
+}
+
+@layer base {
+  * {
+    @apply border-border;
+  }
+  body {
+    @apply bg-background text-foreground antialiased;
+  }
+}
+
+/* ===========================
+   BACKGROUND antigo (desligado abaixo no fim)
+   =========================== */
+body::before {
+  content: "";
+  position: fixed;
+  inset: 0;
+  pointer-events: none;
+  z-index: 0;
+  background:
+    radial-gradient(1200px 800px at 20% -10%, rgba(78, 65, 135, 0.10), transparent 60%),
+    radial-gradient(1200px 800px at 80% 110%, rgba(48, 131, 220, 0.10), transparent 60%);
+}
+
+/* ===========================
+   LinearInfiniteCarousel — base visual
+   =========================== */
+.lcar-root {
+  position: relative;
+  width: 100%;
+  --card-gap: 20px;
+}
+.lcar-viewport {
+  position: relative;
+  overflow: hidden;
+  width: 100%;
+  padding: 8px;
+}
+.lcar-track {
+  display: grid;
+  grid-auto-flow: column;
+  align-items: center;
+  gap: var(--card-gap);
+  will-change: transform;
+}
+.lcar-card {
+  background: hsl(var(--card));
+  border: 1px solid hsl(var(--border));
+  border-radius: 16px;
+  min-width: 128px;
+  height: 128px;
+  box-shadow: 0 6px 18px -8px rgba(0, 0, 0, 0.15);
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  padding: 10px;
+  text-align: center;
+  will-change: transform, opacity;
+  transition: transform 140ms ease-out, opacity 140ms linear;
+  pointer-events: auto;
+}
+.lcar-card:hover { box-shadow: none; }
+.lcar-card.is-active { }
+
+.lcar-label {
+  font-size: 1rem;
+  font-weight: 700;
+  line-height: 1.2;
+  color: hsl(var(--foreground));
+  padding: 0 6px;
+  white-space: nowrap;
+}
+
+/* ===========================
+   OVERRIDE: desativar o fundo antigo
+   (deve ficar APÓS o bloco body::before)
+   =========================== */
+body::before { display: none !important; }
+
+/* =========================================================
+   NAV LINK — estilo unificado para itens do header/nav
+   ========================================================= */
+.nav-link {
+  position: relative;
+  display: inline-flex;
+  align-items: center;
+  gap: 0.35rem;
+  padding: 0.25rem 0.25rem;
+  border-radius: 0.5rem;
+  color: hsl(var(--muted-foreground));
+  transition: color .2s ease, opacity .2s ease;
+}
+.nav-link:hover,
+.nav-link:focus-visible {
+  color: hsl(var(--primary));
+}
+.nav-link::after {
+  content: "";
+  position: absolute;
+  inset-inline: 0;
+  bottom: -2px;
+  height: 2px;
+  background: linear-gradient(90deg,
+    hsl(var(--brand-uv)),
+    hsl(var(--brand-blue)),
+    hsl(var(--brand-keppel))
+  );
+  transform: scaleX(0);
+  transform-origin: left;
+  transition: transform .25s ease;
+}
+.nav-link:hover::after,
+.nav-link:focus-visible::after {
+  transform: scaleX(1);
+}
+
+/* =========================================================
+   BOTÕES — efeitos fun/shine
+   ========================================================= */
+.btn-fun {
+  will-change: transform, filter;
+  transition: transform .15s ease, filter .15s ease, box-shadow .2s ease;
+}
+.btn-fun:hover { transform: translateY(-1px); }
+.btn-fun:active { transform: translateY(0); }
+
+.btn-shine {
+  position: relative;
+  overflow: hidden;
+  isolation: isolate;
+}
+.btn-shine::after {
+  content: "";
+  position: absolute;
+  inset: -25% -60%;
+  background: linear-gradient(
+    120deg,
+    transparent 0%,
+    rgba(255,255,255,.35) 40%,
+    rgba(255,255,255,.35) 60%,
+    transparent 100%
+  );
+  transform: translateX(-120%);
+  transition: transform .6s ease;
+  pointer-events: none;
+  z-index: -1;
+}
+.btn-shine:hover::after { transform: translateX(120%); }
+
+/* =========================================================
+   SKELETON — shimmer
+   ========================================================= */
+@keyframes shimmer {
+  100% { transform: translateX(100%); }
+}
+.skeleton {
+  position: relative;
+  overflow: hidden;
+  background: color-mix(in srgb, hsl(var(--muted)) 55%, #fff 45%);
+  border-radius: 0.5rem;
+}
+.skeleton::after {
+  content: "";
+  position: absolute;
+  inset: 0;
+  transform: translateX(-100%);
+  background: linear-gradient(90deg,
+    transparent 0%,
+    rgba(255,255,255,.55) 50%,
+    transparent 100%
+  );
+  animation: shimmer 1.25s infinite;
+  opacity: .85;
+}
+
+/* =========================================================
+   PAGE TOP LOADER — barra de progresso no topo
+   ========================================================= */
+@keyframes loader-sweep {
+  0%   { transform: translateX(-100%); }
+  100% { transform: translateX(260%); }
+}
+.top-loader {
+  position: fixed;
+  top: 0; left: 0; right: 0;
+  height: 3px;
+  z-index: 70;
+  pointer-events: none;
+  opacity: 0;
+  transition: opacity .2s ease;
+}
+.top-loader[data-active="true"] { opacity: 1; }
+.top-loader::before {
+  content: "";
+  display: block;
+  height: 100%;
+  width: 40%;
+  background: linear-gradient(90deg,
+    hsl(var(--brand-uv)) 0%,
+    hsl(var(--brand-blue)) 50%,
+    hsl(var(--brand-keppel)) 100%
+  );
+  filter: drop-shadow(0 0 8px hsl(var(--brand-blue)));
+  transform: translateX(-100%);
+  animation: loader-sweep 1.1s ease-in-out infinite;
+}
+
+/* =========================================================
+   Glass System — superfícies translúcidas com blur
+   ========================================================= */
+:root {
+  --surface-alpha: .68;
+  --surface-blur: 12px;
+  --surface-border-alpha: .45;
+}
+@supports not (backdrop-filter: blur(1px)) {
+  :root { --surface-alpha: .9; }
+}
+.glass {
+  background-color: hsl(var(--card) / var(--surface-alpha));
+  -webkit-backdrop-filter: blur(var(--surface-blur)) saturate(120%);
+  backdrop-filter: blur(var(--surface-blur)) saturate(120%);
+  border: 1px solid hsl(var(--border) / var(--surface-border-alpha));
+}
+.glass-strong {
+  background-color: hsl(var(--background) / calc(var(--surface-alpha) + .06));
+  -webkit-backdrop-filter: blur(calc(var(--surface-blur) * 1.1)) saturate(125%);
+  backdrop-filter: blur(calc(var(--surface-blur) * 1.1)) saturate(125%);
+  border: 1px solid hsl(var(--border) / calc(var(--surface-border-alpha) + .1));
+  box-shadow: 0 8px 22px -10px hsl(var(--foreground) / .12);
+}
+.is-glassy :is(.bg-white, .bg-card, .bg-background, .bg-muted, .bg-popover, .bg-accent) {
+  background-color: hsl(var(--card) / var(--surface-alpha)) !important;
+  -webkit-backdrop-filter: blur(var(--surface-blur)) saturate(120%);
+  backdrop-filter: blur(var(--surface-blur)) saturate(120%);
+  border-color: hsl(var(--border) / var(--surface-border-alpha));
+}
+.is-glassy :is(input, textarea, select) {
+  background-color: hsl(var(--background) / .55) !important;
+  -webkit-backdrop-filter: blur(8px);
+  backdrop-filter: blur(8px);
+}
+.is-glassy :is(.dialog-content, .popover-content, .dropdown-menu-content, .tooltip-content) {
+  background-color: hsl(var(--card) / var(--surface-alpha)) !important;
+  -webkit-backdrop-filter: blur(var(--surface-blur)) saturate(120%);
+  backdrop-filter: blur(var(--surface-blur)) saturate(120%);
+  border: 1px solid hsl(var(--border) / var(--surface-border-alpha));
+}
+.is-glassy .shadow, .is-glassy .card, .is-glassy .border {
+  border-color: hsl(var(--border) / .35);
+  box-shadow: 0 10px 30px -12px hsl(var(--foreground) / .10);
+}
+@media (prefers-reduced-transparency: reduce) {
+  :root { --surface-alpha: .92; }
+  .is-glassy * { -webkit-backdrop-filter: none !important; backdrop-filter: none !important; }
+}
+/* ====== Chips transparentes para as abas do canvas ====== */
+.chip{
+  height: 32px;
+  padding-inline: 12px;
+  border-radius: 999px;
+  display: inline-flex;
+  align-items: center;
+  font-size: .875rem; /* text-sm */
+  font-weight: 600;
+  gap: .5rem;
+  background: hsl(var(--card) / .35);
+  -webkit-backdrop-filter: blur(10px) saturate(120%);
+  backdrop-filter: blur(10px) saturate(120%);
+  border: 1px solid hsl(var(--border) / .35);
+  transition: transform .15s ease, box-shadow .2s ease, background .2s ease, border-color .2s ease;
+}
+.chip:hover{
+  transform: translateY(-1px);
+  background: hsl(var(--card) / .45);
+  border-color: hsl(var(--border) / .55);
+  box-shadow: 0 6px 20px -10px hsl(var(--foreground) / .18);
+}
+.chip:active{ transform: translateY(0); }
+
+.chip-active{
+  background: hsl(var(--card) / .55);
+  border-color: transparent;
+  box-shadow:
+    inset 0 0 0 1.5px hsl(var(--brand-blue) / .65),
+    0 8px 24px -12px hsl(var(--brand-blue) / .35);
+}
+
+/* ====== Botão transparente padrão para ícones (“+” e afins) ====== */
+.btn-glass{
+  background: hsl(var(--card) / .35) !important;
+  border: 1px solid hsl(var(--border) / .35) !important;
+  -webkit-backdrop-filter: blur(10px) saturate(120%);
+  backdrop-filter: blur(10px) saturate(120%);
+  box-shadow: none !important;
+  transition: transform .15s ease, box-shadow .2s ease, background .2s ease;
+}
+.btn-glass:hover{
+  transform: translateY(-1px);
+  background: hsl(var(--card) / .45) !important;
+  border-color: hsl(var(--border) / .55) !important;
+  box-shadow: 0 6px 20px -10px hsl(var(--foreground) / .18) !important;
+}
+.btn-glass:active{ transform: translateY(0); }
+
+/* ====== Pílulas de ícone da sidebar (sem borda quadrada) ====== */
+.icon-pill{
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  background: hsl(var(--card) / .35);
+  -webkit-backdrop-filter: blur(10px) saturate(120%);
+  backdrop-filter: blur(10px) saturate(120%);
+  border: 1px solid hsl(var(--border) / .35);
+  box-shadow: 0 6px 18px -10px hsl(var(--foreground) / .14);
+  transition: transform .15s ease, background .2s ease, box-shadow .2s ease, border-color .2s ease;
+}
+.icon-pill:hover{
+  transform: translateY(-1px);
+  background: hsl(var(--card) / .45);
+  border-color: hsl(var(--border) / .55);
+  box-shadow: 0 10px 26px -12px hsl(var(--foreground) / .18);
+}
+.icon-pill:active{ transform: translateY(0); }
+
+.icon-pill-active{
+  background: hsl(var(--card) / .55);
+  border-color: transparent;
+  box-shadow:
+    inset 0 0 0 1.5px hsl(var(--brand-blue) / .65),
+    0 10px 28px -14px hsl(var(--brand-blue) / .35);
+}

@@ -1,0 +1,75 @@
+/* Viewport mantém overflow horizontal escondido, mas permite overflow vertical
+   para que o scale() no hover/selecionado não seja cortado. */
+.marquee-viewport {
+  position: relative;
+  width: 100%;
+  /* antes: overflow: hidden; */
+  overflow-x: hidden;
+  overflow-y: visible;
+  outline: none;
+
+  /* respiro vertical para não encostar no container ao ampliar */
+  padding-block: 12px;
+}
+
+/* Trilho principal — movimento controlado via JS (sem animação CSS) */
+.marquee-track {
+  display: flex;
+  align-items: stretch;
+  gap: var(--gap, 12px);
+  will-change: transform;
+  animation: none !important;
+
+  /* pequeno respiro interno opcional */
+  padding-block: 2px;
+}
+
+.marquee-track.no-anim {
+  animation: none !important;
+}
+
+/* Célula do carrossel — mantém dimensões; fundo agora é transparente */
+.marquee-cell {
+  flex: 0 0 auto;
+  width: var(--item-size, 120px);
+  height: var(--item-size, 120px);
+  border-radius: 12px;
+  border: 2px solid var(--cell-accent, #8884d8);
+
+  /* antes: background: var(--card-bg, white); */
+  background: transparent;
+  color: var(--card-fg, inherit);
+
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  padding: 8px;
+  cursor: pointer;
+  transition: transform 120ms ease, box-shadow 120ms ease, border-color 120ms ease;
+  user-select: none;
+}
+
+.marquee-cell:hover {
+  transform: scale(1.04);
+  box-shadow: 0 4px 14px rgba(0,0,0,0.12);
+}
+
+.marquee-cell.is-selected {
+  border-color: var(--cell-accent, #8884d8);
+  box-shadow: 0 0 0 4px color-mix(in srgb, var(--cell-accent, #8884d8) 18%, transparent);
+  transform: scale(1.06);
+}
+
+/* Rótulo interno */
+.marquee-cell-label {
+  font-size: 0.95rem;
+  font-weight: 600;
+  text-align: center;
+  line-height: 1.2;
+  word-break: break-word;
+}
+
+/* Acessibilidade: foco via teclado */
+.marquee-viewport:focus .marquee-cell.is-selected {
+  box-shadow: 0 0 0 4px color-mix(in srgb, var(--cell-accent, #8884d8) 28%, transparent);
+}

@@ -1,0 +1,94 @@
+/* Uiverse 'horrible-quail-18' adaptado para cartões com nome dentro */
+.container-items {
+  display: flex;
+  gap: 16px;
+  flex-wrap: wrap;
+  transform-style: preserve-3d;
+  transform: perspective(1000px);
+}
+
+.item-card {
+  position: relative;
+  overflow: visible;            /* garante que o scale não corte conteúdo */
+  flex: 0 0 auto;
+  width: 70px;
+  height: 70px;
+  border: none;
+  outline: none;
+  background: transparent;
+  cursor: pointer;
+  transition: 500ms cubic-bezier(0.175, 0.885, 0.32, 1.1);
+}
+.item-card::after {
+  position: absolute;
+  content: "";
+  inset: 0;
+  background-color: var(--color, #e5e7eb);
+  border-radius: 8px;
+  transform: scale(1.2);
+  pointer-events: none;
+  transition: 500ms cubic-bezier(0.175, 0.885, 0.32, 1.1);
+  box-shadow: 0 6px 20px rgba(0,0,0,0.12);
+  z-index: 1;                  /* camada do fundo colorido */
+}
+
+.item-card:hover {
+  transform: scale(1.5);
+  z-index: 5;
+}
+
+.item-card:active::after {
+  transform: scale(1.1);
+}
+
+.item-card:focus-visible {
+  outline: 2px solid #111827;
+  outline-offset: 4px;
+  border-radius: 10px;
+}
+
+.item-card.selected::after {
+  transform: scale(1.25);
+  outline: 3px solid #111827;
+  outline-offset: 2px;
+}
+
+/* Nome DENTRO do card (overlay), sempre legível */
+.item-label {
+  position: relative;
+align-items: center;
+  bottom: 6px;
+  padding: 2px 6px;
+  font-size: 15px;
+  line-height: 12px;
+  text-align: center;
+  color: #fff;
+  background: rgba(0, 0, 0, 0);
+  border-radius: 6px;
+  pointer-events: none;
+  z-index: 2;                  /* texto acima do ::after */
+  /* melhor legibilidade p/ nomes longos (2 linhas) */
+  display: -webkit-box;
+  -webkit-line-clamp: 2;
+  -webkit-box-orient: vertical;
+  max-height: 26px;
+  overflow: hidden;
+}
+
+/* Efeitos “vizinhos” do snippet original */
+.item-card:hover + .item-card {
+  transform: scale(1.3);
+  z-index: 4;
+}
+.item-card:hover + .item-card + .item-card {
+  transform: scale(1.15);
+  z-index: 3;
+}
+.item-card:has(+ .item-card:hover) {
+  transform: scale(1.3);
+  z-index: 4;
+}
+.item-card:has(+ .item-card + .item-card:hover) {
+  transform: scale(1.15);
+  z-index: 3;
+}
