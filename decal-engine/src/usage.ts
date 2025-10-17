@@ -4,7 +4,7 @@ import { OrbitControls } from "three/examples/jsm/controls/OrbitControls.js";
 // import { DRACOLoader } from "three/examples/jsm/loaders/DRACOLoader.js";
 
 import { DecalController } from "./engine/three/DecalController";
-import { DecalPlacer } from "./engine/three/DecalPlacer";
+import ProjectionDecal from "./engine/three/ProjectionDecal";
 
 export async function initDecalDemo(container: HTMLElement) {
   // Renderer
@@ -48,12 +48,11 @@ export async function initDecalDemo(container: HTMLElement) {
 
   // Loader GLTF/GLB
   const loader = new GLTFLoader();
-  // Se usar DRACO:
   // const draco = new DRACOLoader();
   // draco.setDecoderPath("https://www.gstatic.com/draco/versioned/decoders/1.5.7/");
   // loader.setDRACOLoader(draco);
 
-  // ⚠️ Carrega o seu modelo (suporta ?model=scene.gltf ou ?model=tshirt.glb)
+  // Carrega o seu modelo
   const params = new URLSearchParams(window.location.search);
   const modelFile = params.get("model") || "scene.gltf";
   const gltf = await loader.loadAsync(`/assets/${modelFile}`);
@@ -79,85 +78,114 @@ export async function initDecalDemo(container: HTMLElement) {
   controls.target.set(0, 0, 0);
   controls.update();
 
-  // Decal placer (DecalGeometry)
-  const placer = new DecalPlacer(scene, "/assets/logo.png");
+  // ---------------------------
+  // PROJEÇÃO DO LOGO (sem corte/deformação)
+  // ---------------------------
+  const texLoader = new THREE.TextureLoader();
+  const logoTexture = await texLoader.loadAsync("/assets/logo.png");
 
-  // Raycast (usa o root para considerar todas as submalhas)
+  // Aspect ratio real da imagem
+  const imgW = (logoTexture.image as HTMLImageElement)?.naturalWidth ?? (logoTexture.image?.width ?? 1);
+  const imgH = (logoTexture.image as HTMLImageElement)?.naturalHeight ?? (logoTexture.image?.height ?? 1);
+  const aspect = imgW / imgH;
+
+  // Cria o projetor (flags de corte DESLIGADAS por padrão)
+  const projector = new ProjectionDecal(logoTexture, {
+    clipRect: false,      // não recorta em UV
+    clipDepth: false,     // não recorta por profundidade
+    useAngleClamp: false, // sem clamp angular (mostra inteiro)
+    frontOnly: true,      // evita projetar atrás
+    useFeather: false,    // sem feather para manter borda exata da arte
+    strength: 1.0,
+  });
+
+  // Anexa a projeção ao modelo
+  projector.attachTo(root);
+
+  // Tamanho inicial proporcional ao modelo e respeitando o aspect da imagem
+  const bbox = new THREE.Box3().setFromObject(root);
+  const bboxSize = bbox.getSize(new THREE.Vector3());
+  const major = Math.max(bboxSize.x, bboxSize.y, bboxSize.z);
+  let activeWidth = major * 0.6;       // largura em mundo
+  let activeHeight = activeWidth / aspect; // altura preservando aspect
+
+  // Raycast
   const ctrl = new DecalController(camera, root);
-
-  // Garantir que eventos de pointer funcionem bem em conjunto com OrbitControls
   (renderer.domElement as HTMLCanvasElement).style.touchAction = "none";
 
-  // Estado de arraste / primeiro clique
-  let hasPlacedOnce = false;
+  // Arrasto
   let dragging = false;
-  let activeDecal: THREE.Mesh | null = null;
-  let activeTargetMesh: THREE.Mesh | null = null;
-  let activeWidth = 0;
-  let activeHeight = 0;
 
-  // Função utilitária para aplicar o logo na posição clicada usando DecalGeometry
-  const applyLogoAtClientPoint = async (clientX: number, clientY: number) => {
-    if (hasPlacedOnce) return;
-    const hit = ctrl.pickHit(clientX, clientY, renderer.domElement);
-    if (!hit || !hit.point || !hit.face) return;
-    // Sobe na hierarquia até encontrar um Mesh
+  function pickHit(clientX: number, clientY: number) {
+    return ctrl.pickHit(clientX, clientY, renderer.domElement);
+  }
+
+  renderer.domElement.addEventListener("pointerdown", (ev) => {
+    const hit = pickHit(ev.clientX, ev.clientY);
+    if (!hit || !hit.point) return;
+
     let base = hit.object as THREE.Object3D;
     while (base && !(base as any).isMesh) base = base.parent!;
     if (!base) return;
-    const mesh = base as THREE.Mesh;
-    const normal = hit.face.normal.clone().transformDirection(mesh.matrixWorld).normalize();
-    // Tamanho MUITO grande relativo ao modelo
-    const bbox = new THREE.Box3().setFromObject(root);
-    const bboxSize = bbox.getSize(new THREE.Vector3());
-    const major = Math.max(bboxSize.x, bboxSize.y, bboxSize.z);
-    const width = major * 0.6; // 60% do maior lado do modelo
-    const height = width * 0.5;
-    await placer.place(mesh, hit.point, normal, { width, height });
-    hasPlacedOnce = true;
-  };
 
-  // Clique: aplica o logo e inicia drag
-  renderer.domElement.addEventListener("pointerdown", async (ev) => {
-    if (hasPlacedOnce && !activeDecal) return; // não cria outro
-    const hit = ctrl.pickHit(ev.clientX, ev.clientY, renderer.domElement);
-    if (!hit || !hit.point || !hit.face) return;
-    let base = hit.object as THREE.Object3D;
-    while (base && !(base as any).isMesh) base = base.parent!;
-    if (!base) return;
     const mesh = base as THREE.Mesh;
-    const normal = hit.face.normal.clone().transformDirection(mesh.matrixWorld).normalize();
+    const normal = hit.face
+      ? hit.face.normal.clone().transformDirection(mesh.matrixWorld).normalize()
+      : new THREE.Vector3(0, 1, 0);
 
-    // Tamanho grande baseado no modelo (se ainda não existir)
-    if (!activeDecal) {
-      const bbox = new THREE.Box3().setFromObject(root);
-      const bboxSize = bbox.getSize(new THREE.Vector3());
-      const major = Math.max(bboxSize.x, bboxSize.y, bboxSize.z);
-      activeWidth = major * 0.6;
-      activeHeight = activeWidth * 0.5;
-      activeDecal = await placer.place(mesh, hit.point, normal, { width: activeWidth, height: activeHeight });
-      activeTargetMesh = mesh;
-      hasPlacedOnce = true;
-    }
+    // Profundidade MUITO maior que ondulações da malha para não cortar
+    const depth = Math.max(activeWidth, activeHeight) * 2.0;
+
+    projector.setTransform(hit.point.clone(), normal, activeWidth, activeHeight, depth);
+    projector.update();
     dragging = true;
   });
 
-  renderer.domElement.addEventListener("pointermove", async (ev) => {
-    if (!dragging || !activeDecal || !activeTargetMesh) return;
-    const hit = ctrl.pickHit(ev.clientX, ev.clientY, renderer.domElement);
-    if (!hit || !hit.point || !hit.face) return;
-    const mesh = activeTargetMesh;
-    const normal = hit.face.normal.clone().transformDirection(mesh.matrixWorld).normalize();
-    await placer.update(activeDecal, mesh, hit.point, normal, { width: activeWidth, height: activeHeight });
+  renderer.domElement.addEventListener("pointermove", (ev) => {
+    if (!dragging) return;
+    const hit = pickHit(ev.clientX, ev.clientY);
+    if (!hit || !hit.point) return;
+
+    let base = hit.object as THREE.Object3D;
+    while (base && !(base as any).isMesh) base = base.parent!;
+    if (!base) return;
+
+    const mesh = base as THREE.Mesh;
+    const normal = hit.face
+      ? hit.face.normal.clone().transformDirection(mesh.matrixWorld).normalize()
+      : new THREE.Vector3(0, 1, 0);
+
+    const depth = Math.max(activeWidth, activeHeight) * 2.0;
+    projector.setTransform(hit.point.clone(), normal, activeWidth, activeHeight, depth);
+    projector.update();
   });
 
   renderer.domElement.addEventListener("pointerup", () => {
     dragging = false;
   });
 
-  // Removido: não aplicar automaticamente no centro; apenas no primeiro clique do usuário
+  // Zoom do logo mantendo aspecto
+  renderer.domElement.addEventListener(
+    "wheel",
+    (ev) => {
+      ev.preventDefault();
+      const factor = ev.deltaY > 0 ? 0.95 : 1.05;
+      activeWidth *= factor;
+      activeHeight = activeWidth / aspect;
 
-  // Resize responsivo
+      const pos = projector.object.getWorldPosition(new THREE.Vector3());
+      const dir = new THREE.Vector3(0, 1, 0).applyQuaternion(
+        projector.object.getWorldQuaternion(new THREE.Quaternion())
+      ).normalize();
+
+      const depth = Math.max(activeWidth, activeHeight) * 2.0;
+      projector.setTransform(pos, dir, activeWidth, activeHeight, depth);
+      projector.update();
+    },
+    { passive: false }
+  );
+
+  // Resize
   const onResize = () => {
     renderer.setSize(container.clientWidth, container.clientHeight);
     camera.aspect = container.clientWidth / container.clientHeight;
@@ -168,6 +196,7 @@ export async function initDecalDemo(container: HTMLElement) {
   // Loop
   const tick = () => {
     controls.update();
+    projector.update();
     renderer.render(scene, camera);
     requestAnimationFrame(tick);
   };
