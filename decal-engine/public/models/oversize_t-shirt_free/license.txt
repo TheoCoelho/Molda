@@ -1,0 +1,11 @@
+Model Information:
+* title:	Oversize T-Shirt (FREE)
+* source:	https://sketchfab.com/3d-models/oversize-t-shirt-free-679118b2f75548daaff9910f1aad90bc
+* author:	erebus3d (https://sketchfab.com/erebus3d)
+
+Model License:
+* license type:	CC-BY-4.0 (http://creativecommons.org/licenses/by/4.0/)
+* requirements:	Author must be credited. Commercial use is allowed.
+
+If you use this 3D model in your project be sure to copy paste this credit wherever you share it:
+This work is based on "Oversize T-Shirt (FREE)" (https://sketchfab.com/3d-models/oversize-t-shirt-free-679118b2f75548daaff9910f1aad90bc) by erebus3d (https://sketchfab.com/erebus3d) licensed under CC-BY-4.0 (http://creativecommons.org/licenses/by/4.0/)
