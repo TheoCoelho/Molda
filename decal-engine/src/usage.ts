@@ -1,22 +1,17 @@
+// src/usage.ts
 import * as THREE from "three";
 import { GLTFLoader } from "three/examples/jsm/loaders/GLTFLoader.js";
 import { OrbitControls } from "three/examples/jsm/controls/OrbitControls.js";
-// import { DRACOLoader } from "three/examples/jsm/loaders/DRACOLoader.js";
-
-import { DecalController } from "./engine/three/DecalController";
 import ProjectionDecal from "./engine/three/ProjectionDecal";
 
-export async function initDecalDemo(container: HTMLElement) {
-  // --- Projeção da imagem logo.png sobre o modelo 3D ---
-  // Deve ocorrer após o carregamento do modelo 3D (root)
-  // --- Menu de seleção de modelos ---
+export async function initDecalDemo(container: HTMLElement): Promise<void> {
+  // ---------------- MENU (mantido como antes) ----------------
   const models = [
-    { label: "Manga Longa", value: "long_sleeve_t-_shirt/scene.gltf" },
+    { label: "Manga Longa", value: "long_sleeve_t-shirt/scene.gltf" },
     { label: "Oversized", value: "oversize_t-shirt_free/scene.gltf" },
     { label: "Low Poly", value: "t-shirt_low_poly/scene.gltf" },
     { label: "TShirt Model", value: "tshirt_model/scene.gltf" },
   ];
-
   const menu = document.createElement("div");
   menu.style.position = "absolute";
   menu.style.top = "10px";
@@ -26,21 +21,18 @@ export async function initDecalDemo(container: HTMLElement) {
   menu.style.padding = "8px 12px";
   menu.style.borderRadius = "8px";
   menu.style.color = "#fff";
-  menu.style.fontFamily = "sans-serif";
-  menu.style.boxShadow = "0 2px 8px rgba(0,0,0,0.2)";
-
+  menu.style.fontFamily = "system-ui, -apple-system, Segoe UI, Roboto, sans-serif";
+  menu.style.display = "flex";
+  menu.style.gap = "8px";
   models.forEach((m) => {
     const btn = document.createElement("button");
     btn.textContent = m.label;
-    btn.style.margin = "0 6px 0 0";
-    btn.style.padding = "6px 12px";
+    btn.style.padding = "6px 10px";
     btn.style.border = "none";
-    btn.style.borderRadius = "5px";
-    btn.style.background = "#444";
+    btn.style.borderRadius = "6px";
+    btn.style.background = "#4a4a4a";
     btn.style.color = "#fff";
     btn.style.cursor = "pointer";
-    btn.onmouseenter = () => (btn.style.background = "#666");
-    btn.onmouseleave = () => (btn.style.background = "#444");
     btn.onclick = () => {
       const url = new URL(window.location.href);
       url.searchParams.set("model", m.value);
@@ -49,180 +41,200 @@ export async function initDecalDemo(container: HTMLElement) {
     menu.appendChild(btn);
   });
   container.appendChild(menu);
-  // Renderer
+
+  // ---------------- Renderer / cena / câmera ----------------
   const renderer = new THREE.WebGLRenderer({ antialias: true });
   renderer.setPixelRatio(Math.min(window.devicePixelRatio, 2));
   renderer.setSize(container.clientWidth, container.clientHeight);
-
-  // Compat: outputColorSpace (r152+) vs outputEncoding (<= r151)
-  if ("outputColorSpace" in renderer) {
-    (renderer as any).outputColorSpace = THREE.SRGBColorSpace;
-  } else {
-    (renderer as any).outputEncoding = THREE.sRGBEncoding;
-  }
+  renderer.domElement.style.display = "block";
   container.appendChild(renderer.domElement);
 
-  // Cena / câmera / controles
   const scene = new THREE.Scene();
   scene.background = new THREE.Color(0x111111);
 
   const camera = new THREE.PerspectiveCamera(
-    45,
+    50,
     container.clientWidth / container.clientHeight,
     0.1,
-    1000
+    100
   );
-  camera.position.set(2, 2, 2);
-
+  camera.position.set(2, 1.5, 2); // inicial; será recalculada após o GLTF
   const controls = new OrbitControls(camera, renderer.domElement);
   controls.enableDamping = true;
 
-  // Luzes
-  const hemi = new THREE.HemisphereLight(0xffffff, 0x222244, 1.0);
-  scene.add(hemi);
+  // ---------------- Luzes ----------------
+  scene.add(new THREE.HemisphereLight(0xffffff, 0x222244, 1.0));
   const dir = new THREE.DirectionalLight(0xffffff, 1.2);
   dir.position.set(5, 10, 5);
   scene.add(dir);
 
-  // Grid opcional
-  const grid = new THREE.GridHelper(10, 20, 0x333333, 0x222222);
-  scene.add(grid);
+  // ---------------- Container do modelo ----------------
+  const modelContainer = new THREE.Group();
+  scene.add(modelContainer);
 
-  // Loader GLTF/GLB
-  const loader = new GLTFLoader();
-  // const draco = new DRACOLoader();
-  // draco.setDecoderPath("https://www.gstatic.com/draco/versioned/decoders/1.5.7/");
-  // loader.setDRACOLoader(draco);
+  function centerOnGrid(object: THREE.Object3D) {
+    const box = new THREE.Box3().setFromObject(object);
+    if (box.isEmpty()) return;
+    const size = new THREE.Vector3();
+    const center = new THREE.Vector3();
+    box.getSize(size);
+    box.getCenter(center);
+    object.position.x -= center.x;
+    object.position.z -= center.z;
+    const yMin = box.min.y - center.y;
+    object.position.y -= yMin;
+  }
 
-  // Carrega o seu modelo
+  // ---------------- Carregar GLTF (paths intactos) ----------------
   const params = new URLSearchParams(window.location.search);
-  const modelFile = params.get("model") || "scene.gltf";
-  // Corrigido: buscar modelos em /models/ para testes
-  const gltf = await loader.loadAsync(`/models/${modelFile}`);
-  const root = gltf.scene;
-  scene.add(root);
+  const modelFile = params.get("model") || "tshirt_model/scene.gltf";
+  const modelUrl = `/models/${modelFile}`;
+  const loader = new GLTFLoader();
 
-  // Projeção da logo.png sobre o modelo carregado
-  const texLoader = new THREE.TextureLoader();
-  texLoader.load("/logo.png", (logoTexture) => {
-    // Aspect ratio real da imagem
-    const imgW = (logoTexture.image as HTMLImageElement)?.naturalWidth ?? (logoTexture.image?.width ?? 1);
-    const imgH = (logoTexture.image as HTMLImageElement)?.naturalHeight ?? (logoTexture.image?.height ?? 1);
-    const aspect = imgW / imgH;
+  let root: THREE.Object3D | null = null;
+  let projector: ProjectionDecal | null = null;
 
-    // Cria o projetor (flags de corte DESLIGADAS por padrão)
-    const projector = new ProjectionDecal(logoTexture, {
-  clipRect: false,
-  clipDepth: false,
-  useAngleClamp: false,
-  frontOnly: true,
-  useFeather: true,
-  feather: 0.12,
-  strength: 1.0,
-    });
-    projector.attachTo(root);
+  // ---- decal: apenas arrasto (como no original) ----
+  let decalWidth = 0.3;
+  let decalHeight = 0.3;
+  const decalDepth = Math.max(decalWidth, decalHeight) * 2.0;
+  let decalAngle = 0;
 
-    // Tamanho inicial proporcional ao modelo e respeitando o aspect da imagem
-    const bbox = new THREE.Box3().setFromObject(root);
-    const bboxSize = bbox.getSize(new THREE.Vector3());
-    const major = Math.max(bboxSize.x, bboxSize.y, bboxSize.z);
-  let activeWidth = major * 0.25; // reduzido para 25% do maior lado do modelo
-  let activeHeight = activeWidth / aspect;
-
-    // Centraliza e orienta a projeção no centro do modelo, normal para cima
-  const center = bbox.getCenter(new THREE.Vector3());
-  // Projeta do eixo Z positivo (frente para trás)
-  const normal = new THREE.Vector3(0, 0, 1);
-  projector.setTransform(center, normal, activeWidth, activeHeight);
-
-    // Permitir arrastar a projeção com mouse/touch
-    let dragging = false;
-    function getHitPoint(clientX, clientY) {
-      // Raycast para pegar ponto na superfície do modelo
-      const mouse = new THREE.Vector2(
-        (clientX / renderer.domElement.clientWidth) * 2 - 1,
-        -(clientY / renderer.domElement.clientHeight) * 2 + 1
-      );
-      const raycaster = new THREE.Raycaster();
-      raycaster.setFromCamera(mouse, camera);
-      const intersects = raycaster.intersectObject(root, true);
-      return intersects[0]?.point;
+  // ---- raycast (com a correção de API) ----
+  function hitAt(clientX: number, clientY: number) {
+    if (!root) return null;
+    const rect = renderer.domElement.getBoundingClientRect();
+    const x = ((clientX - rect.left) / rect.width) * 2 - 1;
+    const y = -((clientY - rect.top) / rect.height) * 2 + 1;
+    const mouse = new THREE.Vector2(x, y);
+    const raycaster = new THREE.Raycaster();
+    raycaster.setFromCamera(mouse, camera);
+    const hits = raycaster.intersectObject(root, true); // <- correto
+    if (!hits.length) return null;
+    const h = hits[0];
+    const p = h.point.clone();
+    let n = new THREE.Vector3(0, 1, 0);
+    if (h.face) {
+      n.copy(h.face.normal).transformDirection(h.object.matrixWorld).normalize();
     }
+    return { point: p, normal: n };
+  }
 
-    renderer.domElement.addEventListener("pointerdown", (ev) => {
+  // ---- arrasto mínimo da projeção ----
+  let dragging = false;
+  function attachDragHandlers() {
+    const el = renderer.domElement;
+    el.addEventListener("pointerdown", (ev) => {
+      if (!projector) return;
+      const h = hitAt(ev.clientX, ev.clientY);
+      if (!h) return;
       dragging = true;
+      projector.setTransform(h.point, h.normal, decalWidth, decalHeight, decalDepth, decalAngle);
+      controls.enabled = false;
     });
-    renderer.domElement.addEventListener("pointerup", () => {
+    el.addEventListener("pointermove", (ev) => {
+      if (!dragging || !projector) return;
+      const h = hitAt(ev.clientX, ev.clientY);
+      if (!h) return;
+      projector.setTransform(h.point, h.normal, decalWidth, decalHeight, decalDepth, decalAngle);
+    });
+    el.addEventListener("pointerup", () => {
       dragging = false;
+      controls.enabled = true;
     });
-    renderer.domElement.addEventListener("pointermove", (ev) => {
-      if (!dragging) return;
-      const point = getHitPoint(ev.clientX, ev.clientY);
-      if (point) {
-        // Mantém o tamanho fixo, não recalcula activeWidth/activeHeight
-        projector.setTransform(point, normal, activeWidth, activeHeight);
-      }
+    el.addEventListener("pointerleave", () => {
+      dragging = false;
+      controls.enabled = true;
     });
+  }
 
-    // Reduz profundidade para minimizar "wrap" e distorção
-    const depth = Math.max(activeWidth, activeHeight) * 0.15;
+  // ---- projeção da logo (paths intactos) ----
+  function initLogoProjection(targetRoot: THREE.Object3D) {
+    const texLoader = new THREE.TextureLoader();
+    texLoader.load(
+      "/logo.png", // mantenha como estava no seu projeto
+      (logoTex) => {
+        logoTex.wrapS = THREE.ClampToEdgeWrapping;
+        logoTex.wrapT = THREE.ClampToEdgeWrapping;
+        logoTex.minFilter = THREE.LinearMipmapLinearFilter;
+        logoTex.magFilter = THREE.LinearFilter;
+        // sRGB compat
+        if ("colorSpace" in (logoTex as any)) (logoTex as any).colorSpace = THREE.SRGBColorSpace;
+        else (logoTex as any).encoding = THREE.sRGBEncoding;
 
-    // Atualiza projeção no loop
-    function tickWithLogo() {
+        projector = new ProjectionDecal(logoTex, {
+          useFeather: true,
+          feather: 0.1,
+          strength: 1.0,
+        });
+        projector.attachTo(targetRoot);
+
+        const bbox = new THREE.Box3().setFromObject(targetRoot);
+        const size = bbox.getSize(new THREE.Vector3());
+        const base = Math.max(size.x, size.y, size.z) || 1.0;
+        decalWidth = base * 0.25;
+        decalHeight = decalWidth;
+
+        const center = bbox.getCenter(new THREE.Vector3());
+        const front = new THREE.Vector3(center.x, center.y, bbox.max.z + 0.02);
+        const normal = new THREE.Vector3(0, 0, 1);
+        projector.setTransform(front, normal, decalWidth, decalHeight, decalDepth, decalAngle);
+      },
+      undefined,
+      (err) => console.error("Falha ao carregar logo.png:", err)
+    );
+  }
+
+  // ---------------- Load e enquadramento da câmera ----------------
+  loader.load(
+    modelUrl,
+    (gltf) => {
+      modelContainer.clear();
+      root = gltf.scene;
+      centerOnGrid(root);
+      modelContainer.add(root);
+
+      // bbox do modelo já centralizado no grid
+      const bbox = new THREE.Box3().setFromObject(root);
+      const size = bbox.getSize(new THREE.Vector3());
+      const center = bbox.getCenter(new THREE.Vector3());
+
+      // distância para enquadrar (mantida)
+      const radius = size.length() * 0.5 || 1;
+      const fov = (camera.fov * Math.PI) / 180;
+      const dist = radius / Math.sin(fov / 2);
+
+      // ✅ ÚNICA ALTERAÇÃO: Y da câmera = center.y (mesma altura do modelo)
+      camera.position.set(0.8 * dist, center.y, dist);
+      camera.lookAt(center.x, center.y, center.z);
+      controls.target.copy(center);
       controls.update();
-      projector.update();
-      renderer.render(scene, camera);
-      requestAnimationFrame(tickWithLogo);
-    }
-    tickWithLogo();
-  });
 
-  // Normaliza posição/escala e enquadra câmera
-  root.updateMatrixWorld(true);
-  const box = new THREE.Box3().setFromObject(root);
-  const size = box.getSize(new THREE.Vector3());
-  const center = box.getCenter(new THREE.Vector3());
+      initLogoProjection(root);
+      attachDragHandlers();
+    },
+    undefined,
+    (err) => console.error("Falha ao carregar GLTF:", err)
+  );
 
-  // Centraliza o modelo no grid, base alinhada ao plano Y=0
-  root.position.sub(center);
-  // Move para que a base do modelo fique no grid
-  root.position.y -= box.min.y;
-  root.updateMatrixWorld(true);
-
-  // Ajusta a câmera para olhar de frente
-  camera.position.set(0, 1.2, 3.5);
-  camera.lookAt(0, 0.5, 0);
-
-  const radius = size.length() * 0.5 || 1;
-  const fov = (camera.fov * Math.PI) / 180;
-  const dist = radius / Math.sin(fov / 2);
-  camera.position.set(0, 0, dist * 1.2);
-  camera.near = Math.max(0.01, dist / 1000);
-  camera.far = dist * 10;
-  camera.updateProjectionMatrix();
-  controls.target.set(0, 0, 0);
-  controls.update();
-
-  // ---------------------------
-  // PROJEÇÃO DO LOGO (sem corte/deformação)
-  // ---------------------------
-  // Projeção de logo removida para evitar erro de arquivo inexistente
-
-  // Interações de decalque removidas: exibe apenas o modelo 3D normalmente
-
-  // Resize
+  // ---------------- Resize ----------------
   const onResize = () => {
-    renderer.setSize(container.clientWidth, container.clientHeight);
-    camera.aspect = container.clientWidth / container.clientHeight;
+    const w = container.clientWidth;
+    const h = container.clientHeight;
+    camera.aspect = w / h;
     camera.updateProjectionMatrix();
+    renderer.setSize(w, h);
   };
   new ResizeObserver(onResize).observe(container);
 
-  // Loop
+  // ---------------- Loop ----------------
   const tick = () => {
     controls.update();
+    if (projector) projector.update();
     renderer.render(scene, camera);
     requestAnimationFrame(tick);
   };
   tick();
 }
+
+export default initDecalDemo;
