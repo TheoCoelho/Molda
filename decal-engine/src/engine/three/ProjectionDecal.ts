@@ -1,3 +1,4 @@
+// src/engine/three/ProjectionDecal.ts
 import * as THREE from "three";
 
 export type ProjectionOptions = {
@@ -75,19 +76,44 @@ export default class ProjectionDecal {
     return this.projector;
   }
 
-  /** Define posição/orientação/escala do projetor. (+Y projeta) */
+  /**
+   * Define posição/orientação/escala do projetor. (+Y projeta)
+   * @param position posição do centro do decal em MUNDO
+   * @param normal   normal da superfície (direção de projeção)
+   * @param width    largura do decal (eixo X local do projetor)
+   * @param height   altura do decal (eixo Z local do projetor)
+   * @param depth    profundidade do volume do projetor (eixo Y local)
+   * @param angleRad rotação no PLANO do decal (em torno do +Y local)
+   */
   setTransform(
     position: THREE.Vector3,
     normal: THREE.Vector3,
     width: number,
     height: number,
-    depth = Math.max(width, height) * 2.0 // PROFUNDIDADE GRANDE para não cortar
+    depth = Math.max(width, height) * 2.0, // PROFUNDIDADE GRANDE para não cortar
+    angleRad = 0
   ) {
+    // 1) alinha +Y do projetor com a normal do ponto
     const up = new THREE.Vector3(0, 1, 0);
-    const q = new THREE.Quaternion().setFromUnitVectors(up, normal.clone().normalize());
+    const qAlign = new THREE.Quaternion().setFromUnitVectors(
+      up,
+      normal.clone().normalize()
+    );
+
+    // 2) aplica rotação NO PLANO do decal (em torno do +Y local do projetor)
+    //    multiplicamos DEPOIS de alinhar para girar no espaço local do projetor
+    const qRot = new THREE.Quaternion().setFromAxisAngle(
+      new THREE.Vector3(0, 1, 0), // eixo Y do projetor
+      angleRad
+    );
+    const qFinal = qAlign.multiply(qRot);
+
+    // 3) escreve TRS
     this.projector.position.copy(position);
-    this.projector.quaternion.copy(q);
-    this.projector.scale.set(width, depth, height); // X=u, Y=prof, Z=v
+    this.projector.quaternion.copy(qFinal);
+    // X = u, Y = profundidade, Z = v (mantém sua convenção original)
+    this.projector.scale.set(width, depth, height);
+
     this.projector.updateMatrixWorld(true);
     this.updateUniformMatrix();
     this.updateProjDirWorld();
@@ -172,7 +198,7 @@ export default class ProjectionDecal {
             `
           );
 
-        // fragment: projeção + blend sem cortes por padrão
+        // fragment: projeção + blend (sem cortes por padrão)
         if (!shader.fragmentShader.includes("/*__projection_decal__*/")) {
           shader.fragmentShader = shader.fragmentShader
             .replace(
