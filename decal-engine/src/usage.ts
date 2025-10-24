@@ -5,7 +5,7 @@ import { OrbitControls } from "three/examples/jsm/controls/OrbitControls.js";
 import ProjectionDecal from "./engine/three/ProjectionDecal";
 
 export async function initDecalDemo(container: HTMLElement): Promise<void> {
-  // ---------------- MENU (mantido como antes) ----------------
+  // ---------------- MENU ----------------
   const models = [
     { label: "Manga Longa", value: "long_sleeve_t-shirt/scene.gltf" },
     { label: "Oversized", value: "oversize_t-shirt_free/scene.gltf" },
@@ -13,27 +13,30 @@ export async function initDecalDemo(container: HTMLElement): Promise<void> {
     { label: "TShirt Model", value: "tshirt_model/scene.gltf" },
   ];
   const menu = document.createElement("div");
-  menu.style.position = "absolute";
-  menu.style.top = "10px";
-  menu.style.left = "10px";
-  menu.style.zIndex = "1000";
-  menu.style.background = "rgba(30,30,30,0.85)";
-  menu.style.padding = "8px 12px";
-  menu.style.borderRadius = "8px";
-  menu.style.color = "#fff";
-  menu.style.fontFamily =
-    "system-ui, -apple-system, Segoe UI, Roboto, sans-serif";
-  menu.style.display = "flex";
-  menu.style.gap = "8px";
+  Object.assign(menu.style, {
+    position: "absolute",
+    top: "10px",
+    left: "10px",
+    zIndex: "1000",
+    background: "rgba(30,30,30,0.85)",
+    padding: "8px 12px",
+    borderRadius: "8px",
+    color: "#fff",
+    fontFamily: "system-ui, -apple-system, Segoe UI, Roboto, sans-serif",
+    display: "flex",
+    gap: "8px",
+  } as CSSStyleDeclaration);
   models.forEach((m) => {
     const btn = document.createElement("button");
     btn.textContent = m.label;
-    btn.style.padding = "6px 10px";
-    btn.style.border = "none";
-    btn.style.borderRadius = "6px";
-    btn.style.background = "#4a4a4a";
-    btn.style.color = "#fff";
-    btn.style.cursor = "pointer";
+    Object.assign(btn.style, {
+      padding: "6px 10px",
+      border: "none",
+      borderRadius: "6px",
+      background: "#4a4a4a",
+      color: "#fff",
+      cursor: "pointer",
+    } as CSSStyleDeclaration);
     btn.onclick = () => {
       const url = new URL(window.location.href);
       url.searchParams.set("model", m.value);
@@ -86,7 +89,7 @@ export async function initDecalDemo(container: HTMLElement): Promise<void> {
     object.position.y -= yMin;
   }
 
-  // ---------------- Carregar GLTF (paths intactos) ----------------
+  // ---------------- Carregar GLTF ----------------
   const params = new URLSearchParams(window.location.search);
   const modelFile = params.get("model") || "tshirt_model/scene.gltf";
   const modelUrl = `/models/${modelFile}`;
@@ -103,7 +106,11 @@ export async function initDecalDemo(container: HTMLElement): Promise<void> {
   let decalCenter = new THREE.Vector3();
   let decalNormal = new THREE.Vector3(0, 0, 1);
 
-  // ---- raycast (com a correção de API) ----
+  // ---- seleção do gizmo ----
+  let selected = true;         // seleciona ao criar
+  let isInteracting = false;   // evita auto-deselect durante interações
+
+  // ---- raycast na malha ----
   function hitAt(clientX: number, clientY: number) {
     if (!root) return null;
     const rect = renderer.domElement.getBoundingClientRect();
@@ -127,12 +134,14 @@ export async function initDecalDemo(container: HTMLElement): Promise<void> {
   const svgNS = "http://www.w3.org/2000/svg";
   const overlay = document.createElementNS(svgNS, "svg");
   overlay.setAttribute("xmlns", svgNS);
-  overlay.style.position = "absolute";
-  overlay.style.left = "0";
-  overlay.style.top = "0";
-  overlay.style.width = "100%";
-  overlay.style.height = "100%";
-  overlay.style.pointerEvents = "none";
+  Object.assign(overlay.style, {
+    position: "absolute",
+    left: "0",
+    top: "0",
+    width: "100%",
+    height: "100%",
+    pointerEvents: "none",
+  } as CSSStyleDeclaration);
   container.appendChild(overlay);
 
   function makeHandle(r = 6) {
@@ -153,6 +162,8 @@ export async function initDecalDemo(container: HTMLElement): Promise<void> {
   boxPoly.setAttribute("fill", "rgba(124,58,237,0.06)");
   boxPoly.setAttribute("stroke", "#7c3aed");
   boxPoly.setAttribute("stroke-width", "2");
+  boxPoly.style.pointerEvents = "auto"; // permitir mover clicando no retângulo
+  boxPoly.style.cursor = "move";
   overlay.appendChild(boxPoly);
 
   const handles = {
@@ -173,6 +184,7 @@ export async function initDecalDemo(container: HTMLElement): Promise<void> {
     h.setAttribute("x", String(x - s));
     h.setAttribute("y", String(y - s));
   }
+
   function toScreen(p: THREE.Vector3) {
     const v = p.clone().project(camera);
     const r = renderer.domElement.getBoundingClientRect();
@@ -181,30 +193,35 @@ export async function initDecalDemo(container: HTMLElement): Promise<void> {
       (-v.y * 0.5 + 0.5) * r.height
     );
   }
+
   function showOverlay(v: boolean) {
     overlay.style.display = v ? "block" : "none";
   }
 
-  function basisFromNormal(normal: THREE.Vector3, angle: number) {
-    // right/up no plano do decal
-    const upCand =
-      Math.abs(normal.y) > 0.9
-        ? new THREE.Vector3(1, 0, 0)
-        : new THREE.Vector3(0, 1, 0);
-    const right0 = upCand.clone().cross(normal).normalize();
-    const up0 = normal.clone().cross(right0).normalize();
-    const c = Math.cos(angle),
-      s = Math.sin(angle);
-    const right = right0.clone().multiplyScalar(c).add(up0.clone().multiplyScalar(s)).normalize();
-    const up = up0.clone().multiplyScalar(c).sub(right0.clone().multiplyScalar(s)).normalize();
+  // manter os 4 vértices em tela para clique & visibilidade
+  let lastScreenQuad: THREE.Vector2[] = []; // TL, TR, BR, BL
+
+  // Basis de gizmo: alinhado à câmera (sempre “em pé”)
+  function cameraBillboardBasis() {
+    const up = new THREE.Vector3();
+    const right = new THREE.Vector3();
+    const forward = new THREE.Vector3();
+    camera.getWorldDirection(forward); // para frente
+    up.copy(camera.up).applyQuaternion(camera.quaternion).normalize();
+    right.copy(up).cross(forward).normalize();
+    // up recalc para garantir ortonormal
+    up.copy(forward).cross(right).normalize();
     return { right, up };
   }
 
   function updateOverlay() {
-    if (!projector) return;
-    // centro = posição atual do projetor (mantemos copia em decalCenter também)
+    if (!projector || !selected) { showOverlay(false); return; }
+
     const center = decalCenter.clone();
-    const { right, up } = basisFromNormal(decalNormal, decalAngle);
+
+    // <<< gizmo alinhado à câmera, NÃO gira com a logo
+    const { right, up } = cameraBillboardBasis();
+
     const hx = decalWidth * 0.5;
     const hy = decalHeight * 0.5;
 
@@ -215,6 +232,8 @@ export async function initDecalDemo(container: HTMLElement): Promise<void> {
 
     const sTL = toScreen(pTL), sTR = toScreen(pTR),
           sBR = toScreen(pBR), sBL = toScreen(pBL);
+
+    lastScreenQuad = [sTL, sTR, sBR, sBL];
 
     const pts = [sTL, sTR, sBR, sBL, sTL].map((p) => `${p.x},${p.y}`).join(" ");
     boxPoly.setAttribute("points", pts);
@@ -228,7 +247,7 @@ export async function initDecalDemo(container: HTMLElement): Promise<void> {
     setHandlePos(handles.ml, (sTL.x + sBL.x) / 2, (sTL.y + sBL.y) / 2);
     setHandlePos(handles.mr, (sTR.x + sBR.x) / 2, (sTR.y + sBR.y) / 2);
 
-    // handle de rotação 24px “para fora” do topo
+    // handle de rotação 24px “para fora” do topo (usa up da câmera)
     const topMid = new THREE.Vector2((sTL.x + sTR.x) / 2, (sTL.y + sTR.y) / 2);
     const dirUp2D = new THREE.Vector2(sTL.y - sTR.y, sTR.x - sTL.x).normalize();
     const rotAnchor = topMid.clone();
@@ -242,24 +261,76 @@ export async function initDecalDemo(container: HTMLElement): Promise<void> {
     showOverlay(true);
   }
 
-  // ---- arrasto original (mover decal com clique na malha) ----
+  // ponto em polígono convexo (quad) 2D
+  function pointInQuad(screenX: number, screenY: number) {
+    if (lastScreenQuad.length < 4) return false;
+    const p = new THREE.Vector2(screenX, screenY);
+    const quad = lastScreenQuad;
+    function sign(a: THREE.Vector2, b: THREE.Vector2, c: THREE.Vector2) {
+      return (b.x - a.x) * (c.y - a.y) - (b.y - a.y) * (c.x - a.x);
+    }
+    const s1 = sign(quad[0], quad[1], p);
+    const s2 = sign(quad[1], quad[2], p);
+    const s3 = sign(quad[2], quad[3], p);
+    const s4 = sign(quad[3], quad[0], p);
+    const hasNeg = (s1 < 0) || (s2 < 0) || (s3 < 0) || (s4 < 0);
+    const hasPos = (s1 > 0) || (s2 > 0) || (s3 > 0) || (s4 > 0);
+    return !(hasNeg && hasPos);
+  }
+
+  // ponto do mundo dentro do retângulo/profundidade do decal
+  function isPointInsideDecalWorld(worldPoint: THREE.Vector3): boolean {
+    if (!projector) return false;
+    // usa a base do decal (não confundir com billboard do gizmo)
+    const upCand =
+      Math.abs(decalNormal.y) > 0.9 ? new THREE.Vector3(1, 0, 0) : new THREE.Vector3(0, 1, 0);
+    const right0 = upCand.clone().cross(decalNormal).normalize();
+    const up0 = decalNormal.clone().cross(right0).normalize();
+    const c = Math.cos(decalAngle), s = Math.sin(decalAngle);
+    const right = right0.clone().multiplyScalar(c).add(up0.clone().multiplyScalar(s)).normalize();
+    const up = up0.clone().multiplyScalar(c).sub(right0.clone().multiplyScalar(s)).normalize();
+
+    const rel = worldPoint.clone().sub(decalCenter);
+    const x = rel.dot(right);
+    const y = rel.dot(up);
+    const z = rel.dot(decalNormal);
+    const hx = decalWidth * 0.5;
+    const hy = decalHeight * 0.5;
+    const hz = (decalDepth ?? Math.max(decalWidth, decalHeight) * 2.0) * 0.5;
+    const insideRect  = Math.abs(x) <= hx && Math.abs(y) <= hy;
+    const insideDepth = Math.abs(z) <= hz;
+    return insideRect && insideDepth;
+  }
+
+  function deselect() {
+    selected = false;
+    showOverlay(false);
+  }
+  function select() {
+    selected = true;
+    updateOverlay();
+  }
+
+  // ---- arrasto pela malha (mover decal) — canvas, clicando dentro do gizmo
   let draggingMesh = false;
   function attachDragHandlers() {
     const el = renderer.domElement;
     el.addEventListener("pointerdown", (ev) => {
-      if (!projector) return;
+      if (!selected || !projector) return;
+      const r = renderer.domElement.getBoundingClientRect();
+      const sx = ev.clientX - r.left;
+      const sy = ev.clientY - r.top;
+      if (!pointInQuad(sx, sy)) return; // só move se clicou dentro do retângulo
+
       const h = hitAt(ev.clientX, ev.clientY);
       if (!h) return;
       draggingMesh = true;
+      isInteracting = true;
       decalCenter.copy(h.point);
       decalNormal.copy(h.normal);
       projector.setTransform(
-        decalCenter,
-        decalNormal,
-        decalWidth,
-        decalHeight,
-        decalDepth,
-        decalAngle
+        decalCenter, decalNormal,
+        decalWidth, decalHeight, decalDepth, decalAngle
       );
       controls.enabled = false;
       updateOverlay();
@@ -267,30 +338,28 @@ export async function initDecalDemo(container: HTMLElement): Promise<void> {
     el.addEventListener("pointermove", (ev) => {
       if (!draggingMesh || !projector) return;
       const h = hitAt(ev.clientX, ev.clientY);
-      if (!h) return;
+      if (!h) return; // sem hit -> ignora (não sai do objeto)
       decalCenter.copy(h.point);
       decalNormal.copy(h.normal);
       projector.setTransform(
-        decalCenter,
-        decalNormal,
-        decalWidth,
-        decalHeight,
-        decalDepth,
-        decalAngle
+        decalCenter, decalNormal,
+        decalWidth, decalHeight, decalDepth, decalAngle
       );
       updateOverlay();
     });
     el.addEventListener("pointerup", () => {
       draggingMesh = false;
+      isInteracting = false;
       controls.enabled = true;
     });
     el.addEventListener("pointerleave", () => {
       draggingMesh = false;
+      isInteracting = false;
       controls.enabled = true;
     });
   }
 
-  // ---- interações do GIZMO (redimensionar + rotacionar + mover no overlay) ----
+  // ---- interações do GIZMO (resize/rotate/move no overlay) ----
   type DragMode =
     | "move"
     | "scale-tl" | "scale-tr" | "scale-br" | "scale-bl"
@@ -304,19 +373,20 @@ export async function initDecalDemo(container: HTMLElement): Promise<void> {
   let startW = 0, startH = 0, startA = 0;
 
   function startDrag(mode: DragMode, ev: PointerEvent) {
-    if (!projector) return;
+    if (!projector || !selected) return;
+    isInteracting = true;
     dragMode = mode;
     startCenter.copy(decalCenter);
     startW = decalWidth; startH = decalHeight; startA = decalAngle;
-    dragPlane = new THREE.Plane().setFromNormalAndCoplanarPoint(
-      decalNormal,
-      decalCenter
-    );
+
+    // para scale/rotate, manter uma referência de plano; para move usaremos raycast
+    dragPlane = new THREE.Plane().setFromNormalAndCoplanarPoint(decalNormal, decalCenter);
     (ev.target as Element).setPointerCapture?.(ev.pointerId);
   }
   function endDrag(ev: PointerEvent) {
     dragMode = null;
     dragPlane = null;
+    isInteracting = false;
     (ev.target as Element).releasePointerCapture?.(ev.pointerId);
   }
 
@@ -333,45 +403,53 @@ export async function initDecalDemo(container: HTMLElement): Promise<void> {
   }
 
   function onPointerMoveOverlay(ev: PointerEvent) {
-    if (!projector || !dragMode || !dragPlane) return;
+    if (!projector || !dragMode || !selected) return;
     ev.preventDefault();
 
-    const p = planeHit(ev.clientX, ev.clientY, dragPlane);
-    if (!p) return;
-
-    // eixos locais (após rotação)
-    const { right, up } = basisFromNormal(decalNormal, startA);
-    const rel = p.clone().sub(startCenter);
-    const x = rel.dot(right);
-    const y = rel.dot(up);
-
     if (dragMode === "move") {
-      decalCenter.copy(p);
-    } else if (dragMode.startsWith("scale-")) {
-      // redimensiona simétrico ao centro (como Photoshop)
-      if (dragMode === "scale-tm" || dragMode === "scale-bm") {
-        decalWidth = startW;
-        decalHeight = Math.max(1e-4, 2 * Math.abs(y));
-      } else if (dragMode === "scale-ml" || dragMode === "scale-mr") {
-        decalWidth = Math.max(1e-4, 2 * Math.abs(x));
-        decalHeight = startH;
-      } else {
-        decalWidth = Math.max(1e-4, 2 * Math.abs(x));
-        decalHeight = Math.max(1e-4, 2 * Math.abs(y));
+      // <<< mover SEMPRE por raycast na malha: cola na superfície e segue a curvatura
+      const h = hitAt(ev.clientX, ev.clientY);
+      if (!h) return; // sem hit -> ignora, não sai do objeto
+      decalCenter.copy(h.point);
+      decalNormal.copy(h.normal);
+    } else {
+      // scale/rotate usando plano do decal como referência
+      if (!dragPlane) return;
+      const p = planeHit(ev.clientX, ev.clientY, dragPlane);
+      if (!p) return;
+
+      // base do decal (não do gizmo)
+      const upCand =
+        Math.abs(startCenter.y) > 0.9 ? new THREE.Vector3(1, 0, 0) : new THREE.Vector3(0, 1, 0);
+      const right0 = upCand.clone().cross(decalNormal).normalize();
+      const up0 = decalNormal.clone().cross(right0).normalize();
+      const c = Math.cos(startA), s = Math.sin(startA);
+      const right = right0.clone().multiplyScalar(c).add(up0.clone().multiplyScalar(s)).normalize();
+      const up = up0.clone().multiplyScalar(c).sub(right0.clone().multiplyScalar(s)).normalize();
+
+      const rel = p.clone().sub(startCenter);
+      const x = rel.dot(right), y = rel.dot(up);
+
+      if (dragMode.startsWith("scale-")) {
+        if (dragMode === "scale-tm" || dragMode === "scale-bm") {
+          decalWidth = startW;
+          decalHeight = Math.max(1e-4, 2 * Math.abs(y));
+        } else if (dragMode === "scale-ml" || dragMode === "scale-mr") {
+          decalWidth = Math.max(1e-4, 2 * Math.abs(x));
+          decalHeight = startH;
+        } else {
+          decalWidth = Math.max(1e-4, 2 * Math.abs(x));
+          decalHeight = Math.max(1e-4, 2 * Math.abs(y));
+        }
+        decalDepth = Math.max(decalWidth, decalHeight) * 2.0;
+      } else if (dragMode === "rotate") {
+        decalAngle = Math.atan2(y, x);
       }
-      decalDepth = Math.max(decalWidth, decalHeight) * 2.0;
-    } else if (dragMode === "rotate") {
-      // ângulo entre eixo Right e vetor centro->p
-      decalAngle = Math.atan2(y, x);
     }
 
     projector.setTransform(
-      decalCenter,
-      decalNormal,
-      decalWidth,
-      decalHeight,
-      decalDepth,
-      decalAngle
+      decalCenter, decalNormal,
+      decalWidth, decalHeight, decalDepth, decalAngle
     );
     updateOverlay();
   }
@@ -391,14 +469,62 @@ export async function initDecalDemo(container: HTMLElement): Promise<void> {
   bindHandle(handles.mr, "scale-mr");
   bindHandle(handles.rot, "rotate");
 
-  // mover pelo overlay (clicando dentro do retângulo)
-  overlay.addEventListener("pointerdown", (ev) => {
-    const tag = (ev.target as Element).tagName.toLowerCase();
-    if (tag === "rect") return; // é uma alça
-    startDrag("move", ev);
-  });
+  // mover pelo overlay (clicando no retângulo)
+  boxPoly.addEventListener("pointerdown", (ev) => startDrag("move", ev));
 
-  // ---- projeção da logo (paths intactos) ----
+  // =========================
+  // Clique x Arrasto no canvas (para NÃO deselecionar durante rotação da cena)
+  // =========================
+  const CLICK_EPS = 5; // px
+  let downState: {
+    active: boolean;
+    startX: number; startY: number;
+    moved: boolean;
+    wasOutsideGizmo: boolean;
+  } = { active: false, startX: 0, startY: 0, moved: false, wasOutsideGizmo: true };
+
+  renderer.domElement.addEventListener("pointerdown", (ev) => {
+    const r = renderer.domElement.getBoundingClientRect();
+    const sx = ev.clientX - r.left;
+    const sy = ev.clientY - r.top;
+
+    const outside = selected ? !pointInQuad(sx, sy) : true;
+
+    downState = {
+      active: true,
+      startX: sx, startY: sy,
+      moved: false,
+      wasOutsideGizmo: outside,
+    };
+
+    if (!selected) {
+      const hit = hitAt(ev.clientX, ev.clientY);
+      if (hit && isPointInsideDecalWorld(hit.point)) {
+        select();
+        updateOverlay();
+        downState.wasOutsideGizmo = false; // evita piscar
+      }
+    }
+  }, { capture: true });
+
+  renderer.domElement.addEventListener("pointermove", (ev) => {
+    if (!downState.active) return;
+    const r = renderer.domElement.getBoundingClientRect();
+    const dx = ev.clientX - r.left - downState.startX;
+    const dy = ev.clientY - r.top - downState.startY;
+    if (!downState.moved && (dx*dx + dy*dy) > CLICK_EPS*CLICK_EPS) {
+      downState.moved = true;
+    }
+  }, { capture: true });
+
+  renderer.domElement.addEventListener("pointerup", () => {
+    if (downState.active && !downState.moved && selected && downState.wasOutsideGizmo) {
+      deselect();
+    }
+    downState.active = false;
+  }, { capture: true });
+
+  // ---- projeção da logo ----
   function initLogoProjection(targetRoot: THREE.Object3D) {
     const texLoader = new THREE.TextureLoader();
     texLoader.load(
@@ -408,7 +534,6 @@ export async function initDecalDemo(container: HTMLElement): Promise<void> {
         logoTex.wrapT = THREE.ClampToEdgeWrapping;
         logoTex.minFilter = THREE.LinearMipmapLinearFilter;
         logoTex.magFilter = THREE.LinearFilter;
-        // sRGB compat
         if ("colorSpace" in (logoTex as any))
           (logoTex as any).colorSpace = THREE.SRGBColorSpace;
         else (logoTex as any).encoding = THREE.sRGBEncoding;
@@ -420,7 +545,6 @@ export async function initDecalDemo(container: HTMLElement): Promise<void> {
         });
         projector.attachTo(targetRoot);
 
-        // tamanho/centro iniciais
         const bbox = new THREE.Box3().setFromObject(targetRoot);
         const size = bbox.getSize(new THREE.Vector3());
         const base = Math.max(size.x, size.y, size.z) || 1.0;
@@ -428,21 +552,17 @@ export async function initDecalDemo(container: HTMLElement): Promise<void> {
         decalHeight = decalWidth;
         decalDepth = Math.max(decalWidth, decalHeight) * 2.0;
 
-        // centro inicial no ponto médio frontal
         const c = bbox.getCenter(new THREE.Vector3());
         decalCenter.set(c.x, c.y, bbox.max.z + 0.02);
         decalNormal.set(0, 0, 1);
         decalAngle = 0;
 
         projector.setTransform(
-          decalCenter,
-          decalNormal,
-          decalWidth,
-          decalHeight,
-          decalDepth,
-          decalAngle
+          decalCenter, decalNormal,
+          decalWidth, decalHeight, decalDepth, decalAngle
         );
-        updateOverlay();
+
+        select();
       },
       undefined,
       (err) => console.error("Falha ao carregar logo.png:", err)
@@ -489,10 +609,53 @@ export async function initDecalDemo(container: HTMLElement): Promise<void> {
   };
   new ResizeObserver(onResize).observe(container);
 
+  // verificação de visibilidade p/ deselecionar automaticamente
+  function isDecalVisible(): boolean {
+    if (!projector) return false;
+
+    // 1) face para a câmera?
+    const viewDir = camera.position.clone().sub(decalCenter).normalize(); // do decal p/ câmera
+    const facing = decalNormal.dot(viewDir) > 0; // normal voltada para a câmera
+    if (!facing) return false;
+
+    // 2) algum vértice do quad dentro do frustum?
+    const frustum = new THREE.Frustum();
+    const projView = new THREE.Matrix4().multiplyMatrices(
+      camera.projectionMatrix,
+      camera.matrixWorldInverse
+    );
+    frustum.setFromProjectionMatrix(projView);
+
+    const upCand =
+      Math.abs(decalNormal.y) > 0.9 ? new THREE.Vector3(1, 0, 0) : new THREE.Vector3(0, 1, 0);
+    const right0 = upCand.clone().cross(decalNormal).normalize();
+    const up0 = decalNormal.clone().cross(right0).normalize();
+    const c = Math.cos(decalAngle), s = Math.sin(decalAngle);
+    const right = right0.clone().multiplyScalar(c).add(up0.clone().multiplyScalar(s)).normalize();
+    const up = up0.clone().multiplyScalar(c).sub(right0.clone().multiplyScalar(s)).normalize();
+
+    const hx = decalWidth * 0.5, hy = decalHeight * 0.5;
+    const corners = [
+      decalCenter.clone().add(right.clone().multiplyScalar(-hx)).add(up.clone().multiplyScalar(hy)), // TL
+      decalCenter.clone().add(right.clone().multiplyScalar(hx)).add(up.clone().multiplyScalar(hy)),  // TR
+      decalCenter.clone().add(right.clone().multiplyScalar(hx)).add(up.clone().multiplyScalar(-hy)), // BR
+      decalCenter.clone().add(right.clone().multiplyScalar(-hx)).add(up.clone().multiplyScalar(-hy)) // BL
+    ];
+    return corners.some(pt => frustum.containsPoint(pt));
+  }
+
   // ---------------- Loop ----------------
   const tick = () => {
     controls.update();
     if (projector) projector.update();
+
+    // auto-deseleção quando a logo não está visível (mas NÃO durante interação)
+    if (selected && !isInteracting && !isDecalVisible()) {
+      deselect();
+    }
+
+    if (selected) updateOverlay();
+
     renderer.render(scene, camera);
     requestAnimationFrame(tick);
   };
