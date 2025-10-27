@@ -19,6 +19,16 @@ import {
   PenTool,
   ChevronDown,
   Type,
+  Paintbrush,
+  SprayCan,
+  Pen,
+  Eraser,
+  Square,
+  Circle,
+  Triangle,
+  Hexagon,
+  Minus,
+  LineChart,
 } from "lucide-react";
 
 // >>> Biblioteca de fontes
@@ -40,8 +50,8 @@ interface ExpandableSidebarProps {
   // Editor 2D
   tool: "select" | "brush" | "line" | "curve" | "text";
   setTool: (t: "select" | "brush" | "line" | "curve" | "text") => void;
-  brushVariant: "pencil" | "spray" | "marker" | "calligraphy";
-  setBrushVariant: (v: "pencil" | "spray" | "marker" | "calligraphy") => void;
+  brushVariant: "pencil" | "spray" | "eraser" | "calligraphy";
+  setBrushVariant: (v: "pencil" | "spray" | "eraser" | "calligraphy") => void;
   strokeColor: string;
   setStrokeColor: (c: string) => void;
   fillColor: string;
@@ -123,8 +133,6 @@ const ExpandableSidebar = ({
   const { addRecentFont } = useRecentFonts();
 
   // paleta rápida
-  const colors = ["#ff6b6b", "#4ecdc4", "#45b7d1", "#96ceb4", "#feca57", "#ff9ff3", "#54a0ff", "#5f27cd", "#00d2d3", "#ff9f43"];
-
   /** Lê do getter global, se existir */
   const readFamilyFromGetter = (): string | "" => {
     try {
@@ -303,7 +311,6 @@ const ExpandableSidebar = ({
           addShape={addShape}
           lineMode={lineMode}
           setLineMode={setLineMode}
-          colors={colors}
           // Texto
           addText={addText}
           applyTextStyle={applyTextStyle}
@@ -424,13 +431,16 @@ function BrushSectionAccordion({
   is2DActive,
   tool, setTool,
   brushVariant, setBrushVariant,
-  strokeColor, setStrokeColor,
-  fillColor, setFillColor,
-  strokeWidth, setStrokeWidth,
-  opacity, setOpacity,
+  strokeColor: _strokeColor,
+  setStrokeColor: _setStrokeColor,
+  fillColor: _fillColor,
+  setFillColor: _setFillColor,
+  strokeWidth: _strokeWidth,
+  setStrokeWidth: _setStrokeWidth,
+  opacity: _opacity,
+  setOpacity: _setOpacity,
   addShape,
   lineMode, setLineMode,
-  colors,
 
   // Texto
   addText,
@@ -447,15 +457,14 @@ function BrushSectionAccordion({
   is2DActive: boolean;
   tool: "select" | "brush" | "line" | "curve" | "text";
   setTool: (t: "select" | "brush" | "line" | "curve" | "text") => void;
-  brushVariant: "pencil" | "spray" | "marker" | "calligraphy";
-  setBrushVariant: (v: "pencil" | "spray" | "marker" | "calligraphy") => void;
+  brushVariant: "pencil" | "spray" | "eraser" | "calligraphy";
+  setBrushVariant: (v: "pencil" | "spray" | "eraser" | "calligraphy") => void;
   strokeColor: string; setStrokeColor: (c: string) => void;
   fillColor: string; setFillColor: (c: string) => void;
   strokeWidth: number; setStrokeWidth: (n: number) => void;
   opacity: number; setOpacity: (n: number) => void;
   addShape: (shape: "rect" | "ellipse" | "triangle" | "polygon") => void;
   lineMode: "single" | "polyline"; setLineMode: (m: "single" | "polyline") => void;
-  colors: string[];
   addText?: (value?: string) => void;
   applyTextStyle?: (patch: Partial<{
     fontFamily: string; fontSize: number; fontWeight: string | number; fontStyle: "normal" | "italic";
@@ -476,7 +485,14 @@ function BrushSectionAccordion({
   const [openPincel, setOpenPincel] = useState(false);
   const [openLinhas, setOpenLinhas] = useState(false);
 
-  // Quando Editor2D sinaliza seleção de texto, abrir este painel Texto
+  const iconToggleClasses = (active: boolean, disabled?: boolean) => [
+    "h-12 w-12 rounded-xl border border-white/15 bg-white/5 flex items-center justify-center transition",
+    disabled
+      ? "opacity-35 cursor-not-allowed"
+      : "hover:bg-white/10 focus:outline-none focus-visible:ring-2 focus-visible:ring-purple-300/60",
+    active ? "bg-white/20 border-white/35 shadow-[inset_0_0_12px_rgba(255,255,255,0.22)]" : "",
+  ].join(" ");
+
   useEffect(() => {
     if (autoOpenTextPanelCounter == null) return;
     setOpenTexto(true);
@@ -556,13 +572,48 @@ function BrushSectionAccordion({
         open={openFormas}
         onToggle={() => setOpenFormas((v) => !v)}
       >
-        <div className="grid grid-cols-2 gap-2 mt-2">
-          <Button variant="outline" onClick={() => addShape("rect")} disabled={!is2DActive}>Retângulo</Button>
-          <Button variant="outline" onClick={() => addShape("ellipse")} disabled={!is2DActive}>Círculo</Button>
-          <Button variant="outline" onClick={() => addShape("triangle")} disabled={!is2DActive}>Triângulo</Button>
-          <Button variant="outline" onClick={() => addShape("polygon")} disabled={!is2DActive}>Polígono</Button>
+        <div className="grid grid-cols-4 gap-2 mt-2">
+          <button
+            type="button"
+            className={iconToggleClasses(false, !is2DActive)}
+            onClick={() => addShape("rect")}
+            disabled={!is2DActive}
+            aria-label="Adicionar retângulo"
+            title="Retângulo"
+          >
+            <Square className="w-5 h-5" />
+          </button>
+          <button
+            type="button"
+            className={iconToggleClasses(false, !is2DActive)}
+            onClick={() => addShape("ellipse")}
+            disabled={!is2DActive}
+            aria-label="Adicionar círculo"
+            title="Círculo"
+          >
+            <Circle className="w-5 h-5" />
+          </button>
+          <button
+            type="button"
+            className={iconToggleClasses(false, !is2DActive)}
+            onClick={() => addShape("triangle")}
+            disabled={!is2DActive}
+            aria-label="Adicionar triângulo"
+            title="Triângulo"
+          >
+            <Triangle className="w-5 h-5" />
+          </button>
+          <button
+            type="button"
+            className={iconToggleClasses(false, !is2DActive)}
+            onClick={() => addShape("polygon")}
+            disabled={!is2DActive}
+            aria-label="Adicionar polígono"
+            title="Polígono"
+          >
+            <Hexagon className="w-5 h-5" />
+          </button>
         </div>
-        <p className="text-xs text-gray-500 mt-2">Clique em uma forma para adicioná-la ao canvas.</p>
       </AccordionItem>
 
       {/* ITEM: Lápis */}
@@ -575,34 +626,63 @@ function BrushSectionAccordion({
           if (!openPincel) setTool("brush");
         }}
       >
-        {/* Ferramenta atual */}
-        <div className="grid grid-cols-1 gap-2 mt-2">
-          <Button variant={tool === "brush" ? "default" : "outline"} onClick={() => setTool("brush")}>Lápis</Button>
-        </div>
-
-        {/* Variações do Lápis */}
-        <div className="grid grid-cols-2 gap-2 mt-3">
-          <Button variant={brushVariant === "pencil" ? "default" : "outline"} onClick={() => setBrushVariant("pencil")} disabled={tool !== "brush"}>Normal</Button>
-          <Button variant={brushVariant === "spray" ? "default" : "outline"} onClick={() => setBrushVariant("spray")} disabled={tool !== "brush"}>Spray</Button>
-          <Button variant={brushVariant === "marker" ? "default" : "outline"} onClick={() => setBrushVariant("marker")} disabled={tool !== "brush"}>Marcador</Button>
-          <Button variant={brushVariant === "calligraphy" ? "default" : "outline"} onClick={() => setBrushVariant("calligraphy")} disabled={tool !== "brush"}>Caligrafia</Button>
-        </div>
-
-        {/* Paleta rápida */}
-        <div className="mt-3">
-          <Label>Paleta</Label>
-          <div className="grid grid-cols-6 gap-2 mt-2">
-            {colors.map((c) => (
-              <button
-                key={c}
-                className="w-8 h-8 rounded-full border-2 border-gray-300 hover:border-gray-500 transition-colors"
-                style={{ backgroundColor: c }}
-                onClick={() => setStrokeColor(c)}
-                aria-label={`Cor ${c}`}
-                title={c}
-              />
-            ))}
-          </div>
+        <div className="flex flex-wrap gap-2 mt-2">
+          <button
+            type="button"
+            className={iconToggleClasses(tool === "brush" && brushVariant === "pencil", !is2DActive)}
+            onClick={() => {
+              if (!is2DActive) return;
+              setTool("brush");
+              setBrushVariant("pencil");
+            }}
+            disabled={!is2DActive}
+            aria-label="Lápis padrão"
+            title="Lápis padrão"
+          >
+            <Paintbrush className="w-5 h-5" />
+          </button>
+          <button
+            type="button"
+            className={iconToggleClasses(tool === "brush" && brushVariant === "spray", !is2DActive)}
+            onClick={() => {
+              if (!is2DActive) return;
+              setTool("brush");
+              setBrushVariant("spray");
+            }}
+            disabled={!is2DActive}
+            aria-label="Spray"
+            title="Spray"
+          >
+            <SprayCan className="w-5 h-5" />
+          </button>
+          <button
+            type="button"
+            className={iconToggleClasses(tool === "brush" && brushVariant === "eraser", !is2DActive)}
+            onClick={() => {
+              if (!is2DActive) return;
+              setTool("brush");
+              setBrushVariant("eraser");
+            }}
+            disabled={!is2DActive}
+            aria-label="Borracha"
+            title="Borracha"
+          >
+            <Eraser className="w-5 h-5" />
+          </button>
+          <button
+            type="button"
+            className={iconToggleClasses(tool === "brush" && brushVariant === "calligraphy", !is2DActive)}
+            onClick={() => {
+              if (!is2DActive) return;
+              setTool("brush");
+              setBrushVariant("calligraphy");
+            }}
+            disabled={!is2DActive}
+            aria-label="Caligrafia"
+            title="Caligrafia"
+          >
+            <Pen className="w-5 h-5" />
+          </button>
         </div>
       </AccordionItem>
 
@@ -618,21 +698,51 @@ function BrushSectionAccordion({
           }
         }}
       >
-        <div className="grid grid-cols-2 gap-2 mt-2">
-          <Button variant={tool === "line" ? "default" : "outline"} onClick={() => setTool("line")}>
-            <PenLine className="w-4 h-4 mr-2" /> Reta
-          </Button>
-          <Button variant={tool === "curve" ? "default" : "outline"} onClick={() => setTool("curve")}>
-            <PenTool className="w-4 h-4 mr-2" /> Curva (Bézier)
-          </Button>
+        <div className="flex flex-wrap gap-2 mt-2">
+          <button
+            type="button"
+            className={iconToggleClasses(tool === "line", !is2DActive)}
+            onClick={() => setTool("line")}
+            disabled={!is2DActive}
+            aria-label="Linha reta"
+            title="Linha reta"
+          >
+            <Minus className="w-5 h-5" />
+          </button>
+          <button
+            type="button"
+            className={iconToggleClasses(tool === "curve", !is2DActive)}
+            onClick={() => setTool("curve")}
+            disabled={!is2DActive}
+            aria-label="Curva Bézier"
+            title="Curva Bézier"
+          >
+            <PenTool className="w-5 h-5" />
+          </button>
         </div>
 
         {tool === "line" && (
           <div className="space-y-2 mt-3">
             <Label>Modo de desenho</Label>
-            <div className="grid grid-cols-2 gap-2">
-              <Button variant={lineMode === "single" ? "default" : "outline"} onClick={() => setLineMode("single")}>Reta única</Button>
-              <Button variant={lineMode === "polyline" ? "default" : "outline"} onClick={() => setLineMode("polyline")}>Polilinha</Button>
+            <div className="flex gap-2">
+              <button
+                type="button"
+                className={iconToggleClasses(lineMode === "single", false)}
+                onClick={() => setLineMode("single")}
+                aria-label="Segmento único"
+                title="Segmento único"
+              >
+                <Minus className="w-5 h-5" />
+              </button>
+              <button
+                type="button"
+                className={iconToggleClasses(lineMode === "polyline", false)}
+                onClick={() => setLineMode("polyline")}
+                aria-label="Polilinha"
+                title="Polilinha"
+              >
+                <LineChart className="w-5 h-5" />
+              </button>
             </div>
             {lineMode === "polyline" && (
               <p className="text-xs text-gray-500">Clique para adicionar segmentos • <strong>duplo-clique</strong> para finalizar.</p>

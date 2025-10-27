@@ -10,7 +10,7 @@ import { ensureFontForFabric } from "../utils/fonts";
 
 // Tipos alinhados com ExpandableSidebar
 export type Tool = "select" | "brush" | "line" | "curve" | "text";
-export type BrushVariant = "pencil" | "spray" | "marker" | "calligraphy";
+export type BrushVariant = "pencil" | "spray" | "eraser" | "calligraphy";
 export type ShapeKind = "rect" | "triangle" | "ellipse" | "polygon";
 
 /** Estilo de texto suportado pelo editor */
@@ -230,6 +230,24 @@ const Editor2D = forwardRef<Editor2DHandle, Props>(function Editor2D(
   React.useEffect(() => {
     strokeColorRef.current = strokeColor;
   }, [strokeColor]);
+  const eraserOverlayRef = useRef<HTMLDivElement | null>(null);
+  const eraserActiveRef = useRef(false);
+  const strokeWidthRef = useRef(strokeWidth);
+  React.useEffect(() => {
+    strokeWidthRef.current = strokeWidth;
+  }, [strokeWidth]);
+
+  React.useEffect(() => {
+    if (!eraserActiveRef.current || !eraserOverlayRef.current) return;
+    const cursor = eraserOverlayRef.current.firstElementChild as HTMLDivElement | null;
+    if (!cursor) return;
+    const size = Math.max(10, strokeWidth * 2);
+    cursor.style.width = `${size}px`;
+    cursor.style.height = `${size}px`;
+    const cx = Number(cursor.dataset.cx || "0");
+    const cy = Number(cursor.dataset.cy || "0");
+    cursor.style.transform = `translate(${cx - size / 2}px, ${cy - size / 2}px)`;
+  }, [strokeWidth]);
 
   // NOVO: listeners externos para mudanças de seleção
   const selectionListenersRef = useRef(new Set<(k: "none" | "text" | "other") => void>());
@@ -398,8 +416,12 @@ const Editor2D = forwardRef<Editor2DHandle, Props>(function Editor2D(
     if (!fabric.SprayBrushEx) {
       class SprayBrushEx extends fabric.SprayBrush {
         opacity = 1;
-        getOpacity() { return this.opacity; }
-        setOpacity(o: number) { this.opacity = o; }
+        getOpacity() {
+          return this.opacity;
+        }
+        setOpacity(o: number) {
+          this.opacity = o;
+        }
         _render() {
           const ctx = this.canvas.contextTop;
           ctx.save();
@@ -414,26 +436,6 @@ const Editor2D = forwardRef<Editor2DHandle, Props>(function Editor2D(
     return fabric.SprayBrushEx;
   };
 
-  const ensureMarkerBrush = (fabric: any) => {
-    if (!fabric.MarkerBrush) {
-      class MarkerBrush extends fabric.PencilBrush {
-        opacity = 1;
-        getOpacity() { return this.opacity; }
-        setOpacity(o: number) { this.opacity = o; }
-        _finalizeAndAddPath() {
-          const ctx = this.canvas.contextTop;
-          ctx.save();
-          ctx.globalAlpha = this.getOpacity();
-          // @ts-ignore
-          super._finalizeAndAddPath();
-          ctx.restore();
-        }
-      }
-      fabric.MarkerBrush = MarkerBrush;
-    }
-    return fabric.MarkerBrush;
-  };
-
   const ensureCalligraphyBrush = (fabric: any) => {
     if (!fabric.CalligraphyBrush) {
       class CalligraphyBrush extends fabric.PencilBrush {
@@ -441,8 +443,12 @@ const Editor2D = forwardRef<Editor2DHandle, Props>(function Editor2D(
         nibSize = 16;
         nibThin = 0.25;
         nibAngle = 30;
-        getOpacity() { return this.opacity; }
-        setOpacity(o: number) { this.opacity = o; }
+        getOpacity() {
+          return this.opacity;
+        }
+        setOpacity(o: number) {
+          this.opacity = o;
+        }
         _render() {
           const ctx = this.canvas.contextTop;
           ctx.save();
@@ -456,6 +462,139 @@ const Editor2D = forwardRef<Editor2DHandle, Props>(function Editor2D(
       fabric.CalligraphyBrush = CalligraphyBrush;
     }
     return fabric.CalligraphyBrush;
+  };
+
+  const ensureFallbackEraserBrush = (fabric: any) => {
+    if (!fabric.LiveEraserBrush) {
+      const joinPath = fabric.util?.joinPath;
+      const isTrivialPath = (pathData: any) => {
+        if (!joinPath) return false;
+        return joinPath(pathData) === "M 0 0 Q 0 0 0 0 L 0 0";
+      };
+
+      class LiveEraserBrush extends fabric.PencilBrush {
+        private _livePath: any = null;
+        private _hasFiredBeforeEvent = false;
+
+        constructor(canvas: any) {
+          super(canvas);
+          this.color = "rgba(0,0,0,1)";
+        }
+
+        private ensureLivePath(finalize = false) {
+          if (!this._points || this._points.length < 2) {
+            return null;
+          }
+
+          const pathData = this.convertPointsToSVGPath(this._points);
+          if (isTrivialPath(pathData)) {
+            return null;
+          }
+
+          if (!this._livePath) {
+            const path = this.createPath(pathData);
+            path.globalCompositeOperation = "destination-out";
+            path.stroke = "rgba(0,0,0,1)";
+            path.fill = "";
+            path.strokeWidth = this.width;
+            path.strokeLineCap = "round";
+            path.strokeLineJoin = "round";
+            path.selectable = false;
+            path.evented = false;
+            path.objectCaching = false;
+            path.hasBorders = false;
+            path.hasControls = false;
+            path.hoverCursor = "default";
+            path.excludeFromExport = true;
+            path.data = { __liveEraser: true };
+            if (!this._hasFiredBeforeEvent) {
+              this.canvas.fire("before:path:created", { path });
+              this._hasFiredBeforeEvent = true;
+            }
+            this.canvas.add(path);
+            this._livePath = path;
+          } else {
+            const target = this._livePath;
+            if (typeof target._setPath === "function") {
+              target._setPath(pathData, true);
+            } else {
+              target.path = pathData;
+            }
+            target.set({ strokeWidth: this.width });
+            target.globalCompositeOperation = "destination-out";
+            target.objectCaching = false;
+            target.dirty = true;
+            target.setCoords();
+          }
+
+          this.canvas.requestRenderAll();
+          if (finalize) {
+            const finalPath = this._livePath;
+            this._livePath = null;
+            this._hasFiredBeforeEvent = false;
+            return finalPath;
+          }
+          return this._livePath;
+        }
+
+        onMouseDown(pointer: any, evt: any) {
+          const { e } = evt;
+          if (!this.canvas._isMainEvent(e)) return;
+          this.drawStraightLine = !!this.straightLineKey && e[this.straightLineKey];
+          this._reset();
+          this._addPoint(pointer);
+          if (this._livePath) {
+            this.canvas.remove(this._livePath);
+            this._livePath = null;
+          }
+          this._hasFiredBeforeEvent = false;
+          this.canvas.clearContext(this.canvas.contextTop);
+        }
+
+        onMouseMove(pointer: any, evt: any) {
+          const { e } = evt;
+          if (!this.canvas._isMainEvent(e)) return;
+          this.drawStraightLine = !!this.straightLineKey && e[this.straightLineKey];
+          if (this.limitedToCanvasSize === true && this._isOutSideCanvas(pointer)) {
+            return;
+          }
+          if (this._addPoint(pointer) && this._points.length > 1) {
+            this.ensureLivePath(false);
+          }
+        }
+
+        onMouseUp({ e }: any) {
+          if (!this.canvas._isMainEvent(e)) {
+            return true;
+          }
+
+          this.drawStraightLine = false;
+
+          if (this.decimate) {
+            this._points = this.decimatePoints(this._points, this.decimate);
+          }
+
+          const path = this.ensureLivePath(true);
+          this.canvas.clearContext(this.canvas.contextTop);
+
+          if (path) {
+            path.setCoords();
+            this._resetShadow();
+            this.canvas.fire("path:created", { path });
+          }
+
+          this._reset();
+          return false;
+        }
+
+        _render() {
+          return;
+        }
+      }
+
+      fabric.LiveEraserBrush = LiveEraserBrush;
+    }
+    return fabric.LiveEraserBrush;
   };
 
   const createBrush = (
@@ -481,13 +620,14 @@ const Editor2D = forwardRef<Editor2DHandle, Props>(function Editor2D(
       return sb;
     }
 
-    if (variant === "marker") {
-      const Marker = ensureMarkerBrush(fabric);
-      const pb: any = new Marker(c);
-      pb.width = Math.max(4, width * 1.2);
-      pb.color = withAlpha(color, alpha);
-      pb.opacity = 1;
-      return pb;
+    if (variant === "eraser") {
+      const Eraser = ensureFallbackEraserBrush(fabric);
+      const eb: any = new Eraser(c);
+      eb.width = Math.max(10, width * 2);
+      eb.strokeLineCap = "round";
+      eb.strokeLineJoin = "round";
+      eb.shadow = null;
+      return eb;
     }
 
     if (variant === "calligraphy") {
@@ -507,6 +647,7 @@ const Editor2D = forwardRef<Editor2DHandle, Props>(function Editor2D(
   // ----------------------- init/cleanup -----------------------
   useEffect(() => {
     let disposed = false;
+    let resetHostPosition: (() => void) | null = null;
 
     const init = async () => {
       try {
@@ -530,6 +671,28 @@ const Editor2D = forwardRef<Editor2DHandle, Props>(function Editor2D(
 
         canvasRef.current = c;
         domCanvasRef.current = el;
+
+        const hostEl = hostRef.current;
+        if (hostEl) {
+          const previousPosition = hostEl.style.position;
+          if (!previousPosition) {
+            hostEl.style.position = "relative";
+            resetHostPosition = () => {
+              if (hostRef.current) hostRef.current.style.position = "";
+            };
+          }
+
+          const overlay = document.createElement("div");
+          overlay.style.position = "absolute";
+          overlay.style.top = "0";
+          overlay.style.left = "0";
+          overlay.style.width = "100%";
+          overlay.style.height = "100%";
+          overlay.style.pointerEvents = "none";
+          overlay.style.display = "none";
+          hostEl.appendChild(overlay);
+          eraserOverlayRef.current = overlay;
+        }
 
         // ------ Histórico (Undo/Redo) ------
         historyRef.current = new HistoryManager({
@@ -643,6 +806,39 @@ const Editor2D = forwardRef<Editor2DHandle, Props>(function Editor2D(
         roRef.current = new ResizeObserver(() => ensureCanvasSize());
         roRef.current.observe(hostRef.current);
 
+        const handleMouseMove = (e: MouseEvent) => {
+          if (!eraserActiveRef.current || !eraserOverlayRef.current || !hostRef.current) return;
+          const rect = hostRef.current.getBoundingClientRect();
+          const x = e.clientX - rect.left;
+          const y = e.clientY - rect.top;
+          const size = Math.max(10, strokeWidthRef.current * 2);
+
+          let cursor = eraserOverlayRef.current.firstElementChild as HTMLDivElement | null;
+          if (!cursor) {
+            cursor = document.createElement("div");
+            cursor.style.position = "absolute";
+            cursor.style.border = "1px solid rgba(255,255,255,0.7)";
+            cursor.style.borderRadius = "9999px";
+            cursor.style.boxShadow = "0 0 6px rgba(0,0,0,0.35)";
+            cursor.style.background = "rgba(255,255,255,0.1)";
+            eraserOverlayRef.current.appendChild(cursor);
+          }
+
+          cursor.style.width = `${size}px`;
+          cursor.style.height = `${size}px`;
+          cursor.dataset.cx = String(x);
+          cursor.dataset.cy = String(y);
+          cursor.style.transform = `translate(${x - size / 2}px, ${y - size / 2}px)`;
+          eraserOverlayRef.current.style.display = "block";
+        };
+
+        const handleMouseLeave = () => {
+          if (eraserOverlayRef.current) eraserOverlayRef.current.style.display = "none";
+        };
+
+        hostRef.current.addEventListener("mousemove", handleMouseMove);
+        hostRef.current.addEventListener("mouseleave", handleMouseLeave);
+
         // Cleanup dos listeners extras
         const cleanupPublishers = () => {
           c.off("selection:created", onSel);
@@ -650,12 +846,26 @@ const Editor2D = forwardRef<Editor2DHandle, Props>(function Editor2D(
           c.off("selection:cleared", onSel);
           c.off("text:changed", notifyActiveTextStyle);
           window.removeEventListener("editor2d:requestActiveTextStyle", onRequest);
+          hostRef.current?.removeEventListener("mousemove", handleMouseMove);
+          hostRef.current?.removeEventListener("mouseleave", handleMouseLeave);
+          if (eraserOverlayRef.current) {
+            eraserOverlayRef.current.remove();
+            eraserOverlayRef.current = null;
+          }
+          resetHostPosition?.();
+          resetHostPosition = null;
         };
         // guarda para usar no unmount
         (cleanupRef as any).current = cleanupPublishers;
 
       } catch {
         // Fallback 2D (sem fabric)
+        if (eraserOverlayRef.current) {
+          eraserOverlayRef.current.remove();
+          eraserOverlayRef.current = null;
+        }
+        resetHostPosition?.();
+        resetHostPosition = null;
         if (!hostRef.current) return;
         const el = document.createElement("canvas");
         el.style.width = "100%";
@@ -700,6 +910,8 @@ const Editor2D = forwardRef<Editor2DHandle, Props>(function Editor2D(
       canvasRef.current = null;
       domCanvasRef.current = null;
       fabricRef.current = null;
+      resetHostPosition?.();
+      resetHostPosition = null;
     };
   }, [onTextFocusRequest]);
 
@@ -766,6 +978,8 @@ const Editor2D = forwardRef<Editor2DHandle, Props>(function Editor2D(
       setHostCursor("default");
       c.discardActiveObject();
       c.renderAll();
+      eraserActiveRef.current = false;
+      if (eraserOverlayRef.current) eraserOverlayRef.current.style.display = "none";
       return;
     }
 
@@ -778,6 +992,8 @@ const Editor2D = forwardRef<Editor2DHandle, Props>(function Editor2D(
       setHostCursor("default"); // opcionalmente "text"
       c.discardActiveObject();
       c.renderAll();
+      eraserActiveRef.current = false;
+      if (eraserOverlayRef.current) eraserOverlayRef.current.style.display = "none";
       return;
     }
 
@@ -791,7 +1007,29 @@ const Editor2D = forwardRef<Editor2DHandle, Props>(function Editor2D(
 
       const b = createBrush(c, brushVariant, strokeColor, strokeWidth, opacity);
       c.freeDrawingBrush = b;
-      setHostCursor("crosshair");
+      eraserActiveRef.current = brushVariant === "eraser";
+      if (!eraserActiveRef.current && eraserOverlayRef.current) {
+        eraserOverlayRef.current.style.display = "none";
+      }
+      if (brushVariant === "eraser" && b && typeof b === "object") {
+        if (typeof (b as any).onMouseMove === "function") {
+          const originalMove = (b as any).onMouseMove.bind(b);
+          (b as any).onMouseMove = function (...args: any[]) {
+            const result = originalMove(...args);
+            this.canvas?.requestRenderAll?.();
+            return result;
+          };
+        }
+        if (typeof (b as any).drawPoint === "function") {
+          const originalPoint = (b as any).drawPoint.bind(b);
+          (b as any).drawPoint = function (...args: any[]) {
+            const result = originalPoint(...args);
+            this.canvas?.requestRenderAll?.();
+            return result;
+          };
+        }
+      }
+  setHostCursor(brushVariant === "eraser" ? "none" : "crosshair");
       c.renderAll();
       return;
     }
@@ -837,8 +1075,13 @@ const Editor2D = forwardRef<Editor2DHandle, Props>(function Editor2D(
 
       attachLineListeners(c, onDown, onMove, onUp);
       setHostCursor("crosshair");
+      eraserActiveRef.current = false;
+      if (eraserOverlayRef.current) eraserOverlayRef.current.style.display = "none";
       return;
     }
+
+    eraserActiveRef.current = false;
+    if (eraserOverlayRef.current) eraserOverlayRef.current.style.display = "none";
   }, [tool, brushVariant, strokeColor, fillColor, strokeWidth, opacity]);
 
   // ----------------------- addShape -----------------------
