@@ -4,6 +4,7 @@ import { Input } from "../components/ui/input";
 import { Label } from "../components/ui/label";
 import { Textarea } from "../components/ui/textarea";
 import UploadGallery from "../components/UploadGallery";
+import { useRecentFonts } from "../hooks/use-recent-fonts";
 
 import {
   Settings,
@@ -117,6 +118,9 @@ const ExpandableSidebar = ({
 
   // >>> NOVO: família ativa da caixa de texto selecionada no canvas
   const [activeFamily, setActiveFamily] = useState<string>("");
+
+  // >>> Hook para gerenciar fontes recentes
+  const { addRecentFont } = useRecentFonts();
 
   // paleta rápida
   const colors = ["#ff6b6b", "#4ecdc4", "#45b7d1", "#96ceb4", "#feca57", "#ff9ff3", "#54a0ff", "#5f27cd", "#00d2d3", "#ff9f43"];
@@ -307,6 +311,8 @@ const ExpandableSidebar = ({
           // >>> sincronização de fonte
           activeFamily={activeFamily}
           setActiveFamily={setActiveFamily}
+          // >>> fontes recentes
+          addRecentFont={addRecentFont}
         />
       ),
     },
@@ -434,6 +440,9 @@ function BrushSectionAccordion({
   // >>> sincronização de fonte
   activeFamily,
   setActiveFamily,
+  
+  // >>> fontes recentes
+  addRecentFont,
 }: {
   is2DActive: boolean;
   tool: "select" | "brush" | "line" | "curve" | "text";
@@ -458,6 +467,9 @@ function BrushSectionAccordion({
 
   activeFamily: string;
   setActiveFamily: (fam: string) => void;
+  
+  // >>> fontes recentes
+  addRecentFont: (family: string) => void;
 }) {
   const [openTexto, setOpenTexto] = useState(false);
   const [openFormas, setOpenFormas] = useState(false);
@@ -521,6 +533,7 @@ function BrushSectionAccordion({
     value={activeFamily || ""}
     onSelect={(family) => {
       setActiveFamily(family);
+      addRecentFont(family); // Adiciona à lista de recentes
       if (applyTextStyle) applyTextStyle({ fontFamily: family });
       try {
         window.dispatchEvent(
@@ -528,6 +541,7 @@ function BrushSectionAccordion({
         );
       } catch {}
     }}
+    maxHeightClass="h-80"
   />
 </div>
 

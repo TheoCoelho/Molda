@@ -65,6 +65,9 @@ export type Editor2DHandle = {
   getActiveTextStyle: () => TextStyle | null;
   setActiveTextStyle: (patch: TextStyle & { from?: "font-picker" | "inspector" }) => Promise<void>;
 
+  /** lista famílias de fonte atualmente presentes no canvas */
+  listUsedFonts: () => string[];
+
   /** Retrocompatibilidade */
   applyTextStyle: (patch: TextStyle) => void;
 
@@ -1089,6 +1092,44 @@ const Editor2D = forwardRef<Editor2DHandle, Props>(function Editor2D(
     };
   };
 
+  const listUsedFonts = (): string[] => {
+    const c: any = canvasRef.current as any;
+    if (!c?.getObjects) return [];
+    const found = new Set<string>();
+
+    const pushFont = (value: unknown) => {
+      if (typeof value === "string") {
+        const trimmed = value.trim();
+        if (trimmed) found.add(trimmed);
+      }
+    };
+
+    const collectFromStyles = (styles: any) => {
+      if (!styles || typeof styles !== "object") return;
+      Object.values(styles).forEach((line: any) => {
+        if (!line || typeof line !== "object") return;
+        Object.values(line).forEach((style: any) => {
+          if (style && typeof style === "object") {
+            pushFont((style as any).fontFamily);
+          }
+        });
+      });
+    };
+
+    try {
+      const objects = c.getObjects();
+      objects?.forEach((obj: any) => {
+        if (!obj) return;
+        const type = String(obj.type || "").toLowerCase();
+        if (!type.includes("text")) return;
+        pushFont(obj.fontFamily);
+        collectFromStyles(obj.styles);
+      });
+    } catch {}
+
+    return Array.from(found);
+  };
+
   // ==== Texto: aplicação de estilo (com carregamento de fonte seguro + preservação de fontFamily) ====
   const setActiveTextStyle = async (patch: TextStyle & { from?: "font-picker" | "inspector" }) => {
     const c: any = canvasRef.current as any;
@@ -1146,6 +1187,14 @@ const Editor2D = forwardRef<Editor2DHandle, Props>(function Editor2D(
     active.setCoords?.();
     c.requestRenderAll?.();
 
+    if (nextPatch.fontFamily) {
+      try {
+        window.dispatchEvent(
+          new CustomEvent("editor2d:fontUsed", { detail: { fontFamily: nextPatch.fontFamily } })
+        );
+      } catch {}
+    }
+
     if (!isRestoringRef.current && !isLoadingRef.current) {
       historyRef.current?.push("modify");
       emitHistory();
@@ -1192,6 +1241,7 @@ const Editor2D = forwardRef<Editor2DHandle, Props>(function Editor2D(
     addText,
     getActiveTextStyle,
     setActiveTextStyle,
+  listUsedFonts,
     applyTextStyle,
     // Seleção
     onSelectionChange: (cb) => {

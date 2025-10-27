@@ -10,6 +10,7 @@ import React, {
 import { FONT_LIBRARY, DEFAULT_PREVIEW_TEXT, type FontItem } from "../fonts/library";
 import { ensureFontForFabric, wantVariantsFor } from "../utils/fonts";
 import { toast } from "../hooks/use-toast";
+import { useRecentFonts } from "../hooks/use-recent-fonts";
 import {
   fetchUserFavorites,
   addFavoriteFont,
@@ -80,11 +81,11 @@ function normalizeName(family?: string) {
 /** Ícones SVG simples (sem libs) */
 function StarIcon({ filled }: { filled: boolean }) {
   return filled ? (
-    <svg viewBox="0 0 24 24" width="18" height="18" aria-hidden="true" fill="currentColor">
+    <svg viewBox="0 0 24 24" width="20" height="20" aria-hidden="true" fill="currentColor">
       <path d="M12 17.27 18.18 21l-1.64-7.03L22 9.24l-7.19-.61L12 2 9.19 8.63 2 9.24l5.46 4.73L5.82 21z" />
     </svg>
   ) : (
-    <svg viewBox="0 0 24 24" width="18" height="18" aria-hidden="true" fill="none" stroke="currentColor" strokeWidth="2">
+    <svg viewBox="0 0 24 24" width="20" height="20" aria-hidden="true" fill="none" stroke="currentColor" strokeWidth="2">
       <path d="M12 17.27 18.18 21l-1.64-7.03L22 9.24l-7.19-.61L12 2 9.19 8.63 2 9.24l5.46 4.73L5.82 21z" />
     </svg>
   );
@@ -192,43 +193,43 @@ const FontRow = memo(function FontRow({
       style={{
         // 🚀 evita trabalhos fora da viewport
         contentVisibility: "auto" as any,
-        containIntrinsicSize: "48px 320px",
+        containIntrinsicSize: "72px 320px", // Aumentado de 48px para 72px
       }}
     >
       <div
         className={[
-          "w-full text-left px-2 py-2 text-sm transition-colors",
+          "w-full text-left px-3 py-3 text-sm transition-colors", // Aumentado padding
           isActive ? "bg-purple-50/60" : "hover:bg-white/5",
-          "rounded-md",
+          "rounded-lg", // Mudou de md para lg
         ].join(" ")}
       >
-        <div className="flex items-center gap-2">
+        <div className="flex items-start gap-3"> {/* Mudou para items-start e aumentou gap */}
           <button
             type="button"
             data-font-item="1"
             data-active={isActive ? "true" : "false"}
             role="option"
             aria-selected={isActive}
-            className="flex-1 min-w-0 text-left px-1 py-1 rounded focus:outline-none focus-visible:ring-2 focus-visible:ring-purple-300"
+            className="flex-1 min-w-0 text-left px-2 py-2 rounded-md focus:outline-none focus-visible:ring-2 focus-visible:ring-purple-300" // Aumentado padding
             onClick={onClick}
             onMouseEnter={handlePrefetch}
             onFocus={handlePrefetch}
             title={display}
           >
-            <div className="flex items-center justify-between">
-              <span className="truncate" style={familyStyle}>
+            <div className="flex items-center justify-between mb-1"> {/* Adicionado margin-bottom */}
+              <span className="truncate font-medium text-base" style={familyStyle}> {/* Aumentado para text-base e font-medium */}
                 {display}
-                {category && <span className="ml-2 text-xs text-gray-500">({category})</span>}
+                {category && <span className="ml-2 text-xs text-gray-500 font-normal">({category})</span>}
               </span>
             </div>
 
-            <div className="mt-1 text-xs text-gray-500 truncate" style={familyStyle}>
+            <div className="mt-2 text-base text-gray-600 truncate leading-relaxed" style={familyStyle}>
               {item.previewText || previewFallback}
             </div>
 
             {/* Skeleton leve enquanto a fonte ainda não está pronta */}
             {!ready && (
-              <div className="mt-1 h-3 w-24 rounded bg-black/10 animate-pulse" aria-hidden />
+              <div className="mt-2 h-4 w-32 rounded bg-black/10 animate-pulse" aria-hidden />
             )}
           </button>
 
@@ -239,8 +240,8 @@ const FontRow = memo(function FontRow({
             title={starred ? "Remover dos favoritos" : "Adicionar aos favoritos"}
             onClick={handleStarClick}
             className={[
-              "ml-1 shrink-0 inline-flex items-center justify-center",
-              "h-8 w-8 rounded-md border border-transparent",
+              "shrink-0 inline-flex items-center justify-center",
+              "h-9 w-9 rounded-lg border border-transparent", // Aumentado tamanho e mudou para rounded-lg
               "hover:bg-black/5 focus:outline-none focus-visible:ring-2 focus-visible:ring-purple-300",
               starred ? "text-yellow-500" : "text-gray-500",
             ].join(" ")}
@@ -271,12 +272,15 @@ export default function FontPicker({
 }: Props) {
   const [internalSelected, setInternalSelected] = useState<string>("");
   const [query, setQuery] = useState("");
-  const [filterTag, setFilterTag] = useState<"favoritos" | "recentes" | "">(""); // agora “favoritos” funciona de verdade
+  const [filterTag, setFilterTag] = useState<"favoritos" | "recentes" | "">(""); // agora "favoritos" e "recentes" funcionam
   const [showFilterMenu, setShowFilterMenu] = useState(false);
   const scrollRef = useRef<HTMLDivElement | null>(null);
 
   // ===== NEW: favoritos do usuário =====
   const [favorites, setFavorites] = useState<Set<string>>(new Set());
+
+  // ===== NEW: fontes recentes =====
+  const { addRecentFont, getRecentFontFamilies, clearRecentFonts } = useRecentFonts();
 
   // carrega favoritos ao montar
   useEffect(() => {
@@ -320,12 +324,30 @@ export default function FontPicker({
     });
   }, [data, query]);
 
-  // Aplica filtro “favoritos” (quando selecionado)
+  // Aplica filtro "favoritos" ou "recentes" (quando selecionado)
   const filtered = useMemo(() => {
-    if (filterTag !== "favoritos") return baseFiltered;
-    if (!favorites.size) return [];
-    return baseFiltered.filter((f) => favorites.has(f.family));
-  }, [baseFiltered, filterTag, favorites]);
+    if (filterTag === "favoritos") {
+      if (!favorites.size) return [];
+      return baseFiltered.filter((f) => favorites.has(f.family));
+    }
+    
+    if (filterTag === "recentes") {
+      const recentFamilies = getRecentFontFamilies();
+      if (!recentFamilies.length) return [];
+      
+      // Filtra apenas as fontes que estão na lista de recentes
+      const recentFonts = baseFiltered.filter((f) => recentFamilies.includes(f.family));
+      
+      // Ordena pelas mais recentes primeiro (mantém a ordem do getRecentFontFamilies)
+      return recentFonts.sort((a, b) => {
+        const indexA = recentFamilies.indexOf(a.family);
+        const indexB = recentFamilies.indexOf(b.family);
+        return indexA - indexB;
+      });
+    }
+    
+    return baseFiltered;
+  }, [baseFiltered, filterTag, favorites, getRecentFontFamilies]);
 
   // sincroniza com Editor2D via eventos
   useEffect(() => {
@@ -356,7 +378,7 @@ export default function FontPicker({
   }, [value]);
 
   // ======================= VIRTUALIZAÇÃO =======================
-  const ITEM_HEIGHT = 56; // px (aprox.) — mantenha consistente com o CSS
+  const ITEM_HEIGHT = 84; // px (aprox.) — aumentado de 56 para 84 para acomodar o novo layout expandido
   const OVERSCAN = 6;
 
   const [viewportH, setViewportH] = useState(0);
@@ -491,7 +513,7 @@ export default function FontPicker({
 
               {/* Menu suspenso de opções de filtro */}
               {showFilterMenu && (
-                <div className="absolute right-0 top-12 z-30 min-w-[120px] bg-white border border-gray-200 rounded shadow-lg text-sm">
+                <div className="absolute right-0 top-12 z-30 min-w-[140px] bg-white border border-gray-200 rounded shadow-lg text-sm">
                   <button
                     className={`w-full text-left px-4 py-2 hover:bg-gray-100 ${filterTag === "" ? "font-semibold text-purple-600" : ""}`}
                     onClick={() => { setFilterTag(""); setShowFilterMenu(false); }}
@@ -504,6 +526,23 @@ export default function FontPicker({
                     className={`w-full text-left px-4 py-2 hover:bg-gray-100 ${filterTag === "recentes" ? "font-semibold text-purple-600" : ""}`}
                     onClick={() => { setFilterTag("recentes"); setShowFilterMenu(false); }}
                   >Recentes</button>
+                  
+                  {/* Opção para limpar recentes - só aparece se houver fontes recentes */}
+                  {getRecentFontFamilies().length > 0 && (
+                    <>
+                      <hr className="border-gray-200 my-1" />
+                      <button
+                        className="w-full text-left px-4 py-2 hover:bg-gray-100 text-red-600 hover:bg-red-50"
+                        onClick={() => { 
+                          if (confirm('Tem certeza que deseja limpar todas as fontes recentes deste projeto?')) {
+                            clearRecentFonts();
+                            if (filterTag === "recentes") setFilterTag("");
+                          }
+                          setShowFilterMenu(false); 
+                        }}
+                      >Limpar recentes</button>
+                    </>
+                  )}
                 </div>
               )}
             </div>
@@ -525,7 +564,11 @@ export default function FontPicker({
         >
           {filtered.length === 0 && (
             <div className="py-6 text-center text-sm text-gray-500">
-              {filterTag === "favoritos" ? "Você ainda não marcou nenhuma fonte como favorita." : "Nenhuma fonte encontrada."}
+              {filterTag === "favoritos" 
+                ? "Você ainda não marcou nenhuma fonte como favorita." 
+                : filterTag === "recentes"
+                ? "Você ainda não utilizou nenhuma fonte neste projeto."
+                : "Nenhuma fonte encontrada."}
             </div>
           )}
 
@@ -548,6 +591,9 @@ export default function FontPicker({
                       // Atualiza seleção imediatamente (não bloqueia a UI)
                       if (value == null) setInternalSelected(f.family);
                       onSelect?.(f.family);
+
+                      // Adiciona à lista de fontes recentes
+                      addRecentFont(f.family);
 
                       // Dispara carregamento em background (com subsetting)
                       const variants =

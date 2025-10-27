@@ -30,8 +30,8 @@ type Props = {
   opacity: number;
   setOpacity: (n: number) => void;
 
-  tool: "select" | "brush" | "line" | "curve";
-  setTool: (t: "select" | "brush" | "line" | "curve") => void;
+  tool: "select" | "brush" | "line" | "curve" | "text";
+  setTool: (t: "select" | "brush" | "line" | "curve" | "text") => void;
 
   /** Handle imperativo do Editor2D (opcional, usado para delete e histórico) */
   editor2DRef?: {

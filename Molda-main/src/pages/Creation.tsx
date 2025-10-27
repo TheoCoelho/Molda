@@ -1,4 +1,4 @@
-import { useState, useMemo, useRef, useEffect } from "react";
+import { useState, useMemo, useRef, useEffect, useCallback } from "react";
 import { useNavigate, useSearchParams } from "react-router-dom";
 import Header from "../components/Header";
 import Canvas3DViewer from "../components/Canvas3DViewer";
@@ -7,6 +7,7 @@ import { Button } from "../components/ui/button";
 import { Plus, X } from "lucide-react";
 import FloatingEditorToolbar from "../components/FloatingEditorToolbar";
 import TextToolbar from "../components/TextToolbar";
+import { useRecentFonts } from "../hooks/use-recent-fonts";
 
 import Editor2D, {
   Editor2DHandle,
@@ -20,6 +21,14 @@ type SelectionKind = "none" | "text" | "other";
 
 const Creation = () => {
   const [selectedFontFamily, setSelectedFontFamily] = useState<string>("Inter");
+
+  // Hook para gerenciar fontes recentes por projeto
+  const { resetProject, addRecentFont } = useRecentFonts();
+  const addRecentFontRef = useRef(addRecentFont);
+
+  useEffect(() => {
+    addRecentFontRef.current = addRecentFont;
+  }, [addRecentFont]);
 
   const [isTrashMode, setTrashModeRaw] = useState(false);
   const setTrashMode = (v: boolean) => {
@@ -57,6 +66,50 @@ const Creation = () => {
 
   const editorRefs = useRef<Record<string, Editor2DHandle | null>>({});
 
+  // Referência estável para os parâmetros do projeto atual
+  const currentProjectRef = useRef<{part: string | null, type: string | null, subtype: string | null}>({
+    part: null, type: null, subtype: null
+  });
+
+  // Detecta mudanças significativas nos parâmetros do projeto
+  useEffect(() => {
+    const current = { part, type, subtype };
+    const previous = currentProjectRef.current;
+    
+    // Só reseta se realmente mudou e não é a primeira carga
+    const hasChanged = (previous.part !== null || previous.type !== null || previous.subtype !== null) &&
+                      (previous.part !== current.part || previous.type !== current.type || previous.subtype !== current.subtype);
+    
+    if (hasChanged) {
+      resetProject();
+    }
+    
+    currentProjectRef.current = current;
+  }, [part, type, subtype, resetProject]);
+
+  // Carrega projeto salvo (se existir) apenas uma vez na inicialização
+  useEffect(() => {
+    try {
+      const stored = localStorage.getItem("currentProject");
+      if (stored) {
+        const project = JSON.parse(stored);
+        // Verifica se é um projeto muito diferente (baseado nos parâmetros)
+        const isVeryDifferentProject = 
+          (project.part && part && project.part !== part) || 
+          (project.type && type && project.type !== type) || 
+          (project.subtype && subtype && project.subtype !== subtype);
+        
+        if (isVeryDifferentProject) {
+          // Se é um projeto muito diferente, remove do localStorage
+          localStorage.removeItem("currentProject");
+        }
+      }
+    } catch (error) {
+      console.warn('Erro ao verificar projeto salvo:', error);
+      localStorage.removeItem("currentProject");
+    }
+  }, []); // Executa apenas uma vez na montagem
+
   const activeIs2D = useMemo(
     () => canvasTabs.find((t) => t.id === activeCanvasTab)?.type === "2d",
     [canvasTabs, activeCanvasTab]
@@ -80,18 +133,38 @@ const Creation = () => {
     if (json) setTabSnapshots((s) => ({ ...s, [activeCanvasTab]: json }));
   };
 
+  const syncFontsFromEditor = useCallback(
+    (inst?: Editor2DHandle | null) => {
+      const editorInstance = inst ?? editorRefs.current[activeCanvasTab];
+      if (!editorInstance?.listUsedFonts) return;
+      const fn = addRecentFontRef.current;
+      if (!fn) return;
+      try {
+        const fonts = editorInstance.listUsedFonts();
+        fonts.forEach((family) => fn(family));
+      } catch {}
+    },
+    [activeCanvasTab]
+  );
+
   useEffect(() => {
     if (!activeIs2D) return;
     const snap = tabSnapshots[activeCanvasTab];
-    if (!snap) return;
+    if (!snap) {
+      syncFontsFromEditor();
+      return;
+    }
     const restore = () => {
       const inst = editorRefs.current[activeCanvasTab];
-      if (inst?.loadFromJSON) inst.loadFromJSON(snap).catch(() => {});
+      if (inst?.loadFromJSON)
+        inst
+          .loadFromJSON(snap)
+          .then(() => syncFontsFromEditor(inst))
+          .catch(() => {});
       else requestAnimationFrame(restore);
     };
     requestAnimationFrame(restore);
-    // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [activeCanvasTab, activeIs2D]);
+  }, [activeCanvasTab, activeIs2D, tabSnapshots, syncFontsFromEditor]);
 
   const addText = (value?: string) => {
     if (!activeIs2D) return;
@@ -138,6 +211,7 @@ const Creation = () => {
       delete next[activeCanvasTab];
       return next;
     });
+    // Removido: resetProject(); - muito agressivo para limpar apenas um canvas
   };
 
   const exportActive = () => {
