@@ -15,6 +15,7 @@ export type Model3DProps = {
   rotation?: Vec3;              // rotação do modelo
   position?: Vec3;              // posição do modelo
   envPreset?: React.ComponentProps<typeof Environment>["preset"];
+  envFile?: string;             // caminho opcional para HDRI local
   showControlsButton?: boolean; // play/pause rotação
   autoRotate?: boolean;
   className?: string;
@@ -106,6 +107,7 @@ export default function Model3D({
   rotation = [0, 0, 0],
   position = [0, 0, 0],
   envPreset = "studio",
+  envFile = "/hdri/studio_small_03_1k.hdr",
   showControlsButton = true,
   autoRotate = true,
   className,
@@ -160,7 +162,7 @@ export default function Model3D({
     autoRotate={rotating}
     autoRotateSpeed={0.6}
   />
-  <Environment preset={envPreset} />
+  {envFile ? <Environment files={envFile} /> : <Environment preset={envPreset} />}
 </Canvas>
 
 

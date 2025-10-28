@@ -86,25 +86,25 @@ export function useRecentFonts() {
 
   // Atualiza a última atividade da sessão
   const updateLastActivity = useCallback((sessionId?: string) => {
-    if (!currentSession && !sessionId) return;
-    
-    const id = sessionId || currentSession?.id;
-    if (!id) return;
+    setCurrentSession((prev) => {
+      const id = sessionId || prev?.id;
+      if (!id) return prev;
 
-    const updatedSession: ProjectSession = {
-      id,
-      startedAt: currentSession?.startedAt || new Date().toISOString(),
-      lastActivity: new Date().toISOString(),
-    };
-    
-    setCurrentSession(updatedSession);
-    
-    try {
-      localStorage.setItem(PROJECT_SESSION_KEY, JSON.stringify(updatedSession));
-    } catch (error) {
-      console.warn('Erro ao atualizar última atividade:', error);
-    }
-  }, [currentSession]);
+      const updatedSession: ProjectSession = {
+        id,
+        startedAt: prev?.startedAt || new Date().toISOString(),
+        lastActivity: new Date().toISOString(),
+      };
+
+      try {
+        localStorage.setItem(PROJECT_SESSION_KEY, JSON.stringify(updatedSession));
+      } catch (error) {
+        console.warn('Erro ao atualizar última atividade:', error);
+      }
+
+      return updatedSession;
+    });
+  }, []);
 
   // Inicializa ou continua a sessão do projeto
   useEffect(() => {

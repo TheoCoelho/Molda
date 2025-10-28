@@ -232,6 +232,7 @@ const Editor2D = forwardRef<Editor2DHandle, Props>(function Editor2D(
   }, [strokeColor]);
   const eraserOverlayRef = useRef<HTMLDivElement | null>(null);
   const eraserActiveRef = useRef(false);
+  const usingNativeEraserRef = useRef(false);
   const strokeWidthRef = useRef(strokeWidth);
   React.useEffect(() => {
     strokeWidthRef.current = strokeWidth;
@@ -287,6 +288,7 @@ const Editor2D = forwardRef<Editor2DHandle, Props>(function Editor2D(
             hasControls: true,
             cornerStyle: "circle",
             transparentCorners: false,
+            erasable: true,
           });
           c.add(img);
           c.setActiveObject(img);
@@ -392,9 +394,224 @@ const Editor2D = forwardRef<Editor2DHandle, Props>(function Editor2D(
 
   const setObjectsSelectable = (c: FabricCanvas, value: boolean) => {
     c.getObjects().forEach((o: any) => {
+      const isLiveEraserPath = !!(o?.data && o.data.__liveEraser);
+      const isDestinationOut = o?.globalCompositeOperation === "destination-out";
+      if (isDestinationOut && !o?.data) {
+        o.data = { __liveEraser: true };
+      }
+      if (isLiveEraserPath) {
+        // Mantém artefatos do apagador invisíveis à seleção
+        o.selectable = false;
+        o.evented = false;
+        return;
+      }
       o.selectable = value;
       o.evented = value;
     });
+  };
+
+  const setHiddenProperty = (obj: any, key: string, value: any) => {
+    if (!obj) return;
+    try {
+      const desc = Object.getOwnPropertyDescriptor(obj, key);
+      if (!desc || desc.configurable) {
+        Object.defineProperty(obj, key, {
+          value,
+          writable: true,
+          configurable: true,
+          enumerable: false,
+        });
+      } else {
+        (obj as any)[key] = value;
+      }
+    } catch {
+      (obj as any)[key] = value;
+    }
+  };
+
+  const getHiddenProperty = (obj: any, key: string) => {
+    if (!obj) return undefined;
+    try {
+      return (obj as any)[key];
+    } catch {
+      return undefined;
+    }
+  };
+
+  const applyMatrixToObject = (target: any, matrix: number[] | null | undefined) => {
+    const fabric = fabricRef.current;
+    if (!fabric || !target || !matrix) return;
+    const util = fabric.util || {};
+    const decompose = typeof util.qrDecompose === "function" ? util.qrDecompose : null;
+    if (!decompose) {
+      target.set({
+        left: matrix[4] ?? target.left ?? 0,
+        top: matrix[5] ?? target.top ?? 0,
+      });
+      target.setCoords?.();
+      return;
+    }
+    const options = decompose(matrix);
+    const PointCtor = (fabric as any).Point || (fabric as any).Point2D;
+    target.set({
+      scaleX: options.scaleX,
+      scaleY: options.scaleY,
+      skewX: options.skewX,
+      skewY: options.skewY,
+      angle: options.angle,
+    });
+    if (PointCtor && typeof target.setPositionByOrigin === "function") {
+      const center = new PointCtor(options.translateX, options.translateY);
+      target.setPositionByOrigin(center, "center", "center");
+    } else {
+      target.set({ left: options.translateX, top: options.translateY });
+    }
+    target.setCoords?.();
+  };
+
+  const detachFallbackPath = (path: any) => {
+    if (!path) return;
+    const links = getHiddenProperty(path, "__moldaLiveEraserTargets");
+    if (Array.isArray(links)) {
+      links.forEach((entry: any) => {
+        const target = entry?.target;
+        const followers = getHiddenProperty(target, "__moldaLiveEraserFollowers");
+        if (Array.isArray(followers)) {
+          const filtered = followers.filter((info: any) => info?.path !== path);
+          setHiddenProperty(target, "__moldaLiveEraserFollowers", filtered);
+        }
+      });
+    }
+    setHiddenProperty(path, "__moldaLiveEraserTargets", []);
+    if (path.data) path.data.__liveEraserTargetsCount = 0;
+  };
+
+  const detachFallbackTarget = (target: any) => {
+    if (!target) return;
+    const followers = getHiddenProperty(target, "__moldaLiveEraserFollowers");
+    if (!Array.isArray(followers) || followers.length === 0) {
+      setHiddenProperty(target, "__moldaLiveEraserFollowers", []);
+      return;
+    }
+    followers.slice().forEach((entry: any) => {
+      const path = entry?.path;
+      if (!path) return;
+      detachFallbackPath(path);
+      const canvas = path.canvas;
+      if (canvas) {
+        canvas.remove(path);
+        canvas.requestRenderAll?.();
+      }
+    });
+    setHiddenProperty(target, "__moldaLiveEraserFollowers", []);
+  };
+
+  const syncFallbackEraserFollowers = (target: any) => {
+    if (!target) return;
+    const followers = getHiddenProperty(target, "__moldaLiveEraserFollowers");
+    if (!Array.isArray(followers) || followers.length === 0) return;
+    const fabric = fabricRef.current;
+    if (!fabric) return;
+    const util = fabric.util || {};
+    const multiply = typeof util.multiplyTransformMatrices === "function" ? util.multiplyTransformMatrices : null;
+    const targetMatrix = typeof target.calcTransformMatrix === "function"
+      ? target.calcTransformMatrix()
+      : [1, 0, 0, 1, target.left || 0, target.top || 0];
+    if (!multiply) return;
+    followers.forEach((entry: any) => {
+      const path = entry?.path;
+      const relMatrix = entry?.relMatrix;
+      if (!path || !relMatrix) return;
+      const nextMatrix = multiply(targetMatrix, relMatrix);
+      applyMatrixToObject(path, nextMatrix);
+      path.dirty = true;
+    });
+    target.canvas?.requestRenderAll?.();
+  };
+
+  const registerFallbackEraserPath = (path: any) => {
+    if (!path || !path.data || !path.data.__liveEraser) return;
+    const fabric = fabricRef.current;
+    const canvas = canvasRef.current;
+    if (!fabric || !canvas) return;
+    const util = fabric.util || {};
+    const multiply = typeof util.multiplyTransformMatrices === "function" ? util.multiplyTransformMatrices : null;
+    const invert = typeof util.invertTransform === "function" ? util.invertTransform : null;
+    if (!multiply || !invert) return;
+
+    const originX = path.originX;
+    const originY = path.originY;
+    const getCenter = typeof path.getCenterPoint === "function" ? path.getCenterPoint.bind(path) : null;
+    if ((originX !== "center" || originY !== "center") && getCenter) {
+      const center = getCenter();
+      if (center) {
+        path.set({ originX: "center", originY: "center" });
+        if (typeof path.setPositionByOrigin === "function") {
+          path.setPositionByOrigin(center, "center", "center");
+        }
+        path.setCoords?.();
+      }
+    }
+
+    const pathMatrix = typeof path.calcTransformMatrix === "function"
+      ? path.calcTransformMatrix()
+      : [1, 0, 0, 1, path.left || 0, path.top || 0];
+
+    const attachments: any[] = [];
+    const objects = typeof canvas.getObjects === "function" ? canvas.getObjects() : [];
+    objects.forEach((obj: any) => {
+      if (!obj || obj === path) return;
+      if (obj?.data && obj.data.__liveEraser) return;
+      if (obj?.erasable === false) return;
+      if (obj.excludeFromExport && obj.data && obj.data.__liveEraser) return;
+
+      const canIntersect = typeof path.intersectsWithObject === "function" && typeof obj.intersectsWithObject === "function";
+      let intersects = false;
+      if (canIntersect) {
+        try {
+          intersects = path.intersectsWithObject(obj) || obj.intersectsWithObject(path);
+        } catch {
+          intersects = false;
+        }
+      }
+      if (!intersects && typeof path.getBoundingRect === "function" && typeof obj.getBoundingRect === "function") {
+        const pathRect = path.getBoundingRect(true, true);
+        const objRect = obj.getBoundingRect(true, true);
+        if (pathRect && objRect) {
+          intersects =
+            pathRect.left <= objRect.left + objRect.width &&
+            pathRect.left + pathRect.width >= objRect.left &&
+            pathRect.top <= objRect.top + objRect.height &&
+            pathRect.top + pathRect.height >= objRect.top;
+        }
+      }
+      if (!intersects) return;
+
+      const targetMatrix = typeof obj.calcTransformMatrix === "function"
+        ? obj.calcTransformMatrix()
+        : [1, 0, 0, 1, obj.left || 0, obj.top || 0];
+      const inv = invert(targetMatrix);
+      if (!inv) return;
+      const relMatrix = multiply(inv, pathMatrix);
+      if (!relMatrix) return;
+
+      attachments.push({ target: obj, relMatrix });
+      let followers = getHiddenProperty(obj, "__moldaLiveEraserFollowers");
+      if (!Array.isArray(followers)) {
+        followers = [];
+      }
+      const exists = followers.some((entry: any) => entry?.path === path);
+      if (!exists) {
+        followers.push({ path, relMatrix });
+      }
+      setHiddenProperty(obj, "__moldaLiveEraserFollowers", followers);
+    });
+
+    setHiddenProperty(path, "__moldaLiveEraserTargets", attachments);
+    if (path.data) path.data.__liveEraserTargetsCount = attachments.length;
+    try {
+      canvas.bringToFront(path);
+    } catch {}
   };
 
   const attachLineListeners = (c: FabricCanvas, down: any, move: any, up: any) => {
@@ -464,7 +681,11 @@ const Editor2D = forwardRef<Editor2DHandle, Props>(function Editor2D(
     return fabric.CalligraphyBrush;
   };
 
-  const ensureFallbackEraserBrush = (fabric: any) => {
+  const ensureEraserBrush = (fabric: any) => {
+    if (fabric.EraserBrush) {
+      return fabric.EraserBrush;
+    }
+
     if (!fabric.LiveEraserBrush) {
       const joinPath = fabric.util?.joinPath;
       const isTrivialPath = (pathData: any) => {
@@ -505,7 +726,11 @@ const Editor2D = forwardRef<Editor2DHandle, Props>(function Editor2D(
             path.hasBorders = false;
             path.hasControls = false;
             path.hoverCursor = "default";
-            path.excludeFromExport = true;
+            path.lockMovementX = true;
+            path.lockMovementY = true;
+            path.lockScalingX = true;
+            path.lockScalingY = true;
+            path.lockRotation = true;
             path.data = { __liveEraser: true };
             if (!this._hasFiredBeforeEvent) {
               this.canvas.fire("before:path:created", { path });
@@ -525,11 +750,30 @@ const Editor2D = forwardRef<Editor2DHandle, Props>(function Editor2D(
             target.objectCaching = false;
             target.dirty = true;
             target.setCoords();
+            target.selectable = false;
+            target.evented = false;
+            target.lockMovementX = true;
+            target.lockMovementY = true;
+            target.lockScalingX = true;
+            target.lockScalingY = true;
+            target.lockRotation = true;
           }
 
           this.canvas.requestRenderAll();
           if (finalize) {
             const finalPath = this._livePath;
+            if (finalPath) {
+              finalPath.selectable = false;
+              finalPath.evented = false;
+              finalPath.lockMovementX = true;
+              finalPath.lockMovementY = true;
+              finalPath.lockScalingX = true;
+              finalPath.lockScalingY = true;
+              finalPath.lockRotation = true;
+              try {
+                registerFallbackEraserPath(finalPath);
+              } catch {}
+            }
             this._livePath = null;
             this._hasFiredBeforeEvent = false;
             return finalPath;
@@ -611,6 +855,10 @@ const Editor2D = forwardRef<Editor2DHandle, Props>(function Editor2D(
     brush.color = withAlpha(color, alpha);
     brush.width = width;
 
+    if (variant !== "eraser") {
+      usingNativeEraserRef.current = false;
+    }
+
     if (variant === "spray") {
       const Spray = ensureSprayBrush(fabric);
       const sb: any = new Spray(c);
@@ -621,12 +869,15 @@ const Editor2D = forwardRef<Editor2DHandle, Props>(function Editor2D(
     }
 
     if (variant === "eraser") {
-      const Eraser = ensureFallbackEraserBrush(fabric);
+      const Eraser = ensureEraserBrush(fabric);
       const eb: any = new Eraser(c);
       eb.width = Math.max(10, width * 2);
-      eb.strokeLineCap = "round";
-      eb.strokeLineJoin = "round";
-      eb.shadow = null;
+      usingNativeEraserRef.current = !!fabric.EraserBrush;
+      if (!fabric.EraserBrush) {
+        eb.strokeLineCap = "round";
+        eb.strokeLineJoin = "round";
+        eb.shadow = null;
+      }
       return eb;
     }
 
@@ -711,22 +962,42 @@ const Editor2D = forwardRef<Editor2DHandle, Props>(function Editor2D(
         historyRef.current.captureInitial();
         emitHistory();
 
-        const __onAdded = () => {
+        const __onAdded = (evt: any) => {
+          const target = evt?.target;
+          if (target && !(target.data && target.data.__liveEraser) && !target?.eraser) {
+            if (target.erasable === undefined) target.erasable = true;
+          }
           if (!isRestoringRef.current && !isLoadingRef.current)
             historyRef.current?.push("add");
           emitHistory();
         };
-        const __onRemoved = () => {
-          if (!isRestoringRef.current && !isLoadingRef.current)
+        const __onRemoved = (evt: any) => {
+          const target = evt?.target;
+          if (target && target.data && target.data.__liveEraser) {
+            detachFallbackPath(target);
+          } else if (target) {
+            const followers = getHiddenProperty(target, "__moldaLiveEraserFollowers");
+            if (Array.isArray(followers) && followers.length > 0) {
+              detachFallbackTarget(target);
+            }
+          }
+          if (!isRestoringRef.current && !isLoadingRef.current && !(target && target.data && target.data.__liveEraser))
             historyRef.current?.push("remove");
           emitHistory();
         };
-        const __onModified = () => {
-          if (!isRestoringRef.current && !isLoadingRef.current)
+        const __onModified = (evt: any) => {
+          const target = evt?.target;
+          const isFallbackPath = !!(target && target.data && target.data.__liveEraser);
+          if (target && !isFallbackPath) syncFallbackEraserFollowers(target);
+          if (!isRestoringRef.current && !isLoadingRef.current && !isFallbackPath)
             historyRef.current?.push("modify");
           emitHistory();
         };
-        const __onPath = () => {
+        const __onPath = (evt: any) => {
+          const path = evt?.path;
+          if (path && !(path.data && path.data.__liveEraser) && !path?.eraser) {
+            path.erasable = true;
+          }
           if (!isRestoringRef.current && !isLoadingRef.current)
             historyRef.current?.push("draw");
           emitHistory();
@@ -735,6 +1006,15 @@ const Editor2D = forwardRef<Editor2DHandle, Props>(function Editor2D(
         c.on("object:removed", __onRemoved);
         c.on("object:modified", __onModified);
         c.on("path:created", __onPath);
+
+        const handleFollowerSync = (evt: any) => {
+          const target = evt?.target;
+          if (target) syncFallbackEraserFollowers(target);
+        };
+        c.on("object:moving", handleFollowerSync);
+        c.on("object:scaling", handleFollowerSync);
+        c.on("object:rotating", handleFollowerSync);
+        c.on("object:skewing", handleFollowerSync);
 
         // ======= Publicação do estilo ativo + seleção =======
         const emitSelectionKind = () => {
@@ -892,6 +1172,10 @@ const Editor2D = forwardRef<Editor2DHandle, Props>(function Editor2D(
         c.off("object:removed");
         c.off("object:modified");
         c.off("path:created");
+        c.off("object:moving");
+        c.off("object:scaling");
+        c.off("object:rotating");
+        c.off("object:skewing");
       }
       try { (cleanupRef as any).current?.(); } catch {}
 
@@ -941,6 +1225,7 @@ const Editor2D = forwardRef<Editor2DHandle, Props>(function Editor2D(
         fill: strokeColorRef.current || "#000000",
         objectCaching: true,
         editable: true,
+        erasable: true,
       });
       c.add(it);
       c.setActiveObject(it);
@@ -1053,6 +1338,7 @@ const Editor2D = forwardRef<Editor2DHandle, Props>(function Editor2D(
             strokeWidth,
             selectable: false,
             evented: false,
+            erasable: true,
           }
         );
         c.add(currentLine);
@@ -1115,6 +1401,7 @@ const Editor2D = forwardRef<Editor2DHandle, Props>(function Editor2D(
           rx: 8,
           ry: 8,
           ...s,
+          erasable: true,
         });
       } else if (shape === "triangle") {
         obj = new fabric.Triangle({
@@ -1123,16 +1410,17 @@ const Editor2D = forwardRef<Editor2DHandle, Props>(function Editor2D(
           width: 140,
           height: 140,
           ...s,
+          erasable: true,
         });
       } else if (shape === "ellipse") {
-        obj = new fabric.Ellipse({ left: 100, top: 80, rx: 90, ry: 60, ...s });
+        obj = new fabric.Ellipse({ left: 100, top: 80, rx: 90, ry: 60, ...s, erasable: true });
       } else if (shape === "polygon") {
         const cx = 200, cy = 140, r = 70, sides = 6;
         const pts = Array.from({ length: sides }, (_, i) => {
           const a = (i / sides) * Math.PI * 2;
           return { x: cx + Math.cos(a) * r, y: cy + Math.sin(a) * r };
         });
-        obj = new fabric.Polygon(pts, { ...s, left: cx - r, top: cy - r });
+        obj = new fabric.Polygon(pts, { ...s, left: cx - r, top: cy - r, erasable: true });
       }
 
       if (obj) {
@@ -1203,7 +1491,7 @@ const Editor2D = forwardRef<Editor2DHandle, Props>(function Editor2D(
   const toJSON = () => {
     const c = canvasRef.current;
     if (c) {
-      const data = c.toJSON(["selectable", "evented"]);
+      const data = c.toJSON(["selectable", "evented", "erasable"]);
       return JSON.stringify({ kind: "fabric", data });
     }
     const el = domCanvasRef.current;
@@ -1224,6 +1512,18 @@ const Editor2D = forwardRef<Editor2DHandle, Props>(function Editor2D(
       isLoadingRef.current = true;
       return new Promise<void>((resolve) => {
         c.loadFromJSON(parsed.data, () => {
+          try {
+            c.getObjects()?.forEach((obj: any) => {
+              if (obj?.data && obj.data.__liveEraser) {
+                registerFallbackEraserPath(obj);
+                return;
+              }
+              if (obj?.eraser) return;
+              if (typeof obj === "object" && obj) {
+                if (obj.erasable === undefined) obj.erasable = true;
+              }
+            });
+          } catch {}
           c.renderAll();
           isLoadingRef.current = false;
           resolve();
@@ -1251,6 +1551,18 @@ const Editor2D = forwardRef<Editor2DHandle, Props>(function Editor2D(
   const clear = () => {
     const c = canvasRef.current;
     if (c) {
+      try {
+        c.getObjects()?.forEach((obj: any) => {
+          if (obj?.data && obj.data.__liveEraser) {
+            detachFallbackPath(obj);
+          } else {
+            const followers = getHiddenProperty(obj, "__moldaLiveEraserFollowers");
+            if (Array.isArray(followers) && followers.length > 0) {
+              detachFallbackTarget(obj);
+            }
+          }
+        });
+      } catch {}
       c.clear();
       // mantém transparente para seguir o “glass” do container
       c.setBackgroundColor("transparent", () => c.renderAll());
@@ -1284,6 +1596,7 @@ const Editor2D = forwardRef<Editor2DHandle, Props>(function Editor2D(
       fill: strokeColorRef.current || "#000000",
       objectCaching: true,
       editable: true,
+      erasable: true,
     });
     c.add(it);
     c.setActiveObject(it);
