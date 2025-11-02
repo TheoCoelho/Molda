@@ -49,15 +49,15 @@ export default class ProjectionDecal {
     this.texture.minFilter = THREE.LinearMipmapLinearFilter;
     this.texture.magFilter = THREE.LinearFilter;
     // @ts-ignore compat <= r151
-    if ("colorSpace" in this.texture) (this.texture as any).colorSpace = THREE.SRGBColorSpace;
-    else (this.texture as any).encoding = THREE.sRGBEncoding;
+  if ("colorSpace" in this.texture) (this.texture as any).colorSpace = (THREE as any).SRGBColorSpace;
+  else (this.texture as any).encoding = (THREE as any).sRGBEncoding;
 
     this.projector = new THREE.Object3D();
     this.projector.name = "ProjectionDecalProjector";
 
     // defaults: sem cortes e sem clamp (MOSTRAR INTEIRO)
     this.uniforms.uProjTex.value = this.texture;
-    this.uniforms.uFeather.value = opts?.feather ?? 0.08;
+    this.uniforms.uFeather.value = opts?.feather ?? 0.16; // feather maior por padrão
     this.uniforms.uStrength.value = opts?.strength ?? 1.0;
     this.uniforms.uCosLimit.value = Math.cos(
       THREE.MathUtils.degToRad(opts?.angleClampDeg ?? 84)
@@ -66,7 +66,7 @@ export default class ProjectionDecal {
     this.uniforms.uClipDepth.value = opts?.clipDepth  ? 1.0 : 0.0;
     this.uniforms.uUseClamp.value  = opts?.useAngleClamp ? 1.0 : 0.0;
     this.uniforms.uFrontOnly.value = opts?.frontOnly === false ? 0.0 : 1.0;
-    this.uniforms.uUseFeather.value= opts?.useFeather ? 1.0 : 0.0;
+    this.uniforms.uUseFeather.value= opts?.useFeather ?? true ? 1.0 : 0.0; // feather ativado por padrão
 
     this.updateUniformMatrix();
     this.updateProjDirWorld();
@@ -90,7 +90,7 @@ export default class ProjectionDecal {
     normal: THREE.Vector3,
     width: number,
     height: number,
-    depth = Math.max(width, height) * 2.0, // PROFUNDIDADE GRANDE para não cortar
+  depth = Math.max(width, height) * 3.0, // PROFUNDIDADE ainda maior para cobrir curvas
     angleRad = 0
   ) {
     // 1) alinha +Y do projetor com a normal do ponto
@@ -233,12 +233,12 @@ export default class ProjectionDecal {
 
               // máscaras (podem ser desligadas)
               float rectMask = mix(1.0,
-                                   step(0.0, uvp.x) * step(uvp.x, 1.0) *
-                                   step(0.0, uvp.y) * step(uvp.y, 1.0),
+                                   smoothstep(0.0, 0.05, uvp.x) * smoothstep(1.0, 0.95, uvp.x) *
+                                   smoothstep(0.0, 0.05, uvp.y) * smoothstep(1.0, 0.95, uvp.y),
                                    uClipRect);
 
               float depthMask = mix(1.0,
-                                    step(0.0, p.y) * step(p.y, 1.0),
+                                    smoothstep(0.0, 0.05, p.y) * smoothstep(1.0, 0.95, p.y),
                                     uClipDepth);
 
               // clamp angular opcional

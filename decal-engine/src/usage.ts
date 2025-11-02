@@ -2,12 +2,12 @@
 import * as THREE from "three";
 import { GLTFLoader } from "three/examples/jsm/loaders/GLTFLoader.js";
 import { OrbitControls } from "three/examples/jsm/controls/OrbitControls.js";
-import ProjectionDecal from "./engine/three/ProjectionDecal";
+import MeshDecalAdapter from "./engine/three/MeshDecalAdapter";
 
 export async function initDecalDemo(container: HTMLElement): Promise<void> {
   // ---------------- MENU ----------------
   const models = [
-    { label: "Manga Longa", value: "long_sleeve_t-shirt/scene.gltf" },
+    { label: "Manga Longa", value: "long_sleeve_t-_shirt/scene.gltf" },
     { label: "Oversized", value: "oversize_t-shirt_free/scene.gltf" },
     { label: "Low Poly", value: "t-shirt_low_poly/scene.gltf" },
     { label: "TShirt Model", value: "tshirt_model/scene.gltf" },
@@ -92,16 +92,30 @@ export async function initDecalDemo(container: HTMLElement): Promise<void> {
   // ---------------- Carregar GLTF ----------------
   const params = new URLSearchParams(window.location.search);
   const modelFile = params.get("model") || "tshirt_model/scene.gltf";
+  // Modo mesh (DecalGeometry) é o único disponível
+  const depthMultiplier = 1.0;
   const modelUrl = `/models/${modelFile}`;
   const loader = new GLTFLoader();
 
   let root: THREE.Object3D | null = null;
-  let projector: ProjectionDecal | null = null;
+  type ProjectorLike = {
+    setTransform: (
+      position: THREE.Vector3,
+      normal: THREE.Vector3,
+      width: number,
+      height: number,
+      depth: number,
+      angleRad: number
+    ) => void;
+    attachTo: (obj: THREE.Object3D) => void;
+    update: () => void;
+  };
+  let projector: ProjectorLike | null = null;
 
   // ---- decal: estado e dimensões ----
   let decalWidth = 0.3;
   let decalHeight = 0.3;
-  let decalDepth = Math.max(decalWidth, decalHeight) * 2.0;
+  let decalDepth = Math.max(decalWidth, decalHeight) * depthMultiplier;
   let decalAngle = 0;
   let decalCenter = new THREE.Vector3();
   let decalNormal = new THREE.Vector3(0, 0, 1);
@@ -296,7 +310,7 @@ export async function initDecalDemo(container: HTMLElement): Promise<void> {
     const z = rel.dot(decalNormal);
     const hx = decalWidth * 0.5;
     const hy = decalHeight * 0.5;
-    const hz = (decalDepth ?? Math.max(decalWidth, decalHeight) * 2.0) * 0.5;
+  const hz = (decalDepth ?? Math.max(decalWidth, decalHeight) * depthMultiplier) * 0.5;
     const insideRect  = Math.abs(x) <= hx && Math.abs(y) <= hy;
     const insideDepth = Math.abs(z) <= hz;
     return insideRect && insideDepth;
@@ -441,7 +455,7 @@ export async function initDecalDemo(container: HTMLElement): Promise<void> {
           decalWidth = Math.max(1e-4, 2 * Math.abs(x));
           decalHeight = Math.max(1e-4, 2 * Math.abs(y));
         }
-        decalDepth = Math.max(decalWidth, decalHeight) * 2.0;
+  decalDepth = Math.max(decalWidth, decalHeight) * depthMultiplier;
       } else if (dragMode === "rotate") {
         decalAngle = Math.atan2(y, x);
       }
@@ -535,14 +549,24 @@ export async function initDecalDemo(container: HTMLElement): Promise<void> {
         logoTex.minFilter = THREE.LinearMipmapLinearFilter;
         logoTex.magFilter = THREE.LinearFilter;
         if ("colorSpace" in (logoTex as any))
-          (logoTex as any).colorSpace = THREE.SRGBColorSpace;
-        else (logoTex as any).encoding = THREE.sRGBEncoding;
+          (logoTex as any).colorSpace = (THREE as any).SRGBColorSpace;
+        else (logoTex as any).encoding = (THREE as any).sRGBEncoding;
 
-        projector = new ProjectionDecal(logoTex, {
-          useFeather: true,
-          feather: 0.1,
-          strength: 1.0,
-        });
+        // Usa apenas modo mesh (DecalGeometry)
+        projector = new MeshDecalAdapter(scene, logoTex, {
+          angleClampDeg: 92,
+          depthFromSizeScale: 0.2,
+          frontOnly: true,
+          frontHalfOnly: false,
+          sliverAspectMin: 0.001,
+          areaMin: 1e-8,
+          zBandFraction: 0.6,
+          zBandMin: 0.015,
+          maxRadiusFraction: 1.0,
+          maxDepthScale: 1.0,
+          // useFeather: true, // opcional (material com borda suave)
+          // feather: 0.08,
+        }) as unknown as ProjectorLike;
         projector.attachTo(targetRoot);
 
         const bbox = new THREE.Box3().setFromObject(targetRoot);
@@ -550,7 +574,7 @@ export async function initDecalDemo(container: HTMLElement): Promise<void> {
         const base = Math.max(size.x, size.y, size.z) || 1.0;
         decalWidth = base * 0.25;
         decalHeight = decalWidth;
-        decalDepth = Math.max(decalWidth, decalHeight) * 2.0;
+        decalDepth = Math.max(decalWidth, decalHeight) * depthMultiplier;
 
         const c = bbox.getCenter(new THREE.Vector3());
         decalCenter.set(c.x, c.y, bbox.max.z + 0.02);
