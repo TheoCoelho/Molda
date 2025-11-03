@@ -4,7 +4,7 @@ import Header from "../components/Header";
 import Canvas3DViewer from "../components/Canvas3DViewer";
 import ExpandableSidebar from "../components/ExpandableSidebar";
 import { Button } from "../components/ui/button";
-import { Plus, X } from "lucide-react";
+import { Eye, EyeOff, Plus, X } from "lucide-react";
 import FloatingEditorToolbar from "../components/FloatingEditorToolbar";
 import TextToolbar from "../components/TextToolbar";
 import { useRecentFonts } from "../hooks/use-recent-fonts";
@@ -18,6 +18,9 @@ import Editor2D, {
 
 type CanvasTab = { id: string; name: string; type: "2d" | "3d" };
 type SelectionKind = "none" | "text" | "other";
+
+const TRANSPARENT_PNG =
+  "data:image/png;base64,iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mP8/x8AAukB9p7i/ZkAAAAASUVORK5CYII=";
 
 const Creation = () => {
   const [selectedFontFamily, setSelectedFontFamily] = useState<string>("Inter");
@@ -65,6 +68,27 @@ const Creation = () => {
   const [lineMode, setLineMode] = useState<"single" | "polyline">("single");
 
   const editorRefs = useRef<Record<string, Editor2DHandle | null>>({});
+  const [tabVisibility, setTabVisibility] = useState<Record<string, boolean>>({});
+  const [tabDecalPreviews, setTabDecalPreviews] = useState<Record<string, string>>({});
+
+  const captureTabImage = useCallback(
+    (tabId: string) => {
+      const inst = editorRefs.current[tabId];
+      const dataUrl = inst?.exportPNG?.();
+      if (dataUrl && tabDecalPreviews[tabId] !== dataUrl) {
+        setTabDecalPreviews((prev) => ({ ...prev, [tabId]: dataUrl }));
+        return dataUrl;
+      }
+      return tabDecalPreviews[tabId] ?? null;
+    },
+    [tabDecalPreviews]
+  );
+
+  const decalsFor3D = useMemo(() => {
+    return canvasTabs
+      .filter((tab) => tab.type === "2d" && tabVisibility[tab.id] && tabDecalPreviews[tab.id])
+      .map((tab) => ({ id: tab.id, label: tab.name, dataUrl: tabDecalPreviews[tab.id] }));
+  }, [canvasTabs, tabDecalPreviews, tabVisibility]);
 
   // Referência estável para os parâmetros do projeto atual
   const currentProjectRef = useRef<{part: string | null, type: string | null, subtype: string | null}>({
@@ -131,6 +155,7 @@ const Creation = () => {
     const inst = editorRefs.current[activeCanvasTab];
     const json = inst?.toJSON?.();
     if (json) setTabSnapshots((s) => ({ ...s, [activeCanvasTab]: json }));
+    captureTabImage(activeCanvasTab);
   };
 
   const syncFontsFromEditor = useCallback(
@@ -178,12 +203,23 @@ const Creation = () => {
     const count = canvasTabs.filter((t) => t.type === "2d").length + 1;
     setCanvasTabs((prev) => [...prev, { id, name: `2D - ${count}`, type: "2d" }]);
     setActiveCanvasTab(id);
+    setTabVisibility((prev) => ({ ...prev, [id]: false }));
   };
 
   const removeCanvasTab = (tabId: string) => {
     if (tabId === "3d") return;
     setTabSnapshots((s) => {
       const next = { ...s };
+      delete next[tabId];
+      return next;
+    });
+    setTabDecalPreviews((prev) => {
+      const next = { ...prev };
+      delete next[tabId];
+      return next;
+    });
+    setTabVisibility((prev) => {
+      const next = { ...prev };
       delete next[tabId];
       return next;
     });
@@ -252,10 +288,10 @@ const Creation = () => {
 
       <main className="container mx-auto px-4 py-6">
         {/* Mesma altura nas duas colunas */}
-        <section className="grid [grid-template-columns:max-content_minmax(0,1fr)] items-stretch gap-x-6 gap-y-6 h-[calc(100vh-140px)] min-h-[700px]">
+  <section className="grid [grid-template-columns:max-content_minmax(0,1fr)] items-stretch gap-x-6 gap-y-6 h-[calc(100vh-140px)] min-h-[700px] overflow-hidden">
 
           {/* Sidebar toma 100% da altura do grid */}
-          <div className="h-full">
+          <div className="h-full min-h-0 overflow-hidden">
             <ExpandableSidebar
               projectName={projectName}
               setProjectName={setProjectName}
@@ -283,7 +319,12 @@ const Creation = () => {
               lineMode={lineMode}
               setLineMode={setLineMode}
               onImageInsert={(src, opts) => {
-                if (!activeIs2D) return;
+                console.log('[Creation onImageInsert]', { activeIs2D, activeCanvasTab, editorRef: !!editorRefs.current[activeCanvasTab] });
+                if (!activeIs2D) {
+                  console.warn('[Creation onImageInsert] Not 2D active');
+                  return;
+                }
+                console.log('[Creation onImageInsert] Calling addImage');
                 editorRefs.current[activeCanvasTab]?.addImage(src, opts);
               }}
               addText={addText}
@@ -305,6 +346,7 @@ const Creation = () => {
                 <div className="flex items-center gap-1">
                   {canvasTabs.map((tab) => {
                     const active = tab.id === activeCanvasTab;
+                    const visibleIn3D = !!tabVisibility[tab.id];
                     return (
                       <button
                         key={tab.id}
@@ -320,13 +362,47 @@ const Creation = () => {
                         <span className="inline-flex items-center gap-2">
                           {tab.name}
                           {tab.type === "2d" && (
-                            <X
-                              className="w-4 h-4 opacity-60 hover:opacity-100"
-                              onClick={(e) => {
-                                e.stopPropagation();
-                                removeCanvasTab(tab.id);
-                              }}
-                            />
+                            <>
+                              <button
+                                type="button"
+                                onClick={(e) => {
+                                  e.stopPropagation();
+                                  const currentlyVisible = !!tabVisibility[tab.id];
+                                  if (!currentlyVisible) {
+                                    const result = captureTabImage(tab.id);
+                                    if (!result) {
+                                      setTabDecalPreviews((prev) => {
+                                        if (prev[tab.id]) return prev;
+                                        return {
+                                          ...prev,
+                                          [tab.id]: TRANSPARENT_PNG,
+                                        };
+                                      });
+                                    }
+                                  }
+                                  setTabVisibility((prev) => ({
+                                    ...prev,
+                                    [tab.id]: !currentlyVisible,
+                                  }));
+                                }}
+                                className="p-1 rounded-full hover:bg-white/20 transition"
+                                aria-label={visibleIn3D ? "Ocultar no 3D" : "Mostrar no 3D"}
+                                title={visibleIn3D ? "Ocultar no 3D" : "Mostrar no 3D"}
+                              >
+                                {visibleIn3D ? (
+                                  <Eye className="w-4 h-4" />
+                                ) : (
+                                  <EyeOff className="w-4 h-4" />
+                                )}
+                              </button>
+                              <X
+                                className="w-4 h-4 opacity-60 hover:opacity-100"
+                                onClick={(e) => {
+                                  e.stopPropagation();
+                                  removeCanvasTab(tab.id);
+                                }}
+                              />
+                            </>
                           )}
                         </span>
                       </button>
@@ -348,7 +424,7 @@ const Creation = () => {
               {/* Canvas ocupa toda a área */}
               {activeCanvasTab === "3d" ? (
                 <div className="absolute inset-0">
-                  <Canvas3DViewer baseColor={baseColor} />
+                  <Canvas3DViewer baseColor={baseColor} externalDecals={decalsFor3D} />
                   <div className="absolute bottom-3 left-3 text-xs text-gray-700 glass px-2 py-1 rounded">
                     Arraste para rotacionar · Scroll para zoom
                   </div>
@@ -406,6 +482,9 @@ const Creation = () => {
                     onHistoryChange={(u, r) => {
                       setCanUndo(u);
                       setCanRedo(r);
+                      if (tabVisibility[activeCanvasTab]) {
+                        captureTabImage(activeCanvasTab);
+                      }
                     }}
                   />
 

@@ -2,6 +2,7 @@ import { useRef } from 'react';
 import { Canvas, useFrame } from '@react-three/fiber';
 import { OrbitControls, Environment } from '@react-three/drei';
 import * as THREE from 'three';
+// DecalManagerR3F desabilitado: usaremos o decal-engine original na Tab3D principal
 
 interface TShirt3DProps {
   color: string;
@@ -57,6 +58,7 @@ function TShirtMesh({ color }: { color: string }) {
 }
 
 export default function TShirt3D({ color }: TShirt3DProps) {
+  const targetRef = useRef<THREE.Group>(null);
   return (
     <div className="w-full h-full">
       <Canvas camera={{ position: [0, 0, 8], fov: 50 }}>
@@ -64,7 +66,9 @@ export default function TShirt3D({ color }: TShirt3DProps) {
         <directionalLight position={[10, 10, 5]} intensity={1} />
         <directionalLight position={[-10, -10, -5]} intensity={0.3} />
         
-        <TShirtMesh color={color} />
+        <group ref={targetRef}>
+          <TShirtMesh color={color} />
+        </group>
         
         <OrbitControls 
           enablePan={false}
@@ -73,7 +77,7 @@ export default function TShirt3D({ color }: TShirt3DProps) {
           minDistance={3}
         />
         
-        <Environment preset="studio" />
+  <Environment preset="studio" />
       </Canvas>
     </div>
   );

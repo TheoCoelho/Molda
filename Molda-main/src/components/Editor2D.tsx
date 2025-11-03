@@ -7,6 +7,7 @@ import React, {
 } from "react";
 import HistoryManager from "../lib/HistoryManager";
 import { ensureFontForFabric } from "../utils/fonts";
+import { generateBlobSvgDataUrl } from "../lib/shapeGenerators";
 
 // Tipos alinhados com ExpandableSidebar
 export type Tool = "select" | "brush" | "line" | "curve" | "text";
@@ -51,7 +52,7 @@ export type Editor2DHandle = {
   ) => void;
   addImage: (
     src: string,
-    opts?: { x?: number; y?: number; scale?: number }
+    opts?: { x?: number; y?: number; scale?: number; meta?: Record<string, unknown> }
   ) => void;
 
   toJSON: () => string;
@@ -180,6 +181,75 @@ const Editor2D = forwardRef<Editor2DHandle, Props>(function Editor2D(
     if (!c) return;
     const active = c.getActiveObject?.();
     if (active) {
+      const meta = (active as any).data as Record<string, unknown> | null | undefined;
+
+      if (meta?.kind === "blob") {
+        let blobChanged = false;
+        if (typeof active.set === "function" && active.opacity !== opacity) {
+          active.set({ opacity });
+          blobChanged = true;
+        }
+
+        const fillMode = (meta.fillMode as string) === "transparent" ? "transparent" : "solid";
+        const desiredFill = fillMode === "transparent" ? "none" : strokeColor;
+        const desiredStroke = strokeColor;
+        const prevFill = (meta as any).currentFill ?? (meta as any).initialFill ?? null;
+        const prevStroke = (meta as any).currentStroke ?? (meta as any).initialStroke ?? null;
+        const prevStrokeWidth = (meta as any).currentStrokeWidth ?? (meta as any).strokeWidth ?? null;
+        const desiredStrokeWidth = Number.isFinite(strokeWidth) ? strokeWidth : prevStrokeWidth ?? 2;
+
+        if (
+          prevFill !== desiredFill ||
+          prevStroke !== desiredStroke ||
+          prevStrokeWidth !== desiredStrokeWidth
+        ) {
+          const size = typeof meta.baseSize === "number" ? (meta.baseSize as number) : 320;
+          const seed = typeof meta.seed === "number" ? (meta.seed as number) : 0;
+          const nextUrl = generateBlobSvgDataUrl({
+            size,
+            seed,
+            fill: desiredFill,
+            stroke: desiredStroke,
+            strokeWidth: desiredStrokeWidth,
+          });
+          if (typeof (active as any).setSrc === "function") {
+            (active as any).setSrc(nextUrl, () => {
+              c.requestRenderAll?.();
+            });
+          }
+          (active as any).data = {
+            ...meta,
+            currentFill: desiredFill,
+            currentStroke: desiredStroke,
+            currentStrokeWidth: desiredStrokeWidth,
+          };
+          blobChanged = true;
+        }
+
+        if (blobChanged) {
+          setTimeout(() => {
+            c.setActiveObject(active);
+            c.requestRenderAll?.();
+          }, 0);
+        }
+        return;
+      }
+
+      if (active.type === "image") {
+        let imgChanged = false;
+        if (typeof active.set === "function" && active.opacity !== opacity) {
+          active.set({ opacity });
+          imgChanged = true;
+        }
+        if (imgChanged) {
+          setTimeout(() => {
+            c.setActiveObject(active);
+            c.requestRenderAll?.();
+          }, 0);
+        }
+        return;
+      }
+
       let changed = false;
       if (typeof active.set === "function" && active.strokeWidth !== strokeWidth) {
         active.set({ strokeWidth });
@@ -257,7 +327,7 @@ const Editor2D = forwardRef<Editor2DHandle, Props>(function Editor2D(
 
   const addImage = (
     src: string,
-    opts?: { x?: number; y?: number; scale?: number }
+    opts?: { x?: number; y?: number; scale?: number; meta?: Record<string, unknown> }
   ) => {
     const c = canvasRef.current;
     const fabric = fabricRef.current;
@@ -289,6 +359,9 @@ const Editor2D = forwardRef<Editor2DHandle, Props>(function Editor2D(
             cornerStyle: "circle",
             transparentCorners: false,
             erasable: true,
+            data: opts?.meta ?? null,
+            stroke: undefined,
+            strokeWidth: 0,
           });
           c.add(img);
           c.setActiveObject(img);

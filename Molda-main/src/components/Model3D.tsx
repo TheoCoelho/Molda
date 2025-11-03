@@ -1,8 +1,9 @@
 // src/components/Model3D.tsx
-import { useMemo, useState, Suspense } from "react";
+import { useMemo, useState, Suspense, useRef, useEffect } from "react";
 import { Canvas } from "@react-three/fiber";
 import { OrbitControls, Environment, Html, useGLTF, Bounds, Center } from "@react-three/drei";
 import * as THREE from "three";
+// DecalManagerR3F removido: estamos utilizando o decal-engine original embutido em outra view
 
 type Vec3 = [number, number, number];
 
@@ -27,11 +28,13 @@ function GLTFModel({
   scale = 1,
   rotation = [0, 0, 0],
   position = [0, 0, 0],
-}: Required<Pick<Model3DProps, "src" | "baseColor" | "scale" | "rotation" | "position">>) {
+  onMount,
+}: Required<Pick<Model3DProps, "src" | "baseColor" | "scale" | "rotation" | "position">> & { onMount?: (root: THREE.Object3D) => void }) {
   const { scene: raw } = useGLTF(src);
 
   // Clonamos para poder ajustar sem afetar cache global
   const scene = useMemo(() => raw.clone(true), [raw]);
+  const groupRef = useRef<THREE.Group>(null);
 
   // 1) Ajuste de cor base quando possível
   useMemo(() => {
@@ -71,8 +74,11 @@ function GLTFModel({
   // Observação:
   // - Aplicamos 'position' no group (que corrige o centro),
   // - E aplicamos 'rotation' no primitive (modelo).
+  useEffect(() => {
+    if (groupRef.current && onMount) onMount(groupRef.current);
+  }, [onMount]);
   return (
-    <group position={[position[0] - center.x, position[1] - center.y, position[2] - center.z]}>
+    <group ref={groupRef} position={[position[0] - center.x, position[1] - center.y, position[2] - center.z]}>
       <primitive object={scene} rotation={rotation as any} scale={finalScale as any} />
     </group>
   );
@@ -113,6 +119,7 @@ export default function Model3D({
   className,
 }: Model3DProps) {
   const [rotating, setRotating] = useState<boolean>(autoRotate);
+  const modelRootRef = useRef<THREE.Object3D | null>(null);
 
   const camPos: Vec3 = camera?.position ?? [0, 1.2, 6];
   const fov = camera?.fov ?? 45;
@@ -146,6 +153,7 @@ export default function Model3D({
             scale={scale}
             rotation={rotation}
             position={position}
+            onMount={(root) => (modelRootRef.current = root)}
           />
         ) : (
           <PlaceholderShirt color={baseColor} />
@@ -163,6 +171,7 @@ export default function Model3D({
     autoRotateSpeed={0.6}
   />
   {envFile ? <Environment files={envFile} /> : <Environment preset={envPreset} />}
+  {/* Decal Manager R3F removido nesta rota */}
 </Canvas>
 
 

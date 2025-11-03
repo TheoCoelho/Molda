@@ -39,6 +39,7 @@ const TYPE_ALIASES: Record<string, string[]> = {
 
 const SUBTYPE_ALIASES: Record<string, string[]> = {
   basic: ["basic", "basica", "básica", "simples"],
+  "long-sleeve": ["long-sleeve", "manga-longa", "manga longa", "long", "longa"],
   premium: ["premium"],
   classic: ["classic", "classica", "clássica"],
 };
@@ -64,12 +65,22 @@ const keyFrom = (sel: Selection) => `${sel.part ?? ""}:${sel.type ?? ""}:${sel.s
 /* ---------- Registry (permanece em inglês / slugs canônicos) ---------- */
 
 const REGISTRY: Record<string, ModelConfig> = {
-  // Camiseta básica (o seu .gltf em pasta)
+  // Camiseta básica (low-poly model com suporte a decals)
   "torso:shirt:basic": {
-    src: "/models/tshirt/scene.gltf",
-    camera: { position: [0, 1.2, 5], fov: 45 },
+    src: "/models/tshirt-low-poly/scene.gltf",
+    camera: { position: [0, 1.5, 5], fov: 45 },
     controls: { minDistance: 3, maxDistance: 10, enableZoom: true, enablePan: false },
-    scale: 1,
+    scale: 0.8,
+    rotation: [0, 0, 0],
+    position: [0, 0, 0],
+  },
+
+  // Camiseta manga longa
+  "torso:shirt:long-sleeve": {
+    src: "/models/long_sleeve_t-_shirt/scene.gltf",
+    camera: { position: [0, 1.5, 5], fov: 45 },
+    controls: { minDistance: 3, maxDistance: 10, enableZoom: true, enablePan: false },
+    scale: 0.8,
     rotation: [0, 0, 0],
     position: [0, 0, 0],
   },
@@ -108,11 +119,7 @@ export function getModelConfigFromSelection(sel: Selection): ModelConfig {
   const key = keyFrom(canon);
   const cfg = REGISTRY[key];
 
-  if (!cfg && import.meta.env.DEV) {
-    // Ajuda no debug (mostra origem e a normalização)
-    // eslint-disable-next-line no-console
-    console.warn("[models] chave não encontrada (normalizada):", key, "· original:", keyFrom(sel));
-  }
+  // debug removido para evitar dependência de import.meta.env
   return cfg ?? {};
 }
 

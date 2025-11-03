@@ -1,15 +1,18 @@
 import { useMemo } from "react";
 import { useLocation, useSearchParams } from "react-router-dom";
-import Model3D from "./Model3D";
-import TShirt3D from "./TShirt3D";               // ✅ caminho corrigido (mesma pasta)
+// Substituímos o viewer R3F pelo host do decal-engine existente
+import DecalEngineHost from "./DecalEngineHost";
+// import Model3D from "./Model3D";
+// import TShirt3D from "./TShirt3D";               // ✅ caminho corrigido (mesma pasta)
 import { getModelConfigFromSelection } from "../lib/models";
 
 type Props = {
   baseColor?: string;
   className?: string;
+  externalDecals?: Array<{ id: string; label: string; dataUrl: string }>;
 };
 
-export default function Canvas3DViewer({ baseColor = "#ffffff", className }: Props) {
+export default function Canvas3DViewer({ baseColor = "#ffffff", className, externalDecals = [] }: Props) {
   const [searchParams] = useSearchParams();
   const location = useLocation();
 
@@ -23,36 +26,17 @@ export default function Canvas3DViewer({ baseColor = "#ffffff", className }: Pro
     [part, type, subtype]
   );
 
-  if (import.meta.env.DEV) {
-    // ajuda a verificar por que o registry não casou
-    // eslint-disable-next-line no-console
-    console.log("[Canvas3DViewer] seleção:", { part, type, subtype }, "=> modelConfig:", modelConfig);
-  }
+  // debug removido para evitar dependência de import.meta.env
 
-  if (!modelConfig?.src) {
-    // Fallback preservando o comportamento antigo
-    return (
-      <div className={["relative w-full h-full", className].filter(Boolean).join(" ")}>
-        <TShirt3D color={baseColor} />
-      </div>
-    );
-  }
-
-return (
-  <Model3D
-    key={modelConfig.src}              // <- força recriar quando o src muda
-    className={className || "w-full h-full"}
-    src={modelConfig.src}
-    baseColor={baseColor}
-    camera={modelConfig.camera}
-    controls={modelConfig.controls}
-    scale={modelConfig.scale}
-    rotation={modelConfig.rotation}
-    position={modelConfig.position}
-    envPreset="studio"
-    showControlsButton
-    autoRotate
-  />
-);
+  // Em vez de reconstruir as funcionalidades, utilizamos o decal-engine diretamente dentro da Tab3D
+  return (
+    <div className={["relative w-full h-full", className].filter(Boolean).join(" ")}>
+      <DecalEngineHost
+        className="w-full h-full"
+        selection={{ part, type, subtype }}
+        decals={externalDecals}
+      />
+    </div>
+  );
 
 }

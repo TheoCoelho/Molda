@@ -163,6 +163,28 @@ body::before {
 body::before { display: none !important; }
 
 /* =========================================================
+   Soft scrollbars (sidebar, libraries)
+   ========================================================= */
+.scrollbar-soft {
+  scrollbar-width: thin;
+  scrollbar-color: rgba(15, 23, 42, 0.25) transparent;
+}
+.scrollbar-soft::-webkit-scrollbar {
+  width: 6px;
+  height: 6px;
+}
+.scrollbar-soft::-webkit-scrollbar-track {
+  background: transparent;
+}
+.scrollbar-soft::-webkit-scrollbar-thumb {
+  background: rgba(15, 23, 42, 0.25);
+  border-radius: 9999px;
+}
+.scrollbar-soft::-webkit-scrollbar-thumb:hover {
+  background: rgba(15, 23, 42, 0.35);
+}
+
+/* =========================================================
    NAV LINK — estilo unificado para itens do header/nav
    ========================================================= */
 .nav-link {
