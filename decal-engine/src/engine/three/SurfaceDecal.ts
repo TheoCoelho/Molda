@@ -50,15 +50,7 @@ export class SurfaceDecal {
 	private opts: Required<SurfaceDecalOptions>;
 
 	constructor(private texture: THREE.Texture, opts: SurfaceDecalOptions = {}) {
-		// Normaliza textura
-			if ("colorSpace" in this.texture)
-				(this.texture as any).colorSpace = (THREE as any).SRGBColorSpace;
-			else (this.texture as any).encoding = (THREE as any).sRGBEncoding;
-		this.texture.generateMipmaps = true;
-		this.texture.minFilter = THREE.LinearMipmapLinearFilter;
-		this.texture.magFilter = THREE.LinearFilter;
-		this.texture.wrapS = THREE.ClampToEdgeWrapping;
-		this.texture.wrapT = THREE.ClampToEdgeWrapping;
+		this.prepareTexture(this.texture);
 
 		this.opts = {
 			angleClampDeg: opts.angleClampDeg ?? 92, // usado apenas para backface extremo (-0.3)
@@ -74,6 +66,18 @@ export class SurfaceDecal {
 			maxRadiusFraction: opts.maxRadiusFraction ?? 1.0,
 			maxDepthScale: opts.maxDepthScale ?? 1.0, // volume máximo para capturar curvas
 		};
+	}
+
+	private prepareTexture(tex: THREE.Texture) {
+		// Normaliza textura
+		if ("colorSpace" in tex)
+			(tex as any).colorSpace = (THREE as any).SRGBColorSpace;
+		else (tex as any).encoding = (THREE as any).sRGBEncoding;
+		tex.generateMipmaps = true;
+		tex.minFilter = THREE.LinearMipmapLinearFilter;
+		tex.magFilter = THREE.LinearFilter;
+		tex.wrapS = THREE.ClampToEdgeWrapping;
+		tex.wrapT = THREE.ClampToEdgeWrapping;
 	}
 
 	private calcDepth(size: SurfaceDecalSize) {
@@ -141,6 +145,20 @@ export class SurfaceDecal {
 
 	private makeMaterial() {
 		return this.opts.useFeather ? this.makeFeatherMat() : this.makeBasicMat();
+	}
+
+	setTexture(tex: THREE.Texture) {
+		this.texture = tex;
+		this.prepareTexture(tex);
+		if (!this.mesh) return;
+		const mat = this.mesh.material as any;
+		if (mat && mat.isShaderMaterial && mat.uniforms && mat.uniforms.map) {
+			mat.uniforms.map.value = tex;
+			mat.needsUpdate = true;
+		} else if (mat && mat.isMeshBasicMaterial) {
+			mat.map = tex;
+			mat.needsUpdate = true;
+		}
 	}
 
 	// Cria uma base ortonormal para o projetor em espaço de mundo
@@ -242,6 +260,10 @@ export class SurfaceDecal {
 			const maxZ = Math.max(a.z, b.z, c.z);
 			if (maxZ > maxDepth) continue;
 
+			const minZ = Math.min(a.z, b.z, c.z);
+			const behindLimit = -Math.min(maxDepth * 0.22, 0.03);
+			if (minZ < behindLimit) continue;
+
 			// Filtro anti-filete: avalia aspecto no plano XY local
 			if (this.opts.sliverAspectMin > 0) {
 				a2.set(a.x, a.y); b2.set(b.x, b.y); c2.set(c.x, c.y);
@@ -309,6 +331,7 @@ export class SurfaceDecal {
 
 		const indices = idx.array as any;
 		const candidates: CandidateTri[] = [];
+		const maxRadius = Math.max(size.width, size.height) * 0.5 * this.opts.maxRadiusFraction;
 
 		const a = new THREE.Vector3(), b = new THREE.Vector3(), c = new THREE.Vector3();
 		const ra = new THREE.Vector3(), rb = new THREE.Vector3(), rcV = new THREE.Vector3();
@@ -326,7 +349,7 @@ export class SurfaceDecal {
 			ac.subVectors(c, a);
 			n.crossVectors(ab, ac).normalize();
 			const alignment = n.dot(basis.fwd);
-			if (alignment < -0.3) continue; // Rejeita APENAS backfaces extremos que causam inversão visual
+			if (alignment < -0.18) continue; // tolera curvas moderadas, rejeita inversões severas
 
 			// Coordenadas locais ao projetor
 			ra.subVectors(a, originPoint);
@@ -350,11 +373,16 @@ export class SurfaceDecal {
 			const area = Math.abs((bx - ax)*(cy - ay) - (by - ay)*(cx - ax)) * 0.5;
 			if (area < 1e-8) continue; // Apenas fragmentos microscópicos
 
+			const minZ = Math.min(az, bz, cz);
+			const behindLimit = -Math.min(actualDepth * 0.22, 0.03);
+			if (minZ < behindLimit) continue;
+
 			const xc = (ax + bx + cx) / 3.0;
 			const yc = (ay + by + cy) / 3.0;
 			const rcent = Math.hypot(xc, yc);
 			const zc = (az + bz + cz) / 3.0;
 			
+			if (rcent > maxRadius) continue;
 			candidates.push({ i0: indices[i], i1: indices[i + 1], i2: indices[i + 2], zc, rc: rcent });
 		}
 

@@ -42,6 +42,8 @@ export type Editor2DHandle = {
 
   clear: () => void;
   exportPNG: () => string;
+  /** Força re-measure, calcOffset e renderAll (útil ao voltar para a aba) */
+  refresh: () => void;
   addShape: (
     shape: ShapeKind,
     style?: {
@@ -1121,8 +1123,16 @@ const Editor2D = forwardRef<Editor2DHandle, Props>(function Editor2D(
 
         // Garante dimensionamento válido após o layout estabilizar
         try {
-          requestAnimationFrame(() => { ensureCanvasSize(); try { c.calcOffset?.(); } catch {} });
-          setTimeout(() => { ensureCanvasSize(); try { c.calcOffset?.(); } catch {} }, 0);
+          requestAnimationFrame(() => {
+            ensureCanvasSize();
+            try { c.calcOffset?.(); } catch {}
+            c.requestRenderAll?.();
+          });
+          setTimeout(() => {
+            ensureCanvasSize();
+            try { c.calcOffset?.(); } catch {}
+            c.requestRenderAll?.();
+          }, 0);
         } catch {}
 
         const hostEl = hostRef.current;
@@ -1791,6 +1801,23 @@ const Editor2D = forwardRef<Editor2DHandle, Props>(function Editor2D(
   };
 
   // ----------------------- ações públicas -----------------------
+  const refresh = () => {
+    const c = canvasRef.current;
+    if (c) {
+      try {
+        ensureCanvasSize();
+        c.calcOffset?.();
+      } catch {}
+      c.requestRenderAll?.();
+      return;
+    }
+    const el = domCanvasRef.current;
+    if (el) {
+      // no fallback, apenas força um reflow visual (opcional)
+      try { void el.getBoundingClientRect(); } catch {}
+    }
+  };
+
   const clear = () => {
     const c = canvasRef.current;
     if (c) {
@@ -2021,6 +2048,7 @@ const Editor2D = forwardRef<Editor2DHandle, Props>(function Editor2D(
   useImperativeHandle(ref, () => ({
     clear,
     exportPNG,
+    refresh,
     addShape,
     addImage,
     toJSON,

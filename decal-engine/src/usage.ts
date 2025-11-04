@@ -4,8 +4,26 @@ import { GLTFLoader } from "three/examples/jsm/loaders/GLTFLoader.js";
 import { OrbitControls } from "three/examples/jsm/controls/OrbitControls.js";
 import MeshDecalAdapter from "./engine/three/MeshDecalAdapter";
 
-export async function initDecalDemo(container: HTMLElement): Promise<void> {
+export type ExternalDecalPayload = {
+  id: string;
+  label?: string;
+  src: string;
+  width?: number;
+  height?: number;
+  depth?: number;
+  angle?: number;
+};
+
+export type DecalDemoHandle = {
+  upsertExternalDecal: (payload: ExternalDecalPayload) => void;
+  removeExternalDecal: (id: string) => void;
+};
+
+export async function initDecalDemo(container: HTMLElement): Promise<DecalDemoHandle> {
   // ---------------- MENU ----------------
+  const params0 = new URLSearchParams(window.location.search);
+  const hideMenu = params0.get("hideMenu") === "1" || params0.get("hideMenu") === "true";
+  if (!hideMenu) {
   const models = [
     { label: "Manga Longa", value: "long_sleeve_t-_shirt/scene.gltf" },
     { label: "Oversized", value: "oversize_t-shirt_free/scene.gltf" },
@@ -45,6 +63,563 @@ export async function initDecalDemo(container: HTMLElement): Promise<void> {
     menu.appendChild(btn);
   });
   container.appendChild(menu);
+  }
+
+  const galleryPanel = document.createElement("div");
+  Object.assign(galleryPanel.style, {
+    position: "absolute",
+    top: "10px",
+    right: "10px",
+    zIndex: "1000",
+    background: "rgba(30,30,30,0.85)",
+    padding: "10px",
+    borderRadius: "8px",
+    color: "#fff",
+    fontFamily: "system-ui, -apple-system, Segoe UI, Roboto, sans-serif",
+    width: "200px",
+    display: "flex",
+    flexDirection: "column",
+    gap: "8px",
+    boxShadow: "0 6px 16px rgba(0,0,0,0.35)",
+  } as CSSStyleDeclaration);
+  container.appendChild(galleryPanel);
+
+  const galleryTitle = document.createElement("div");
+  galleryTitle.textContent = "Galeria";
+  Object.assign(galleryTitle.style, {
+    fontWeight: "600",
+    fontSize: "14px",
+    letterSpacing: "0.4px",
+    textTransform: "uppercase",
+  } as CSSStyleDeclaration);
+  galleryPanel.appendChild(galleryTitle);
+
+  const galleryActions = document.createElement("div");
+  Object.assign(galleryActions.style, {
+    display: "flex",
+    gap: "6px",
+    alignItems: "center",
+  } as CSSStyleDeclaration);
+  galleryPanel.appendChild(galleryActions);
+
+  const addImageButton = document.createElement("button");
+  addImageButton.textContent = "+ Imagem";
+  Object.assign(addImageButton.style, {
+    flex: "1",
+    padding: "6px 10px",
+    border: "none",
+    borderRadius: "6px",
+    background: "#7c3aed",
+    color: "#fff",
+    cursor: "pointer",
+    fontSize: "12px",
+    transition: "background 0.2s ease",
+  } as CSSStyleDeclaration);
+  addImageButton.onmouseenter = () => {
+    addImageButton.style.background = "#8b5cf6";
+  };
+  addImageButton.onmouseleave = () => {
+    addImageButton.style.background = "#7c3aed";
+  };
+  galleryActions.appendChild(addImageButton);
+
+  const uploadInput = document.createElement("input");
+  uploadInput.type = "file";
+  uploadInput.accept = "image/*";
+  uploadInput.multiple = true;
+  uploadInput.style.display = "none";
+  galleryPanel.appendChild(uploadInput);
+
+  const galleryEmptyLabel = document.createElement("div");
+  galleryEmptyLabel.textContent = "Nenhuma imagem adicionada.";
+  Object.assign(galleryEmptyLabel.style, {
+    fontSize: "12px",
+    opacity: "0.7",
+  } as CSSStyleDeclaration);
+  galleryPanel.appendChild(galleryEmptyLabel);
+
+  const galleryThumbs = document.createElement("div");
+  Object.assign(galleryThumbs.style, {
+    display: "grid",
+    gridTemplateColumns: "repeat(2, 1fr)",
+    gap: "6px",
+  } as CSSStyleDeclaration);
+  galleryPanel.appendChild(galleryThumbs);
+
+  addImageButton.addEventListener("click", () => uploadInput.click());
+  uploadInput.addEventListener("change", () => {
+    handleFileList(uploadInput.files);
+    uploadInput.value = "";
+  });
+
+  type ProjectorLike = {
+    setTransform: (
+      position: THREE.Vector3,
+      normal: THREE.Vector3,
+      width: number,
+      height: number,
+      depth: number,
+      angleRad: number
+    ) => void;
+    attachTo: (obj: THREE.Object3D) => void;
+    update: () => void;
+    updateTexture?: (texture: THREE.Texture) => void;
+    dispose?: () => void;
+    getMesh?: () => THREE.Mesh | null;
+  };
+
+  let root: THREE.Object3D | null = null;
+  let projector: ProjectorLike | null = null;
+  const textureLoader = new THREE.TextureLoader();
+
+  type GalleryItem = {
+    id: string;
+    label: string;
+    src: string;
+    texture?: THREE.Texture;
+    hidden?: boolean;
+  };
+
+  const galleryState = {
+    items: [] as GalleryItem[],
+    activeId: "",
+    selectedIds: new Set<string>(),
+  };
+
+  type DecalRecord = {
+    id: string;
+    galleryItemId: string;
+    projector: ProjectorLike;
+    texture: THREE.Texture;
+    width: number;
+    height: number;
+    depth: number;
+    angle: number;
+    center: THREE.Vector3;
+    normal: THREE.Vector3;
+    mesh: THREE.Mesh | null;
+  };
+
+  const decals = new Map<string, DecalRecord>();
+  let activeDecalId: string | null = null;
+  const pendingExternalDecals = new Set<string>();
+
+  let defaultWidth = 0.3;
+  let defaultHeight = 0.3;
+  let defaultDepth = 0.3;
+  const defaultCenter = new THREE.Vector3(0, 0.5, 0.2);
+  const defaultNormal = new THREE.Vector3(0, 0, 1);
+
+  const decalRaycaster = new THREE.Raycaster();
+
+  const projectorOptions = {
+    angleClampDeg: 92,
+    depthFromSizeScale: 0.2,
+    frontOnly: true,
+    frontHalfOnly: false,
+    sliverAspectMin: 0.001,
+    areaMin: 1e-8,
+    zBandFraction: 0.6,
+    zBandMin: 0.015,
+    maxRadiusFraction: 1.0,
+    maxDepthScale: 1.0,
+  };
+
+  function getGalleryItemById(id: string): GalleryItem | null {
+    return galleryState.items.find((g) => g.id === id) ?? null;
+  }
+
+  function handleThumbClick(id: string) {
+    const item = getGalleryItemById(id);
+    if (!item) return;
+    if (!galleryState.selectedIds.has(id)) {
+      galleryState.selectedIds.add(id);
+      ensureDecalForGalleryItem(item, true);
+    } else {
+      setActiveDecal(id);
+    }
+    renderGallery();
+  }
+
+  function handleRemoveDecal(id: string) {
+    galleryState.selectedIds.delete(id);
+    removeDecalForGalleryItem(id);
+    if (galleryState.selectedIds.size === 0) {
+      setActiveDecal(null);
+    } else if (!galleryState.selectedIds.has(galleryState.activeId)) {
+      const next = galleryState.selectedIds.values().next().value as string | undefined;
+      setActiveDecal(next ?? null);
+    }
+    renderGallery();
+  }
+
+  function addGalleryItem(src: string, label: string, activate = false) {
+    const id = typeof crypto !== "undefined" && typeof crypto.randomUUID === "function"
+      ? crypto.randomUUID()
+      : `img-${Date.now()}-${Math.floor(Math.random() * 10000)}`;
+    const item: GalleryItem = { id, label, src };
+    galleryState.items.push(item);
+    if (activate) {
+      galleryState.selectedIds.add(id);
+      ensureDecalForGalleryItem(item, true);
+      galleryState.activeId = id;
+    }
+    renderGallery();
+    return item;
+  }
+
+  function handleFileList(list: FileList | null) {
+    if (!list || !list.length) return;
+    const files = Array.from(list);
+    files.forEach((file, index) => {
+      const reader = new FileReader();
+      reader.onload = () => {
+        if (typeof reader.result !== "string") return;
+        const label = file.name || `Imagem ${galleryState.items.length + 1}`;
+        const activate = files.length === 1 || index === files.length - 1;
+        addGalleryItem(reader.result, label, activate);
+      };
+      reader.onerror = () => {
+        console.error("Falha ao ler arquivo de imagem:", file.name);
+      };
+      reader.readAsDataURL(file);
+    });
+  }
+
+  function prepareTexture(tex: THREE.Texture) {
+    tex.wrapS = THREE.ClampToEdgeWrapping;
+    tex.wrapT = THREE.ClampToEdgeWrapping;
+    tex.minFilter = THREE.LinearMipmapLinearFilter;
+    tex.magFilter = THREE.LinearFilter;
+    if ("colorSpace" in (tex as any)) (tex as any).colorSpace = (THREE as any).SRGBColorSpace;
+    else (tex as any).encoding = (THREE as any).sRGBEncoding;
+  }
+
+  function ensureTexture(item: GalleryItem, onReady: (texture: THREE.Texture) => void) {
+    if (item.texture) {
+      onReady(item.texture);
+      return;
+    }
+    textureLoader.load(
+      item.src,
+      (tex) => {
+        prepareTexture(tex);
+        item.texture = tex;
+        onReady(tex);
+      },
+      undefined,
+      (err) => console.error("Falha ao carregar textura da galeria:", err)
+    );
+  }
+
+  function ensureDecalForGalleryItem(item: GalleryItem, makeActive = true) {
+    if (decals.has(item.id)) {
+      if (makeActive) setActiveDecal(item.id);
+      return;
+    }
+    ensureTexture(item, (texture) => {
+      if (!root) return;
+      const center = defaultCenter.clone();
+      const normal = defaultNormal.clone();
+      const width = defaultWidth;
+      const height = defaultHeight;
+      const depth = defaultDepth;
+      const angle = 0;
+      const adapter = new MeshDecalAdapter(scene, texture, projectorOptions) as unknown as ProjectorLike;
+      adapter.attachTo(root);
+      adapter.setTransform(center, normal, width, height, depth, angle);
+      const mesh = adapter.getMesh ? adapter.getMesh() : null;
+      if (mesh) {
+        mesh.userData = mesh.userData || {};
+        (mesh.userData as Record<string, unknown>).__decalId = item.id;
+      }
+      const record: DecalRecord = {
+        id: item.id,
+        galleryItemId: item.id,
+        projector: adapter,
+        texture,
+        width,
+        height,
+        depth,
+        angle,
+        center,
+        normal,
+        mesh: mesh ?? null,
+      };
+      decals.set(item.id, record);
+      pendingExternalDecals.delete(item.id);
+      if (makeActive) setActiveDecal(item.id);
+      renderGallery();
+    });
+  }
+
+  function removeDecalForGalleryItem(id: string) {
+    const record = decals.get(id);
+    if (!record) return;
+    if (record.projector.dispose) record.projector.dispose();
+    decals.delete(id);
+    if (activeDecalId === id) {
+      activeDecalId = null;
+      projector = null;
+      galleryState.activeId = "";
+      selected = false;
+      showOverlay(false);
+    }
+  }
+
+  function upsertExternalDecal(payload: ExternalDecalPayload) {
+    const id = payload.id;
+    if (!id) return;
+    const label = payload.label ?? "Canvas";
+    let item = getGalleryItemById(id);
+    if (!item) {
+      item = { id, label, src: payload.src, hidden: true };
+      galleryState.items.push(item);
+      galleryState.selectedIds.add(id);
+      pendingExternalDecals.add(id);
+      renderGallery();
+      ensureDecalForGalleryItem(item, false);
+      return;
+    }
+
+    item.label = label;
+    item.src = payload.src;
+    item.hidden = true;
+    pendingExternalDecals.add(id);
+    renderGallery();
+
+    ensureTexture(item, (texture) => {
+      const record = decals.get(id);
+      if (record) {
+        record.texture = texture;
+        if (payload.width) record.width = payload.width;
+        if (payload.height) record.height = payload.height;
+        if (payload.depth) record.depth = payload.depth;
+        if (typeof payload.angle === "number") record.angle = payload.angle;
+        record.projector.updateTexture?.(texture);
+        pendingExternalDecals.delete(id);
+      } else {
+        if (!root) {
+          pendingExternalDecals.add(id);
+          return;
+        }
+        galleryState.selectedIds.add(id);
+        ensureDecalForGalleryItem(item!, false);
+      }
+    });
+  }
+
+  function removeExternalDecal(id: string) {
+    pendingExternalDecals.delete(id);
+    removeDecalForGalleryItem(id);
+    const idx = galleryState.items.findIndex((g) => g.id === id);
+    if (idx >= 0) {
+      galleryState.items.splice(idx, 1);
+    }
+    galleryState.selectedIds.delete(id);
+    if (galleryState.activeId === id) {
+      galleryState.activeId = "";
+      activeDecalId = null;
+      projector = null;
+      selected = false;
+      showOverlay(false);
+    }
+    renderGallery();
+  }
+
+  function setActiveDecal(id: string | null) {
+    if (!id) {
+      activeDecalId = null;
+      projector = null;
+      galleryState.activeId = "";
+      selected = false;
+      showOverlay(false);
+      return;
+    }
+    const record = decals.get(id);
+    activeDecalId = id;
+    galleryState.activeId = id;
+    if (!record) {
+      projector = null;
+      selected = false;
+      showOverlay(false);
+      return;
+    }
+    projector = record.projector;
+    decalWidth = record.width;
+    decalHeight = record.height;
+    decalDepth = record.depth;
+    decalAngle = record.angle;
+    decalCenter = record.center;
+    decalNormal = record.normal;
+    select();
+    updateOverlay();
+  }
+
+  function syncActiveDecalTransform() {
+    if (!activeDecalId) return;
+    const record = decals.get(activeDecalId);
+    if (!record) return;
+    record.width = decalWidth;
+    record.height = decalHeight;
+    record.depth = decalDepth;
+    record.angle = decalAngle;
+    record.center.copy(decalCenter);
+    record.normal.copy(decalNormal);
+    if (record.projector.getMesh) {
+      const mesh = record.projector.getMesh();
+      record.mesh = mesh ?? record.mesh;
+      if (mesh) {
+        mesh.userData = mesh.userData || {};
+        (mesh.userData as Record<string, unknown>).__decalId = record.id;
+      }
+    }
+  }
+
+  function ensureAllSelectedDecals() {
+    if (!root) return;
+    decals.forEach((record) => {
+      record.projector.attachTo(root!);
+      record.projector.setTransform(
+        record.center,
+        record.normal,
+        record.width,
+        record.height,
+        record.depth,
+        record.angle
+      );
+      if (record.projector.getMesh) {
+        const mesh = record.projector.getMesh();
+        record.mesh = mesh ?? null;
+        if (mesh) {
+          mesh.userData = mesh.userData || {};
+          (mesh.userData as Record<string, unknown>).__decalId = record.id;
+        }
+      }
+    });
+    galleryState.selectedIds.forEach((id) => {
+      if (!decals.has(id)) {
+        const item = getGalleryItemById(id);
+        if (item) ensureDecalForGalleryItem(item, false);
+      }
+    });
+    if (galleryState.activeId) setActiveDecal(galleryState.activeId);
+    renderGallery();
+  }
+
+  function ensurePendingExternalDecals() {
+    if (!root || pendingExternalDecals.size === 0) return;
+    const ids = Array.from(pendingExternalDecals);
+    ids.forEach((id) => {
+      const item = getGalleryItemById(id);
+      if (!item) {
+        pendingExternalDecals.delete(id);
+        return;
+      }
+      if (decals.has(id)) {
+        pendingExternalDecals.delete(id);
+        return;
+      }
+      ensureDecalForGalleryItem(item, false);
+    });
+  }
+
+  function renderGallery() {
+    galleryThumbs.innerHTML = "";
+    const visibleItems = galleryState.items.filter((item) => !item.hidden);
+    galleryEmptyLabel.style.display = visibleItems.length > 0 ? "none" : "block";
+    if (!visibleItems.length) return;
+
+    visibleItems.forEach((item) => {
+      const isSelected = galleryState.selectedIds.has(item.id);
+      const isActive = galleryState.activeId === item.id && isSelected;
+
+      const wrapper = document.createElement("div");
+      Object.assign(wrapper.style, {
+        position: "relative",
+        display: "flex",
+        flexDirection: "column",
+        gap: "4px",
+        alignItems: "center",
+      } as CSSStyleDeclaration);
+
+      const thumb = document.createElement("button");
+      thumb.type = "button";
+      thumb.title = item.label;
+      Object.assign(thumb.style, {
+        width: "100%",
+        aspectRatio: "1",
+        borderRadius: "6px",
+        padding: "0",
+        border: isActive
+          ? "2px solid #c4b5fd"
+          : isSelected
+          ? "2px solid #8b5cf6"
+          : "2px solid transparent",
+        backgroundColor: "#222",
+        backgroundPosition: "center",
+        backgroundSize: "cover",
+        backgroundRepeat: "no-repeat",
+        cursor: "pointer",
+        boxShadow: isActive
+          ? "0 0 0 1px rgba(196,181,253,0.5)"
+          : "0 0 0 1px rgba(255,255,255,0.12)",
+        transition: "transform 0.15s ease, box-shadow 0.15s ease",
+        opacity: isSelected ? "1" : "0.65",
+      } as CSSStyleDeclaration);
+      thumb.style.backgroundImage = `url(${item.src})`;
+      thumb.onmouseenter = () => {
+        thumb.style.transform = "translateY(-1px)";
+      };
+      thumb.onmouseleave = () => {
+        thumb.style.transform = "none";
+      };
+      thumb.addEventListener("click", () => handleThumbClick(item.id));
+      wrapper.appendChild(thumb);
+
+      const removeBtn = document.createElement("button");
+      removeBtn.type = "button";
+      removeBtn.textContent = "×";
+      Object.assign(removeBtn.style, {
+        position: "absolute",
+        top: "4px",
+        right: "4px",
+        width: "18px",
+        height: "18px",
+        borderRadius: "50%",
+        border: "none",
+        background: "rgba(24,24,24,0.85)",
+        color: "#fff",
+        fontSize: "12px",
+        lineHeight: "18px",
+        textAlign: "center",
+        cursor: "pointer",
+        display: isSelected ? "block" : "none",
+      } as CSSStyleDeclaration);
+      removeBtn.addEventListener("click", (ev) => {
+        ev.stopPropagation();
+        handleRemoveDecal(item.id);
+      });
+      wrapper.appendChild(removeBtn);
+
+      const label = document.createElement("span");
+      label.textContent = item.label;
+      Object.assign(label.style, {
+        fontSize: "11px",
+        textAlign: "center",
+        width: "100%",
+        color: isSelected ? "#fff" : "rgba(255,255,255,0.65)",
+        whiteSpace: "nowrap",
+        overflow: "hidden",
+        textOverflow: "ellipsis",
+      } as CSSStyleDeclaration);
+      wrapper.appendChild(label);
+
+      galleryThumbs.appendChild(wrapper);
+    });
+  }
+
+  // Removido: não adicionar logo padrão automaticamente
 
   // ---------------- Renderer / cena / câmera ----------------
   const renderer = new THREE.WebGLRenderer({ antialias: true });
@@ -97,21 +672,6 @@ export async function initDecalDemo(container: HTMLElement): Promise<void> {
   const modelUrl = `/models/${modelFile}`;
   const loader = new GLTFLoader();
 
-  let root: THREE.Object3D | null = null;
-  type ProjectorLike = {
-    setTransform: (
-      position: THREE.Vector3,
-      normal: THREE.Vector3,
-      width: number,
-      height: number,
-      depth: number,
-      angleRad: number
-    ) => void;
-    attachTo: (obj: THREE.Object3D) => void;
-    update: () => void;
-  };
-  let projector: ProjectorLike | null = null;
-
   // ---- decal: estado e dimensões ----
   let decalWidth = 0.3;
   let decalHeight = 0.3;
@@ -121,7 +681,7 @@ export async function initDecalDemo(container: HTMLElement): Promise<void> {
   let decalNormal = new THREE.Vector3(0, 0, 1);
 
   // ---- seleção do gizmo ----
-  let selected = true;         // seleciona ao criar
+  let selected = false;        // seleciona ao criar
   let isInteracting = false;   // evita auto-deselect durante interações
 
   // ---- raycast na malha ----
@@ -142,6 +702,28 @@ export async function initDecalDemo(container: HTMLElement): Promise<void> {
       n.copy(h.face.normal).transformDirection(h.object.matrixWorld).normalize();
     }
     return { point: p, normal: n };
+  }
+
+  function pickDecalAt(clientX: number, clientY: number): DecalRecord | null {
+    if (!decals.size) return null;
+    const meshes: THREE.Object3D[] = [];
+    decals.forEach((record) => {
+      if (record.mesh) meshes.push(record.mesh);
+    });
+    if (!meshes.length) return null;
+    const rect = renderer.domElement.getBoundingClientRect();
+    const x = ((clientX - rect.left) / rect.width) * 2 - 1;
+    const y = -((clientY - rect.top) / rect.height) * 2 + 1;
+    decalRaycaster.setFromCamera(new THREE.Vector2(x, y), camera);
+    const hits = decalRaycaster.intersectObjects(meshes, false);
+    if (!hits.length) return null;
+    let obj: THREE.Object3D | null = hits[0].object;
+    while (obj && !(obj.userData && obj.userData.__decalId) && obj.parent) {
+      obj = obj.parent;
+    }
+    const decalId = obj && obj.userData ? (obj.userData.__decalId as string | undefined) : undefined;
+    if (!decalId) return null;
+    return decals.get(decalId) ?? null;
   }
 
   // ---- overlay SVG (gizmo) ----
@@ -245,7 +827,11 @@ export async function initDecalDemo(container: HTMLElement): Promise<void> {
     const pBL = center.clone().add(right.clone().multiplyScalar(-hx)).add(up.clone().multiplyScalar(-hy));
 
     const sTL = toScreen(pTL), sTR = toScreen(pTR),
-          sBR = toScreen(pBR), sBL = toScreen(pBL);
+      sBR = toScreen(pBR), sBL = toScreen(pBL);
+
+    // Guarda extra: evita atributos NaN no SVG caso a projeção ainda não esteja pronta
+    const valid = [sTL, sTR, sBR, sBL].every((v) => Number.isFinite(v.x) && Number.isFinite(v.y));
+    if (!valid) { showOverlay(false); return; }
 
     lastScreenQuad = [sTL, sTR, sBR, sBL];
 
@@ -262,8 +848,8 @@ export async function initDecalDemo(container: HTMLElement): Promise<void> {
     setHandlePos(handles.mr, (sTR.x + sBR.x) / 2, (sTR.y + sBR.y) / 2);
 
     // handle de rotação 24px “para fora” do topo (usa up da câmera)
-    const topMid = new THREE.Vector2((sTL.x + sTR.x) / 2, (sTL.y + sTR.y) / 2);
-    const dirUp2D = new THREE.Vector2(sTL.y - sTR.y, sTR.x - sTL.x).normalize();
+  const topMid = new THREE.Vector2((sTL.x + sTR.x) / 2, (sTL.y + sTR.y) / 2);
+  const dirUp2D = new THREE.Vector2(sTL.y - sTR.y, sTR.x - sTL.x).normalize();
     const rotAnchor = topMid.clone();
     const rotHandle = topMid.clone().add(dirUp2D.multiplyScalar(24));
     rotLine.setAttribute("x1", String(rotAnchor.x));
@@ -346,6 +932,7 @@ export async function initDecalDemo(container: HTMLElement): Promise<void> {
         decalCenter, decalNormal,
         decalWidth, decalHeight, decalDepth, decalAngle
       );
+      syncActiveDecalTransform();
       controls.enabled = false;
       updateOverlay();
     });
@@ -359,6 +946,7 @@ export async function initDecalDemo(container: HTMLElement): Promise<void> {
         decalCenter, decalNormal,
         decalWidth, decalHeight, decalDepth, decalAngle
       );
+      syncActiveDecalTransform();
       updateOverlay();
     });
     el.addEventListener("pointerup", () => {
@@ -465,6 +1053,7 @@ export async function initDecalDemo(container: HTMLElement): Promise<void> {
       decalCenter, decalNormal,
       decalWidth, decalHeight, decalDepth, decalAngle
     );
+    syncActiveDecalTransform();
     updateOverlay();
   }
 
@@ -502,7 +1091,17 @@ export async function initDecalDemo(container: HTMLElement): Promise<void> {
     const sx = ev.clientX - r.left;
     const sy = ev.clientY - r.top;
 
-    const outside = selected ? !pointInQuad(sx, sy) : true;
+    const pickedDecal = pickDecalAt(ev.clientX, ev.clientY);
+    if (pickedDecal) {
+      if (!galleryState.selectedIds.has(pickedDecal.id)) {
+        galleryState.selectedIds.add(pickedDecal.id);
+      }
+      setActiveDecal(pickedDecal.id);
+      renderGallery();
+    }
+
+    let outside = selected ? !pointInQuad(sx, sy) : true;
+    if (pickedDecal) outside = false;
 
     downState = {
       active: true,
@@ -538,59 +1137,30 @@ export async function initDecalDemo(container: HTMLElement): Promise<void> {
     downState.active = false;
   }, { capture: true });
 
-  // ---- projeção da logo ----
-  function initLogoProjection(targetRoot: THREE.Object3D) {
-    const texLoader = new THREE.TextureLoader();
-    texLoader.load(
-      "/logo.png",
-      (logoTex) => {
-        logoTex.wrapS = THREE.ClampToEdgeWrapping;
-        logoTex.wrapT = THREE.ClampToEdgeWrapping;
-        logoTex.minFilter = THREE.LinearMipmapLinearFilter;
-        logoTex.magFilter = THREE.LinearFilter;
-        if ("colorSpace" in (logoTex as any))
-          (logoTex as any).colorSpace = (THREE as any).SRGBColorSpace;
-        else (logoTex as any).encoding = (THREE as any).sRGBEncoding;
+  function configureDecalPlacement(targetRoot: THREE.Object3D) {
+    const bbox = new THREE.Box3().setFromObject(targetRoot);
+    if (bbox.isEmpty()) {
+      defaultWidth = 0.3;
+      defaultHeight = 0.3;
+      defaultDepth = Math.max(defaultWidth, defaultHeight) * depthMultiplier;
+      defaultCenter.set(0, 0.5, 0.1);
+      defaultNormal.set(0, 0, 1);
+      ensureAllSelectedDecals();
+      return;
+    }
 
-        // Usa apenas modo mesh (DecalGeometry)
-        projector = new MeshDecalAdapter(scene, logoTex, {
-          angleClampDeg: 92,
-          depthFromSizeScale: 0.2,
-          frontOnly: true,
-          frontHalfOnly: false,
-          sliverAspectMin: 0.001,
-          areaMin: 1e-8,
-          zBandFraction: 0.6,
-          zBandMin: 0.015,
-          maxRadiusFraction: 1.0,
-          maxDepthScale: 1.0,
-          // useFeather: true, // opcional (material com borda suave)
-          // feather: 0.08,
-        }) as unknown as ProjectorLike;
-        projector.attachTo(targetRoot);
+    const size = bbox.getSize(new THREE.Vector3());
+    const base = Math.max(size.x, size.y, size.z) || 1.0;
+    defaultWidth = base * 0.25;
+    defaultHeight = defaultWidth;
+    defaultDepth = Math.max(defaultWidth, defaultHeight) * depthMultiplier;
 
-        const bbox = new THREE.Box3().setFromObject(targetRoot);
-        const size = bbox.getSize(new THREE.Vector3());
-        const base = Math.max(size.x, size.y, size.z) || 1.0;
-        decalWidth = base * 0.25;
-        decalHeight = decalWidth;
-        decalDepth = Math.max(decalWidth, decalHeight) * depthMultiplier;
+    const center = bbox.getCenter(new THREE.Vector3());
+    defaultCenter.set(center.x, center.y, bbox.max.z + 0.02);
+    defaultNormal.set(0, 0, 1);
 
-        const c = bbox.getCenter(new THREE.Vector3());
-        decalCenter.set(c.x, c.y, bbox.max.z + 0.02);
-        decalNormal.set(0, 0, 1);
-        decalAngle = 0;
-
-        projector.setTransform(
-          decalCenter, decalNormal,
-          decalWidth, decalHeight, decalDepth, decalAngle
-        );
-
-        select();
-      },
-      undefined,
-      (err) => console.error("Falha ao carregar logo.png:", err)
-    );
+    ensureAllSelectedDecals();
+    ensurePendingExternalDecals();
   }
 
   // ---------------- Load e enquadramento da câmera ----------------
@@ -615,7 +1185,7 @@ export async function initDecalDemo(container: HTMLElement): Promise<void> {
       controls.target.copy(center);
       controls.update();
 
-      initLogoProjection(root);
+  configureDecalPlacement(root);
       attachDragHandlers();
     },
     undefined,
@@ -684,6 +1254,11 @@ export async function initDecalDemo(container: HTMLElement): Promise<void> {
     requestAnimationFrame(tick);
   };
   tick();
+
+  return {
+    upsertExternalDecal,
+    removeExternalDecal,
+  } satisfies DecalDemoHandle;
 }
 
 export default initDecalDemo;

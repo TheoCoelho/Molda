@@ -99,6 +99,12 @@ const Creation = () => {
       inst.onSelectionChange?.((k) => setSelectionKind(k));
       selectionListenerGuard.current.add(inst);
     }
+
+    // Ao montar a instância atual, força um refresh para evitar tela “vazia”
+    try {
+      requestAnimationFrame(() => inst.refresh?.());
+      setTimeout(() => inst.refresh?.(), 30);
+    } catch {}
   }, [activeCanvasTab]);
   const [tabVisibility, setTabVisibility] = useState<Record<string, boolean>>({});
   const [tabDecalPreviews, setTabDecalPreviews] = useState<Record<string, string>>({});
@@ -209,6 +215,14 @@ const Creation = () => {
     const snap = tabSnapshots[activeCanvasTab];
     if (!snap) {
       syncFontsFromEditor();
+      // força re-render quando não há snapshot: aguarda instância ficar pronta e chama refresh algumas vezes
+      const tryRefresh = () => {
+        const inst = editorRefs.current[activeCanvasTab];
+        if (!inst) { requestAnimationFrame(tryRefresh); return; }
+        inst.refresh?.();
+        setTimeout(() => inst.refresh?.(), 60);
+      };
+      requestAnimationFrame(tryRefresh);
       return;
     }
     const restore = () => {
@@ -216,8 +230,15 @@ const Creation = () => {
       if (inst?.loadFromJSON)
         inst
           .loadFromJSON(snap)
-          .then(() => syncFontsFromEditor(inst))
-          .catch(() => {});
+          .then(() => {
+            syncFontsFromEditor(inst);
+            // após restaurar, garantir render/offset atualizados
+            inst.refresh?.();
+          })
+          .catch(() => {
+            // mesmo em falha, ainda força um refresh para mostrar o estado atual
+            inst.refresh?.();
+          });
       else requestAnimationFrame(restore);
     };
     requestAnimationFrame(restore);

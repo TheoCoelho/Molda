@@ -11,10 +11,12 @@ export default class MeshDecalAdapter {
   private scene: THREE.Scene;
   private mesh: THREE.Mesh | null = null;
   private ray: THREE.Raycaster = new THREE.Raycaster();
+  private opts: SurfaceDecalOptions;
 
   constructor(scene: THREE.Scene, texture: THREE.Texture, opts: SurfaceDecalOptions = {}) {
     this.scene = scene;
-    this.surface = new SurfaceDecal(texture, opts);
+    this.opts = { ...opts };
+    this.surface = new SurfaceDecal(texture, this.opts);
   }
 
   attachTo(root: THREE.Object3D) {
@@ -57,5 +59,34 @@ export default class MeshDecalAdapter {
 
   update() {
     // nada a fazer; malha já está pronta
+  }
+
+  updateTexture(texture: THREE.Texture) {
+    if (this.surface && this.mesh) {
+      // Atualiza apenas a textura do material, mantendo a geometria
+      this.surface.setTexture(texture);
+      return;
+    }
+    // Caso ainda não exista mesh, reconstroi a superfície para inicializar
+    if (!this.surface) {
+      this.surface = new SurfaceDecal(texture, this.opts);
+    } else {
+      this.surface.setTexture(texture);
+    }
+  }
+
+  getMesh(): THREE.Mesh | null {
+    return this.mesh;
+  }
+
+  dispose() {
+    if (this.mesh) {
+      this.scene.remove(this.mesh);
+      this.mesh = null;
+    }
+    if (this.surface) {
+      this.surface.dispose();
+    }
+    this.root = null;
   }
 }
