@@ -68,6 +68,38 @@ const Creation = () => {
   const [lineMode, setLineMode] = useState<"single" | "polyline">("single");
 
   const editorRefs = useRef<Record<string, Editor2DHandle | null>>({});
+  const lastEditorTabRef = useRef<string | null>(null);
+  // Mantém refs estáveis para evitar loops com callback ref inline
+  const prevEditorInstRef = useRef<Editor2DHandle | null>(null);
+  const selectionListenerGuard = useRef<WeakSet<Editor2DHandle>>(new WeakSet());
+
+  // Callback de ref estável (não depende do branch do JSX)
+  const editorRefCallback = useCallback((inst: Editor2DHandle | null) => {
+    const currentTabId = activeCanvasTab;
+    // Evita reações quando a instância não mudou
+    if (inst === prevEditorInstRef.current) return;
+
+    // Unmount do anterior
+    if (!inst) {
+      if (lastEditorTabRef.current) {
+        delete editorRefs.current[lastEditorTabRef.current];
+        lastEditorTabRef.current = null;
+      }
+      prevEditorInstRef.current = null;
+      return;
+    }
+
+    // Mount novo
+    editorRefs.current[currentTabId] = inst;
+    lastEditorTabRef.current = currentTabId;
+    prevEditorInstRef.current = inst;
+
+    // Listener de seleção apenas uma vez por instância
+    if (!selectionListenerGuard.current.has(inst)) {
+      inst.onSelectionChange?.((k) => setSelectionKind(k));
+      selectionListenerGuard.current.add(inst);
+    }
+  }, [activeCanvasTab]);
   const [tabVisibility, setTabVisibility] = useState<Record<string, boolean>>({});
   const [tabDecalPreviews, setTabDecalPreviews] = useState<Record<string, string>>({});
 
@@ -320,12 +352,32 @@ const Creation = () => {
               setLineMode={setLineMode}
               onImageInsert={(src, opts) => {
                 console.log('[Creation onImageInsert]', { activeIs2D, activeCanvasTab, editorRef: !!editorRefs.current[activeCanvasTab] });
-                if (!activeIs2D) {
-                  console.warn('[Creation onImageInsert] Not 2D active');
+                if (activeIs2D) {
+                  editorRefs.current[activeCanvasTab]?.addImage(src, opts);
                   return;
                 }
-                console.log('[Creation onImageInsert] Calling addImage');
-                editorRefs.current[activeCanvasTab]?.addImage(src, opts);
+
+                // Fallback: garantir uma aba 2D ativa e inserir lá
+                const existing2D = canvasTabs.find((t) => t.type === '2d');
+                if (existing2D) {
+                  saveActiveTabSnapshot();
+                  setActiveCanvasTab(existing2D.id);
+                  // aguarda montagem do Editor2D
+                  setTimeout(() => {
+                    editorRefs.current[existing2D.id]?.addImage(src, opts);
+                  }, 60);
+                } else {
+                  // cria nova aba 2D e agenda a inserção nela
+                  const newId = `2d-${Date.now()}`;
+                  const count = canvasTabs.filter((t) => t.type === '2d').length + 1;
+                  saveActiveTabSnapshot();
+                  setCanvasTabs((prev) => [...prev, { id: newId, name: `2D - ${count}`, type: '2d' }]);
+                  setActiveCanvasTab(newId);
+                  setTabVisibility((prev) => ({ ...prev, [newId]: false }));
+                  setTimeout(() => {
+                    editorRefs.current[newId]?.addImage(src, opts);
+                  }, 100);
+                }
               }}
               addText={addText}
               applyTextStyle={async (patch) => {
@@ -348,64 +400,72 @@ const Creation = () => {
                     const active = tab.id === activeCanvasTab;
                     const visibleIn3D = !!tabVisibility[tab.id];
                     return (
-                      <button
+                      <div
                         key={tab.id}
-                        onClick={() => {
-                          saveActiveTabSnapshot();
-                          setActiveCanvasTab(tab.id);
-                        }}
-                        className={`px-3 h-8 rounded-md text-sm transition ${
+                        className={`flex items-center gap-1 rounded-md px-3 h-8 text-sm transition ${
                           active ? "glass-strong" : "hover:bg-white/20"
                         }`}
-                        aria-pressed={active}
                       >
-                        <span className="inline-flex items-center gap-2">
+                        <button
+                          type="button"
+                          className="flex-1 h-full px-1 text-left font-medium focus:outline-none inline-flex items-center"
+                          aria-pressed={active}
+                          onClick={() => {
+                            saveActiveTabSnapshot();
+                            setActiveCanvasTab(tab.id);
+                          }}
+                        >
                           {tab.name}
-                          {tab.type === "2d" && (
-                            <>
-                              <button
-                                type="button"
-                                onClick={(e) => {
-                                  e.stopPropagation();
-                                  const currentlyVisible = !!tabVisibility[tab.id];
-                                  if (!currentlyVisible) {
-                                    const result = captureTabImage(tab.id);
-                                    if (!result) {
-                                      setTabDecalPreviews((prev) => {
-                                        if (prev[tab.id]) return prev;
-                                        return {
-                                          ...prev,
-                                          [tab.id]: TRANSPARENT_PNG,
-                                        };
-                                      });
-                                    }
+                        </button>
+                        {tab.type === "2d" && (
+                          <div className="flex items-center gap-1">
+                            <button
+                              type="button"
+                              onClick={(e) => {
+                                e.stopPropagation();
+                                const currentlyVisible = !!tabVisibility[tab.id];
+                                if (!currentlyVisible) {
+                                  const result = captureTabImage(tab.id);
+                                  if (!result) {
+                                    setTabDecalPreviews((prev) => {
+                                      if (prev[tab.id]) return prev;
+                                      return {
+                                        ...prev,
+                                        [tab.id]: TRANSPARENT_PNG,
+                                      };
+                                    });
                                   }
-                                  setTabVisibility((prev) => ({
-                                    ...prev,
-                                    [tab.id]: !currentlyVisible,
-                                  }));
-                                }}
-                                className="p-1 rounded-full hover:bg-white/20 transition"
-                                aria-label={visibleIn3D ? "Ocultar no 3D" : "Mostrar no 3D"}
-                                title={visibleIn3D ? "Ocultar no 3D" : "Mostrar no 3D"}
-                              >
-                                {visibleIn3D ? (
-                                  <Eye className="w-4 h-4" />
-                                ) : (
-                                  <EyeOff className="w-4 h-4" />
-                                )}
-                              </button>
-                              <X
-                                className="w-4 h-4 opacity-60 hover:opacity-100"
-                                onClick={(e) => {
-                                  e.stopPropagation();
-                                  removeCanvasTab(tab.id);
-                                }}
-                              />
-                            </>
-                          )}
-                        </span>
-                      </button>
+                                }
+                                setTabVisibility((prev) => ({
+                                  ...prev,
+                                  [tab.id]: !currentlyVisible,
+                                }));
+                              }}
+                              className="p-1 rounded-full hover:bg-white/20 transition"
+                              aria-label={visibleIn3D ? "Ocultar no 3D" : "Mostrar no 3D"}
+                              title={visibleIn3D ? "Ocultar no 3D" : "Mostrar no 3D"}
+                            >
+                              {visibleIn3D ? (
+                                <Eye className="w-4 h-4" />
+                              ) : (
+                                <EyeOff className="w-4 h-4" />
+                              )}
+                            </button>
+                            <button
+                              type="button"
+                              onClick={(e) => {
+                                e.stopPropagation();
+                                removeCanvasTab(tab.id);
+                              }}
+                              className="p-1 rounded-full hover:bg-white/20 transition"
+                              aria-label="Fechar aba"
+                              title="Fechar aba"
+                            >
+                              <X className="w-4 h-4 opacity-60 hover:opacity-100" />
+                            </button>
+                          </div>
+                        )}
+                      </div>
                     );
                   })}
                   <Button onClick={add2DTab} size="icon" variant="ghost" className="h-8 w-8 ml-1">
@@ -466,10 +526,7 @@ const Creation = () => {
                 >
                   <Editor2D
                     key={activeCanvasTab}
-                    ref={(inst) => {
-                      editorRefs.current[activeCanvasTab] = inst;
-                      inst?.onSelectionChange?.((k) => setSelectionKind(k));
-                    }}
+                    ref={editorRefCallback}
                     tool={tool}
                     brushVariant={brushVariant}
                     strokeColor={strokeColor}

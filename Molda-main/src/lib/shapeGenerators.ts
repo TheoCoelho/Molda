@@ -1,5 +1,4 @@
 // @ts-ignore
-import GeoPattern from "geopattern";
 
 // ========= Helpers de geração de formas abstratas =========
 
@@ -582,37 +581,3 @@ export function generateHeroPatternDataUrl(opts: { pattern: HeroPatternType; bg?
   return `data:image/svg+xml;utf8,${encodeURIComponent(svg)}`;
 }
 
-// GeoPattern integration
-// Valid generators: octogons, overlappingCircles, plusSigns, xes, sineWaves, hexagons, overlappingRings, 
-// plaid, triangles, squares, nestedSquares, mosaicSquares, concentricCircles, diamonds, tessellation, chevrons
-export const GEO_PATTERN_TYPES = [
-  "octogons", "overlappingCircles", "plusSigns", "xes", "sineWaves",
-  "hexagons", "overlappingRings", "plaid", "triangles", "squares",
-  "nestedSquares", "mosaicSquares", "concentricCircles", "diamonds", "tessellation", "chevrons"
-] as const;
-
-export type GeoPatternType = typeof GEO_PATTERN_TYPES[number];
-
-export function generateGeoPatternDataUrl(opts: { pattern: GeoPatternType; seed?: string; color?: string; size?: number; }): string {
-  const seed = opts.seed ?? `seed-${Math.random()}`;
-  const color = opts.color ?? "#000000";
-  const size = opts.size ?? 512;
-
-  try {
-    const pattern = GeoPattern.generate(seed, {
-      generator: opts.pattern,
-      color: color,
-    });
-    
-    // GeoPattern.toDataUrl() returns a base64 encoded data URL
-    const dataUrl = pattern.toDataUrl();
-    
-    // If we need to resize, we'll wrap it in a new SVG
-    // But GeoPattern already returns proper data URL, so let's just use it directly
-    return dataUrl;
-  } catch (e) {
-    console.error("GeoPattern error:", e);
-    // Fallback to simple pattern
-    return generatePatternSvgDataUrl({ pattern: "grid", size, bg: "#fff", fg: color });
-  }
-}

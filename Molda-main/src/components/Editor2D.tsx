@@ -4,6 +4,7 @@ import React, {
   useEffect,
   useImperativeHandle,
   useRef,
+  useState,
 } from "react";
 import HistoryManager from "../lib/HistoryManager";
 import { ensureFontForFabric } from "../utils/fonts";
@@ -111,53 +112,102 @@ function withAlpha(color: string, alpha: number) {
 }
 
 // ---- Loader em runtime do Fabric (sem import local) ----
-function loadFabricRuntime(): Promise<any> {
-  // Reutiliza promise se já estiver em andamento
-  // @ts-ignore
-  if (typeof window !== "undefined" && (window as any).fabric) {
-    // @ts-ignore
-    return Promise.resolve((window as any).fabric);
-  }
-  // @ts-ignore
-  if ((window as any).__fabricLoadingPromise) {
-    // @ts-ignore
-    return (window as any).__fabricLoadingPromise;
-  }
+let fabricModulePromise: Promise<any> | null = null;
 
-  const cdns = [
-    "https://unpkg.com/fabric@5.3.0/dist/fabric.min.js",
-    "https://cdn.jsdelivr.net/npm/fabric@5.3.0/dist/fabric.min.js",
-    "https://unpkg.com/fabric@4.6.0/dist/fabric.min.js",
-  ];
+// Avoid mutating the Fabric namespace (may be sealed/freezed in some builds).
+// Cache custom brush constructors per Fabric module via WeakMap.
+const __SprayBrushExCache = new WeakMap<any, any>();
+const __CalligraphyBrushCache = new WeakMap<any, any>();
+const __LiveEraserBrushCache = new WeakMap<any, any>();
 
-  function loadFrom(i: number): Promise<any> {
-    return new Promise((resolve, reject) => {
-      if (i >= cdns.length) {
-        reject(new Error("Falha ao carregar Fabric de CDNs."));
-        return;
-      }
-      const script = document.createElement("script");
-      script.src = cdns[i];
-      script.async = true;
-      script.onload = () => {
-        // @ts-ignore
-        const fabric = (window as any).fabric;
-        if (fabric) resolve(fabric);
-        else reject(new Error("Fabric não disponível após load."));
-      };
-      script.onerror = () => {
-        // tenta próximo CDN
-        document.head.removeChild(script);
-        loadFrom(i + 1).then(resolve).catch(reject);
-      };
-      document.head.appendChild(script);
-    });
+async function loadFabricRuntime(): Promise<any> {
+  if (typeof window === "undefined") {
+    throw new Error("Fabric requer ambiente de navegador");
   }
 
-  // @ts-ignore
-  (window as any).__fabricLoadingPromise = loadFrom(0);
-  // @ts-ignore
-  return (window as any).__fabricLoadingPromise;
+  const globalFabric = (window as any).fabric;
+  if (globalFabric && typeof globalFabric.Canvas === "function") {
+    return globalFabric;
+  }
+
+  if (fabricModulePromise) {
+    return fabricModulePromise;
+  }
+
+  const tryCdnFallback = () => {
+    const cdns = [
+      // Preferimos UMD estável para evitar incompatibilidades de ESM
+      "https://unpkg.com/fabric@5.3.0/dist/fabric.min.js",
+      "https://cdn.jsdelivr.net/npm/fabric@5.3.0/dist/fabric.min.js",
+      // Tentativa com v6 UMD (se disponível no CDN)
+      "https://unpkg.com/fabric@6.0.0/dist/fabric.min.js",
+    ];
+
+    const loadFrom = (i: number): Promise<any> =>
+      new Promise((resolve, reject) => {
+        if (i >= cdns.length) {
+          reject(new Error("Falha ao carregar Fabric de CDNs."));
+          return;
+        }
+        const script = document.createElement("script");
+        script.src = cdns[i];
+        script.async = true;
+        script.onload = () => {
+          const loadedFabric = (window as any).fabric;
+          if (loadedFabric && typeof loadedFabric.Canvas === "function") {
+            resolve(loadedFabric);
+          } else {
+            reject(new Error("Fabric não disponível/compatível após load."));
+          }
+        };
+        script.onerror = () => {
+          try { document.head.removeChild(script); } catch {}
+          loadFrom(i + 1).then(resolve).catch(reject);
+        };
+        document.head.appendChild(script);
+      });
+
+    return loadFrom(0);
+  };
+
+  const tryModuleImport = async () => {
+    const mod = await import("fabric");
+    // Possíveis formatos: { fabric: {...} } | default | namespace com Canvas
+    const maybe = (mod as any).fabric ?? (mod as any).default ?? mod;
+
+    // Caso 1: objeto com Canvas construtor
+    if (maybe && typeof (maybe as any).Canvas === "function") {
+      (window as any).fabric = maybe;
+      return maybe;
+    }
+    // Caso 2: namespace ESM com export nomeado Canvas
+    if ((mod as any).Canvas && typeof (mod as any).Canvas === "function") {
+      (window as any).fabric = mod as any;
+      return mod as any;
+    }
+    // Caso 3: algum polyfill já expôs global válido
+    if ((window as any).fabric && typeof (window as any).fabric.Canvas === "function") {
+      return (window as any).fabric;
+    }
+    throw new Error("Módulo fabric com formato inesperado");
+  };
+
+  fabricModulePromise = (async () => {
+    try {
+      // Tenta primeiro via import; se falhar, recorre ao CDN UMD estável
+      return await tryModuleImport();
+    } catch {
+      return await tryCdnFallback();
+    }
+  })();
+
+  try {
+    const fabricExport = await fabricModulePromise;
+    return fabricExport;
+  } catch (err) {
+    fabricModulePromise = null;
+    throw err;
+  }
 }
 
 const Editor2D = forwardRef<Editor2DHandle, Props>(function Editor2D(
@@ -293,6 +343,7 @@ const Editor2D = forwardRef<Editor2DHandle, Props>(function Editor2D(
   const hostRef = useRef<HTMLDivElement | null>(null);
   const canvasRef = useRef<FabricCanvas | null>(null);
   const domCanvasRef = useRef<HTMLCanvasElement | null>(null);
+  const [isCanvasReady, setCanvasReady] = useState(false);
   const fabricRef = useRef<any>(null);
   const roRef = useRef<ResizeObserver | null>(null);
   const listenersRef = useRef<{ down?: any; move?: any; up?: any }>({});
@@ -331,44 +382,79 @@ const Editor2D = forwardRef<Editor2DHandle, Props>(function Editor2D(
   ) => {
     const c = canvasRef.current;
     const fabric = fabricRef.current;
+    const placeFabricImage = (img: any) => {
+      const x = opts?.x ?? c.getWidth() / 2;
+      const y = opts?.y ?? c.getHeight() / 2;
+
+      const scale =
+        opts?.scale ??
+        Math.min(
+          1,
+          Math.max(
+            0.15,
+            Math.min(c.getWidth() / (img.width * 2), c.getHeight() / (img.height * 2))
+          )
+        );
+
+      img.set({
+        left: x - (img.width * scale) / 2,
+        top: y - (img.height * scale) / 2,
+        scaleX: scale,
+        scaleY: scale,
+        selectable: true,
+        evented: true,
+        hasControls: true,
+        cornerStyle: "circle",
+        transparentCorners: false,
+        erasable: true,
+        data: opts?.meta ?? null,
+        stroke: undefined,
+        strokeWidth: 0,
+      });
+      c.add(img);
+      c.setActiveObject(img);
+      c.requestRenderAll?.();
+    };
+
+    const fetchAsDataURL = async (url: string): Promise<string> => {
+      const res = await fetch(url, { mode: "cors" }).catch(() => fetch(url));
+      const blob = await res.blob();
+      return new Promise<string>((resolve) => {
+        const fr = new FileReader();
+        fr.onload = () => resolve(String(fr.result || ""));
+        fr.readAsDataURL(blob);
+      });
+    };
+
+    // Pré-carregador de imagem com fallback para data URL, evitando depender de exceptions síncronas
+    const preloadImage = (url: string): Promise<HTMLImageElement> =>
+      new Promise((resolve, reject) => {
+        const el = new Image();
+        el.crossOrigin = "anonymous"; // tenta CORS amigável
+        el.onload = () => resolve(el);
+        el.onerror = () => reject(new Error("image-load-error"));
+        el.src = url;
+      });
+
     if (c && fabric) {
-      fabric.Image.fromURL(
-        src,
-        (img: any) => {
-          const x = opts?.x ?? c.getWidth() / 2;
-          const y = opts?.y ?? c.getHeight() / 2;
-
-          const scale =
-            opts?.scale ??
-            Math.min(
-              1,
-              Math.max(
-                0.15,
-                Math.min(c.getWidth() / (img.width * 2), c.getHeight() / (img.height * 2))
-              )
-            );
-
-          img.set({
-            left: x - (img.width * scale) / 2,
-            top: y - (img.height * scale) / 2,
-            scaleX: scale,
-            scaleY: scale,
-            selectable: true,
-            evented: true,
-            hasControls: true,
-            cornerStyle: "circle",
-            transparentCorners: false,
-            erasable: true,
-            data: opts?.meta ?? null,
-            stroke: undefined,
-            strokeWidth: 0,
-          });
-          c.add(img);
-          c.setActiveObject(img);
-          c.requestRenderAll?.();
-        },
-        { crossOrigin: "anonymous" }
-      );
+      (async () => {
+        try {
+          // 1) tenta carregar direto a URL
+          const el = await preloadImage(src);
+          const fabImg = new fabric.Image(el);
+          placeFabricImage(fabImg);
+        } catch (_) {
+          try {
+            // 2) fallback: busca como dataURL e carrega novamente
+            const dataUrl = await fetchAsDataURL(src);
+            const el2 = await preloadImage(dataUrl);
+            const fabImg2 = new fabric.Image(el2);
+            placeFabricImage(fabImg2);
+          } catch {
+            // mantém silêncio para não quebrar UX
+          }
+        }
+      })();
       return;
     }
 
@@ -437,6 +523,14 @@ const Editor2D = forwardRef<Editor2DHandle, Props>(function Editor2D(
     if (hostRef.current) {
       (hostRef.current.style as any).cursor = cursor;
     }
+  };
+
+  const ensureInteractivity = (c: any) => {
+    try {
+      if (c?.upperCanvasEl) c.upperCanvasEl.style.pointerEvents = "auto";
+      if (c?.lowerCanvasEl) c.lowerCanvasEl.style.pointerEvents = "auto";
+      if ((c as any)?.wrapperEl) (c as any).wrapperEl.style.pointerEvents = "auto";
+    } catch {}
   };
 
   const ensureCanvasSize = () => {
@@ -703,55 +797,49 @@ const Editor2D = forwardRef<Editor2DHandle, Props>(function Editor2D(
 
   // ---------------------- custom brushes -----------------------
   const ensureSprayBrush = (fabric: any) => {
-    if (!fabric.SprayBrushEx) {
-      class SprayBrushEx extends fabric.SprayBrush {
-        opacity = 1;
-        getOpacity() {
-          return this.opacity;
-        }
-        setOpacity(o: number) {
-          this.opacity = o;
-        }
-        _render() {
-          const ctx = this.canvas.contextTop;
-          ctx.save();
-          ctx.globalAlpha = this.getOpacity();
-          // @ts-ignore
-          super._render();
-          ctx.restore();
-        }
+    const cached = __SprayBrushExCache.get(fabric);
+    if (cached) return cached;
+    const Base = fabric.SprayBrush || fabric.PencilBrush;
+    class SprayBrushEx extends Base {
+      opacity = 1;
+      getOpacity() { return this.opacity; }
+      setOpacity(o: number) { this.opacity = o; }
+      _render() {
+        const ctx = this.canvas.contextTop;
+        ctx.save();
+        ctx.globalAlpha = this.getOpacity();
+        // @ts-ignore
+        super._render();
+        ctx.restore();
       }
-      fabric.SprayBrushEx = SprayBrushEx;
     }
-    return fabric.SprayBrushEx;
+    __SprayBrushExCache.set(fabric, SprayBrushEx);
+    return SprayBrushEx;
   };
 
   const ensureCalligraphyBrush = (fabric: any) => {
-    if (!fabric.CalligraphyBrush) {
-      class CalligraphyBrush extends fabric.PencilBrush {
-        opacity = 1;
-        nibSize = 16;
-        nibThin = 0.25;
-        nibAngle = 30;
-        getOpacity() {
-          return this.opacity;
-        }
-        setOpacity(o: number) {
-          this.opacity = o;
-        }
-        _render() {
-          const ctx = this.canvas.contextTop;
-          ctx.save();
-          ctx.globalAlpha = this.getOpacity();
-          ctx.rotate((this.nibAngle * Math.PI) / 180);
-          // @ts-ignore
-          super._render();
-          ctx.restore();
-        }
+    const cached = __CalligraphyBrushCache.get(fabric);
+    if (cached) return cached;
+    const Base = fabric.PencilBrush;
+    class CalligraphyBrush extends Base {
+      opacity = 1;
+      nibSize = 16;
+      nibThin = 0.25;
+      nibAngle = 30;
+      getOpacity() { return this.opacity; }
+      setOpacity(o: number) { this.opacity = o; }
+      _render() {
+        const ctx = this.canvas.contextTop;
+        ctx.save();
+        ctx.globalAlpha = this.getOpacity();
+        ctx.rotate((this.nibAngle * Math.PI) / 180);
+        // @ts-ignore
+        super._render();
+        ctx.restore();
       }
-      fabric.CalligraphyBrush = CalligraphyBrush;
     }
-    return fabric.CalligraphyBrush;
+    __CalligraphyBrushCache.set(fabric, CalligraphyBrush);
+    return CalligraphyBrush;
   };
 
   const ensureEraserBrush = (fabric: any) => {
@@ -759,7 +847,9 @@ const Editor2D = forwardRef<Editor2DHandle, Props>(function Editor2D(
       return fabric.EraserBrush;
     }
 
-    if (!fabric.LiveEraserBrush) {
+    const cached = __LiveEraserBrushCache.get(fabric);
+    if (cached) return cached;
+
       const joinPath = fabric.util?.joinPath;
       const isTrivialPath = (pathData: any) => {
         if (!joinPath) return false;
@@ -909,9 +999,8 @@ const Editor2D = forwardRef<Editor2DHandle, Props>(function Editor2D(
         }
       }
 
-      fabric.LiveEraserBrush = LiveEraserBrush;
-    }
-    return fabric.LiveEraserBrush;
+      __LiveEraserBrushCache.set(fabric, LiveEraserBrush);
+      return LiveEraserBrush;
   };
 
   const createBrush = (
@@ -972,9 +1061,11 @@ const Editor2D = forwardRef<Editor2DHandle, Props>(function Editor2D(
   useEffect(() => {
     let disposed = false;
     let resetHostPosition: (() => void) | null = null;
+    setCanvasReady(false);
 
     const init = async () => {
       try {
+        console.debug("[Editor2D] init: starting fabric runtime load");
         const fabric = await loadFabricRuntime();
         if (disposed || !hostRef.current) return;
 
@@ -983,18 +1074,56 @@ const Editor2D = forwardRef<Editor2DHandle, Props>(function Editor2D(
         const el = document.createElement("canvas");
         el.style.width = "100%";
         el.style.height = "100%";
+  // Garantir captura de eventos do ponteiro
+  el.style.pointerEvents = "auto";
         el.width = hostRef.current.clientWidth;
         el.height = hostRef.current.clientHeight;
-        hostRef.current.appendChild(el);
+  hostRef.current.style.pointerEvents = "auto";
+  hostRef.current.appendChild(el);
 
         const c = new fabric.Canvas(el, {
           selection: true,
           preserveObjectStacking: true,
         });
-        c.setBackgroundColor("transparent", () => c.renderAll());
+        if (typeof (c as any).setBackgroundColor === "function") {
+          (c as any).setBackgroundColor("transparent", () => c.renderAll());
+        } else {
+          try { (c as any).backgroundColor = "transparent"; } catch {}
+          c.renderAll?.();
+        }
+        ensureInteractivity(c);
+
+        try { c.calcOffset?.(); } catch {}
 
         canvasRef.current = c;
         domCanvasRef.current = el;
+        setCanvasReady(true);
+        try { hostRef.current?.setAttribute("data-editor2d", "fabric"); } catch {}
+
+        console.debug("[Editor2D] init: fabric canvas ready", {
+          size: { w: c.getWidth?.(), h: c.getHeight?.() },
+        });
+
+        try {
+          (window as any).__editor2d_diag = () => ({
+            tool,
+            drawing: c.isDrawingMode,
+            selection: c.selection,
+            skipTargetFind: c.skipTargetFind,
+            freeBrush: c.freeDrawingBrush ? c.freeDrawingBrush.constructor?.name : null,
+            size: { w: c.getWidth?.(), h: c.getHeight?.() },
+            upperPE: c.upperCanvasEl?.style?.pointerEvents,
+            lowerPE: c.lowerCanvasEl?.style?.pointerEvents,
+            hostPE: hostRef.current?.style?.pointerEvents,
+            hasFabric: !!fabricRef.current,
+          });
+        } catch {}
+
+        // Garante dimensionamento válido após o layout estabilizar
+        try {
+          requestAnimationFrame(() => { ensureCanvasSize(); try { c.calcOffset?.(); } catch {} });
+          setTimeout(() => { ensureCanvasSize(); try { c.calcOffset?.(); } catch {} }, 0);
+        } catch {}
 
         const hostEl = hostRef.current;
         if (hostEl) {
@@ -1211,8 +1340,10 @@ const Editor2D = forwardRef<Editor2DHandle, Props>(function Editor2D(
         // guarda para usar no unmount
         (cleanupRef as any).current = cleanupPublishers;
 
-      } catch {
+      } catch (err) {
+        console.error("[Editor2D] init: fabric failed, falling back to DOM canvas", err);
         // Fallback 2D (sem fabric)
+        if (disposed) return;
         if (eraserOverlayRef.current) {
           eraserOverlayRef.current.remove();
           eraserOverlayRef.current = null;
@@ -1223,11 +1354,22 @@ const Editor2D = forwardRef<Editor2DHandle, Props>(function Editor2D(
         const el = document.createElement("canvas");
         el.style.width = "100%";
         el.style.height = "100%";
+        el.style.pointerEvents = "auto";
         el.width = hostRef.current.clientWidth;
         el.height = hostRef.current.clientHeight;
+        hostRef.current.style.pointerEvents = "auto";
         hostRef.current.appendChild(el);
         domCanvasRef.current = el;
         canvasRef.current = null;
+        setCanvasReady(true);
+        try { hostRef.current?.setAttribute("data-editor2d", "fallback"); } catch {}
+        console.warn("[Editor2D] init: DOM fallback ready", {
+          size: { w: el.width, h: el.height },
+        });
+        try {
+          requestAnimationFrame(() => ensureCanvasSize());
+          setTimeout(() => ensureCanvasSize(), 0);
+        } catch {}
 
         // mesmo sem fabric, ainda expõe getter vazio
         (window as any).__editor2d_getActiveTextStyle = () => ({});
@@ -1238,6 +1380,7 @@ const Editor2D = forwardRef<Editor2DHandle, Props>(function Editor2D(
     init();
 
     return () => {
+      disposed = true;
       // cleanup
       const c = canvasRef.current;
       if (c) {
@@ -1316,6 +1459,7 @@ const Editor2D = forwardRef<Editor2DHandle, Props>(function Editor2D(
 
   // ----------------------- modo ferramenta -----------------------
   useEffect(() => {
+    if (!isCanvasReady) return;
     const c = canvasRef.current;
     if (!c) {
       setHostCursor("default");
@@ -1326,6 +1470,23 @@ const Editor2D = forwardRef<Editor2DHandle, Props>(function Editor2D(
 
     // reset handlers
     detachLineListeners(c);
+
+    const logState = (extra?: any) => {
+      try {
+        console.debug("[Editor2D] tool", {
+          tool,
+          brushVariant,
+          drawing: c.isDrawingMode,
+          selection: c.selection,
+          skipTargetFind: c.skipTargetFind,
+          freeBrush: c.freeDrawingBrush ? c.freeDrawingBrush.constructor?.name : null,
+          upperPE: c.upperCanvasEl?.style?.pointerEvents,
+          lowerPE: c.lowerCanvasEl?.style?.pointerEvents,
+          hostPE: hostRef.current?.style?.pointerEvents,
+          ...(extra || {}),
+        });
+      } catch {}
+    };
 
     // SELECT
     if (tool === "select") {
@@ -1338,6 +1499,7 @@ const Editor2D = forwardRef<Editor2DHandle, Props>(function Editor2D(
       c.renderAll();
       eraserActiveRef.current = false;
       if (eraserOverlayRef.current) eraserOverlayRef.current.style.display = "none";
+      logState();
       return;
     }
 
@@ -1352,6 +1514,7 @@ const Editor2D = forwardRef<Editor2DHandle, Props>(function Editor2D(
       c.renderAll();
       eraserActiveRef.current = false;
       if (eraserOverlayRef.current) eraserOverlayRef.current.style.display = "none";
+      logState();
       return;
     }
 
@@ -1364,7 +1527,12 @@ const Editor2D = forwardRef<Editor2DHandle, Props>(function Editor2D(
       c.discardActiveObject();
 
       const b = createBrush(c, brushVariant, strokeColor, strokeWidth, opacity);
-      c.freeDrawingBrush = b;
+      c.freeDrawingBrush = b || new (fabricRef.current?.PencilBrush || fabricRef.current.PencilBrush)(c);
+      // Ajusta parâmetros caso o fallback tenha sido usado
+      if (!b) {
+        c.freeDrawingBrush.color = withAlpha(strokeColor, opacity);
+        c.freeDrawingBrush.width = strokeWidth;
+      }
       eraserActiveRef.current = brushVariant === "eraser";
       if (!eraserActiveRef.current && eraserOverlayRef.current) {
         eraserOverlayRef.current.style.display = "none";
@@ -1389,6 +1557,7 @@ const Editor2D = forwardRef<Editor2DHandle, Props>(function Editor2D(
       }
   setHostCursor(brushVariant === "eraser" ? "none" : "crosshair");
       c.renderAll();
+      logState();
       return;
     }
 
@@ -1436,12 +1605,13 @@ const Editor2D = forwardRef<Editor2DHandle, Props>(function Editor2D(
       setHostCursor("crosshair");
       eraserActiveRef.current = false;
       if (eraserOverlayRef.current) eraserOverlayRef.current.style.display = "none";
+      logState({ lineMode: "single" });
       return;
     }
 
     eraserActiveRef.current = false;
     if (eraserOverlayRef.current) eraserOverlayRef.current.style.display = "none";
-  }, [tool, brushVariant, strokeColor, fillColor, strokeWidth, opacity]);
+  }, [tool, brushVariant, strokeColor, fillColor, strokeWidth, opacity, isCanvasReady]);
 
   // ----------------------- addShape -----------------------
   const addShape = (
@@ -1638,7 +1808,12 @@ const Editor2D = forwardRef<Editor2DHandle, Props>(function Editor2D(
       } catch {}
       c.clear();
       // mantém transparente para seguir o “glass” do container
-      c.setBackgroundColor("transparent", () => c.renderAll());
+      if (typeof (c as any).setBackgroundColor === "function") {
+        (c as any).setBackgroundColor("transparent", () => c.renderAll());
+      } else {
+        try { (c as any).backgroundColor = "transparent"; } catch {}
+        c.renderAll?.();
+      }
       historyRef.current?.push("clear");
       emitHistory();
       return;

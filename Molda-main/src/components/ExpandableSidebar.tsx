@@ -37,13 +37,10 @@ import {
   generatePatternSvgDataUrl,
   generateScribblePngDataUrl,
   generateHeroPatternDataUrl,
-  generateGeoPatternDataUrl,
   HERO_PATTERNS,
-  GEO_PATTERN_TYPES,
   type PatternType,
   type ScribbleType,
   type HeroPatternType,
-  type GeoPatternType
 } from "../lib/shapeGenerators";
 
 interface ExpandableSidebarProps {
@@ -330,7 +327,7 @@ function BrushSectionAccordion(props: {
   addShape: (shape: "rect" | "ellipse" | "triangle" | "polygon") => void;
   lineMode: "single" | "polyline";
   setLineMode: (m: "single" | "polyline") => void;
-  onImageInsert?: (src: string, opts?: { x?: number; y?: number; scale?: number }) => void;
+  onImageInsert?: (src: string, opts?: { x?: number; y?: number; scale?: number; meta?: Record<string, unknown> }) => void;
   addText?: (value?: string) => void;
   applyTextStyle?: (patch: any) => void;
   autoOpenTextPanelCounter?: number;
@@ -358,7 +355,7 @@ function BrushSectionAccordion(props: {
     autoOpenTextPanelCounter,
   } = props;
 
-  type SubKey = "texto" | "formas" | "blobs" | "padroes" | "rabiscos" | "hero-patterns" | "geo-patterns" | "pincel" | "linhas" | null;
+  type SubKey = "texto" | "formas" | "blobs" | "padroes" | "rabiscos" | "hero-patterns" | "pincel" | "linhas" | null;
   const [openKey, setOpenKey] = useState<SubKey>(null);
   const [enabledKey, setEnabledKey] = useState<SubKey>(null);
   const activationDelayMs = 380;
@@ -384,11 +381,8 @@ function BrushSectionAccordion(props: {
     return () => window.clearTimeout(t);
   }, [autoOpenTextPanelCounter, is2DActive, setTool]);
 
-  useEffect(() => {
-    if (openKey !== "pincel" && tool === "brush") setTool("select");
-    if (openKey !== "linhas" && (tool === "line" || tool === "curve")) setTool("select");
-    if (openKey !== "texto" && tool === "text") setTool("select");
-  }, [openKey, tool, setTool]);
+  // Não force o retorno para "select" ao trocar de seção.
+  // Mantemos a ferramenta escolhida ativa até o usuário alterá-la explicitamente.
 
   const toggle = (key: Exclude<SubKey, null>) => {
     if (openKey === key) {
@@ -655,37 +649,6 @@ function BrushSectionAccordion(props: {
             >
               <div className="w-8 h-8 rounded overflow-hidden">
                 <img src={generateHeroPatternDataUrl({ pattern, size: 64, bg: fillColor || "#fff", fg: strokeColor || "#000" })} alt={pattern} className="w-full h-full object-cover" />
-              </div>
-            </button>
-          ))}
-        </div>
-      </AccordionItem>
-
-        {/* GeoPattern */}
-    <AccordionItem title="GeoPattern" icon={<Wrench className="w-4 h-4" />} open={openKey === "geo-patterns"} onToggle={() => toggle("geo-patterns")}>
-        <div className="grid grid-cols-4 gap-3 mt-2">
-          {GEO_PATTERN_TYPES.map((pattern) => (
-            <button
-              key={pattern}
-              type="button"
-              className={iconToggleClasses(false, !is2DActive)}
-              onClick={() => {
-                if (!onImageInsert || !is2DActive) return;
-                const url = generateGeoPatternDataUrl({
-                  pattern,
-                  seed: `pattern-${pattern}-${Math.random()}`,
-                  color: strokeColor || "#000000",
-                  size: 512,
-                });
-                onImageInsert(url, { scale: 0.6 });
-                setTool("select");
-              }}
-              disabled={!is2DActive}
-              aria-label={`GeoPattern ${pattern}`}
-              title={`GeoPattern ${pattern}`}
-            >
-              <div className="w-8 h-8 rounded overflow-hidden">
-                <img src={generateGeoPatternDataUrl({ pattern, seed: `preview-${pattern}`, color: strokeColor || "#000", size: 64 })} alt={pattern} className="w-full h-full object-cover" />
               </div>
             </button>
           ))}

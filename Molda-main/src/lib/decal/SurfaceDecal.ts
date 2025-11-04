@@ -260,6 +260,10 @@ export class SurfaceDecal {
             const maxZ = Math.max(a.z, b.z, c.z);
             if (maxZ > maxDepth) continue;
 
+            const minZ = Math.min(a.z, b.z, c.z);
+            const behindLimit = -Math.min(maxDepth * 0.22, 0.03); // permite curva moderada sem pegar o verso
+            if (minZ < behindLimit) continue;
+
             // Filtro anti-filete: avalia aspecto no plano XY local
             if (this.opts.sliverAspectMin > 0) {
                 a2.set(a.x, a.y); b2.set(b.x, b.y); c2.set(c.x, c.y);
@@ -327,6 +331,7 @@ export class SurfaceDecal {
 
         const indices = idx.array as any;
         const candidates: CandidateTri[] = [];
+        const maxRadius = Math.max(size.width, size.height) * 0.5 * this.opts.maxRadiusFraction;
 
         const a = new THREE.Vector3(), b = new THREE.Vector3(), c = new THREE.Vector3();
         const ra = new THREE.Vector3(), rb = new THREE.Vector3(), rcV = new THREE.Vector3();
@@ -346,7 +351,7 @@ export class SurfaceDecal {
             ac.subVectors(c, a);
             n.crossVectors(ab, ac).normalize();
             const alignment = n.dot(basis.fwd);
-            if (alignment < -0.3) continue; // Rejeita APENAS backfaces extremos que causam inversão visual
+            if (alignment < -0.18) continue; // tolera curvas moderadas, rejeita inversões severas
 
             // Coordenadas locais ao projetor
             ra.subVectors(a, originPoint);
@@ -370,11 +375,16 @@ export class SurfaceDecal {
             const area = Math.abs((bx - ax)*(cy - ay) - (by - ay)*(cx - ax)) * 0.5;
             if (area < 1e-8) continue; // Apenas fragmentos microscópicos
 
+            const minZ = Math.min(az, bz, cz);
+            const behindLimit = -Math.min(actualDepth * 0.22, 0.03);
+            if (minZ < behindLimit) continue;
+
             const xc = (ax + bx + cx) / 3.0;
             const yc = (ay + by + cy) / 3.0;
             const rcent = Math.hypot(xc, yc);
             const zc = (az + bz + cz) / 3.0;
             
+            if (rcent > maxRadius) continue;
             candidates.push({ i0: indices[i], i1: indices[i + 1], i2: indices[i + 2], zc, rc: rcent });
         }
 

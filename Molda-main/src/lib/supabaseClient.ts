@@ -25,10 +25,18 @@ function readEnv() {
   return { url, key };
 }
 
+const GLOBAL_KEY = "__molda_supabase_client__";
+
 let _client: SupabaseClient | null = null;
 
 export function getSupabase(): SupabaseClient | null {
   if (_client) return _client;
+
+  const globalClient = typeof globalThis !== "undefined" ? ((globalThis as any)[GLOBAL_KEY] as SupabaseClient | undefined) : undefined;
+  if (globalClient) {
+    _client = globalClient;
+    return _client;
+  }
 
   const { url, key } = readEnv();
   if (!url || !key) {
@@ -47,6 +55,10 @@ export function getSupabase(): SupabaseClient | null {
       detectSessionInUrl: true,
     },
   });
+
+  if (typeof globalThis !== "undefined") {
+    (globalThis as any)[GLOBAL_KEY] = _client;
+  }
 
   return _client;
 }
