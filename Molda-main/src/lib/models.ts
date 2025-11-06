@@ -40,8 +40,48 @@ const TYPE_ALIASES: Record<string, string[]> = {
 const SUBTYPE_ALIASES: Record<string, string[]> = {
   basic: ["basic", "basica", "básica", "simples"],
   "long-sleeve": ["long-sleeve", "manga-longa", "manga longa", "long", "longa"],
+  "long-sleeve-feminina": [
+    "long-sleeve-feminina",
+    "manga longa feminina",
+    "manga-longa feminina",
+    "feminina manga longa",
+    "feminina manga-longa"
+  ],
+  "low-poly-glb": [
+    "low-poly-glb",
+    "low poly glb",
+    "low poly (glb)",
+    "low-poly (glb)"
+  ],
+  "low-poly-usdz": [
+    "low-poly-usdz",
+    "low poly usdz",
+    "low poly (usdz)",
+    "low-poly (usdz)"
+  ],
+  "tshirt-gltf": [
+    "tshirt-gltf",
+    "tshirt gltf",
+    "tshirt (gltf)",
+    "t-shirt gltf",
+    "t-shirt (gltf)"
+  ],
+  "tshirt-3d-free": [
+    "tshirt-3d-free",
+    "tshirt 3d free",
+    "t-shirt 3d free",
+    "t-shirt free",
+    "tshirt 3d"
+  ],
   premium: ["premium"],
   classic: ["classic", "classica", "clássica"],
+  "male-shorts": [
+    "male-shorts",
+    "masculino + shorts",
+    "masculino shorts",
+    "masculino com shorts",
+    "masculino shorts set"
+  ],
 };
 
 function toCanonical(input: string | null | undefined, groups: Record<string, string[]>) {
@@ -78,6 +118,60 @@ const REGISTRY: Record<string, ModelConfig> = {
   // Camiseta manga longa
   "torso:shirt:long-sleeve": {
     src: "/models/long_sleeve_t-_shirt/scene.gltf",
+    camera: { position: [0, 1.5, 5], fov: 45 },
+    controls: { minDistance: 3, maxDistance: 10, enableZoom: true, enablePan: false },
+    scale: 0.8,
+    rotation: [0, 0, 0],
+    position: [0, 0, 0],
+  },
+
+  "torso:shirt:long-sleeve-feminina": {
+    src: "/models/womens_long_sleeve/scene.gltf",
+    camera: { position: [0, 1.5, 5], fov: 45 },
+    controls: { minDistance: 3, maxDistance: 10, enableZoom: true, enablePan: false },
+    scale: 0.8,
+    rotation: [0, 0, 0],
+    position: [0, 0, 0],
+  },
+
+  "torso:shirt:male-shorts": {
+    src: "/models/male_tshirt_and_shorts_-_plain_texture/scene.gltf",
+    camera: { position: [0, 1.8, 6], fov: 45 },
+    controls: { minDistance: 3, maxDistance: 11, enableZoom: true, enablePan: false },
+    scale: 0.75,
+    rotation: [0, 0, 0],
+    position: [0, 0, 0],
+  },
+
+  "torso:shirt:low-poly-glb": {
+    src: "/models/t-shirt_low_poly.glb",
+    camera: { position: [0, 1.5, 5], fov: 45 },
+    controls: { minDistance: 3, maxDistance: 10, enableZoom: true, enablePan: false },
+    scale: 0.8,
+    rotation: [0, 0, 0],
+    position: [0, 0, 0],
+  },
+
+  "torso:shirt:low-poly-usdz": {
+    src: "/models/T-Shirt_Low_Poly.usdz",
+    camera: { position: [0, 1.5, 5], fov: 45 },
+    controls: { minDistance: 3, maxDistance: 10, enableZoom: true, enablePan: false },
+    scale: 0.8,
+    rotation: [0, 0, 0],
+    position: [0, 0, 0],
+  },
+
+  "torso:shirt:tshirt-gltf": {
+    src: "/models/tshirt (1)/scene.gltf",
+    camera: { position: [0, 1.5, 5], fov: 45 },
+    controls: { minDistance: 3, maxDistance: 10, enableZoom: true, enablePan: false },
+    scale: 0.8,
+    rotation: [0, 0, 0],
+    position: [0, 0, 0],
+  },
+
+  "torso:shirt:tshirt-3d-free": {
+    src: "/models/t-shirt_3d_model_free/scene.gltf",
     camera: { position: [0, 1.5, 5], fov: 45 },
     controls: { minDistance: 3, maxDistance: 10, enableZoom: true, enablePan: false },
     scale: 0.8,

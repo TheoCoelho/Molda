@@ -2229,11 +2229,6 @@ eventemitter3@^4.0.1:
   resolved "https://registry.npmjs.org/eventemitter3/-/eventemitter3-4.0.7.tgz"
   integrity sha512-8guHBZCwKnFhYdHr2ysuRWErTwhoN2X8XELRlrRwpmfeY2jjuUN4taQMsULKUVo1K4DvZl+0pgfyoysHxvmvEw==
 
-extend@~1.2.1:
-  version "1.2.1"
-  resolved "https://registry.npmjs.org/extend/-/extend-1.2.1.tgz"
-  integrity sha512-2/JwIYRpMBDSjbQjUUppNSrmc719crhFaWIdT+TRSVA8gE+6HEobQWqJ6VkPt/H8twS7h/0WWs7veh8wmp98Ng==
-
 fabric@^6.7.1:
   version "6.7.1"
   resolved "https://registry.npmjs.org/fabric/-/fabric-6.7.1.tgz"

@@ -32,6 +32,21 @@ export type TextStyle = Partial<{
   shadow: { color: string; blur: number; offsetX: number; offsetY: number } | null;
 }>;
 
+export type SelectionInfo = {
+  hasSelection: boolean;
+  count: number;
+  isGroup: boolean;
+  isMulti: boolean;
+  isTextSelection: boolean;
+  isFullyLocked: boolean;
+  canGroup: boolean;
+  canBringForward: boolean;
+  canSendBackward: boolean;
+  canBringToFront: boolean;
+  canSendToBack: boolean;
+  hasClipboard: boolean;
+};
+
 export type Editor2DHandle = {
   // ---- Histórico ----
   undo: () => Promise<void>;
@@ -61,6 +76,18 @@ export type Editor2DHandle = {
   toJSON: () => string;
   loadFromJSON: (json: string) => Promise<void>;
   deleteSelection: () => void;
+
+  // ---- Edição direta ----
+  copySelection: () => Promise<boolean>;
+  pasteSelection: (opts?: { offset?: number }) => Promise<boolean>;
+  duplicateSelection: () => Promise<boolean>;
+  toggleLockSelection: (lockState?: boolean) => void;
+  bringSelectionForward: () => void;
+  sendSelectionBackward: () => void;
+  bringSelectionToFront: () => void;
+  sendSelectionToBack: () => void;
+  groupSelection: () => void;
+  getSelectionInfo: () => SelectionInfo;
 
   // ==== Texto ====
   addText: (value?: string, opts?: { x?: number; y?: number }) => void;
@@ -353,6 +380,7 @@ const Editor2D = forwardRef<Editor2DHandle, Props>(function Editor2D(
   React.useEffect(() => {
     strokeColorRef.current = strokeColor;
   }, [strokeColor]);
+  const clipboardRef = useRef<{ object: any; left: number; top: number } | null>(null);
   const eraserOverlayRef = useRef<HTMLDivElement | null>(null);
   const eraserActiveRef = useRef(false);
   const usingNativeEraserRef = useRef(false);
@@ -604,6 +632,341 @@ const Editor2D = forwardRef<Editor2DHandle, Props>(function Editor2D(
       return (obj as any)[key];
     } catch {
       return undefined;
+    }
+  };
+
+  const LOCK_SNAPSHOT_KEY = "__moldaLockSnapshot";
+  const isLiveEraserObject = (obj: any) => !!(obj?.data && obj.data.__liveEraser);
+
+  const getCanvasSelection = () => {
+    const canvas = canvasRef.current;
+    const active = canvas?.getActiveObject?.() ?? null;
+    if (!canvas || !active) {
+      return { canvas: null as any, active: null as any, items: [] as any[] };
+    }
+
+    if (String(active.type || "").toLowerCase() === "activeselection") {
+      const items = typeof (active as any).getObjects === "function"
+        ? (active as any).getObjects()
+        : Array.isArray((active as any)._objects)
+          ? (active as any)._objects
+          : [];
+      return { canvas, active, items: items.filter(Boolean) };
+    }
+
+    return { canvas, active, items: [active] };
+  };
+
+  const getInteractiveCanvasObjects = () => {
+    const canvas = canvasRef.current;
+    if (!canvas?.getObjects) return [] as any[];
+    return canvas.getObjects().filter((obj: any) => obj && !isLiveEraserObject(obj));
+  };
+
+  const isObjectLocked = (obj: any) =>
+    !!(obj && obj.lockMovementX && obj.lockMovementY && obj.lockScalingX && obj.lockScalingY && obj.lockRotation);
+
+  const setObjectLocked = (obj: any, locked: boolean) => {
+    if (!obj) return;
+    const data = Object.assign({}, obj.data ?? {});
+    if (locked) {
+      data[LOCK_SNAPSHOT_KEY] = {
+        hasControls: obj.hasControls !== undefined ? obj.hasControls : true,
+        hasBorders: obj.hasBorders !== undefined ? obj.hasBorders : true,
+        hoverCursor: obj.hoverCursor ?? "move",
+        moveCursor: obj.moveCursor ?? "move",
+      };
+      data.__moldaLocked = true;
+      obj.lockMovementX = true;
+      obj.lockMovementY = true;
+      obj.lockScalingX = true;
+      obj.lockScalingY = true;
+      obj.lockRotation = true;
+      obj.editable = false;
+      // Exibe o gizmo de seleção mesmo bloqueado (controles/handles aparecerão, mas não terão efeito)
+      obj.hasControls = true;
+      obj.hasBorders = true; // mantém borda para visualização clara da seleção
+      // Cursor normal ao passar, mas "not-allowed" durante tentativa de mover
+      obj.hoverCursor = "default";
+      obj.moveCursor = "not-allowed";
+    } else {
+      const snapshot = data[LOCK_SNAPSHOT_KEY] ?? {};
+      obj.lockMovementX = false;
+      obj.lockMovementY = false;
+      obj.lockScalingX = false;
+      obj.lockScalingY = false;
+      obj.lockRotation = false;
+      obj.editable = true;
+      obj.hasControls = snapshot.hasControls ?? true;
+      obj.hasBorders = snapshot.hasBorders ?? true;
+      obj.hoverCursor = snapshot.hoverCursor ?? "move";
+      obj.moveCursor = snapshot.moveCursor ?? "move";
+      delete data.__moldaLocked;
+      delete data[LOCK_SNAPSHOT_KEY];
+    }
+    obj.selectable = true;
+    obj.evented = true;
+    obj.data = data;
+    obj.setCoords?.();
+    obj.dirty = true;
+  };
+
+  const getSelectionInfo = (): SelectionInfo => {
+    const { canvas, active, items } = getCanvasSelection();
+    if (!canvas || !active) {
+      return {
+        hasSelection: false,
+        count: 0,
+        isGroup: false,
+        isMulti: false,
+        isTextSelection: false,
+        isFullyLocked: false,
+        canGroup: false,
+        canBringForward: false,
+        canSendBackward: false,
+        canBringToFront: false,
+        canSendToBack: false,
+        hasClipboard: clipboardRef.current !== null,
+      };
+    }
+
+    const selected = items.filter((obj: any) => obj && !isLiveEraserObject(obj));
+    const effective = selected.length > 0 ? selected : [active];
+    const interactive = getInteractiveCanvasObjects();
+    const indices = effective
+      .map((obj: any) => interactive.indexOf(obj))
+      .filter((idx: number) => idx >= 0);
+    const hasIndices = indices.length > 0;
+    const maxIdx = hasIndices ? Math.max(...indices) : -1;
+    const minIdx = hasIndices ? Math.min(...indices) : -1;
+
+    const canBringForward = hasIndices && maxIdx < interactive.length - 1;
+    const canSendBackward = hasIndices && minIdx > 0;
+    const canBringToFront = canBringForward;
+    const canSendToBack = canSendBackward;
+
+    const typeLabel = String(active.type || "");
+    const isTextSelection = typeLabel.toLowerCase().includes("text");
+    const isGroup = typeLabel.toLowerCase() === "group";
+    const isMulti = typeLabel.toLowerCase() === "activeselection" && effective.length > 1;
+    const isFullyLocked = effective.length > 0 && effective.every(isObjectLocked);
+
+    return {
+      hasSelection: true,
+      count: effective.length,
+      isGroup,
+      isMulti,
+      isTextSelection,
+      isFullyLocked,
+      canGroup: typeLabel.toLowerCase() === "activeselection" && effective.length > 1,
+      canBringForward,
+      canSendBackward,
+      canBringToFront,
+      canSendToBack,
+      hasClipboard: clipboardRef.current !== null,
+    };
+  };
+
+  const copySelection = async (): Promise<boolean> => {
+    const { active } = getCanvasSelection();
+    if (!active || typeof active.clone !== "function") return false;
+
+    return new Promise((resolve) => {
+      try {
+        active.clone(
+          (cloned: any) => {
+            if (!cloned) {
+              resolve(false);
+              return;
+            }
+            const left = typeof cloned.left === "number" ? cloned.left : typeof active.left === "number" ? active.left : 0;
+            const top = typeof cloned.top === "number" ? cloned.top : typeof active.top === "number" ? active.top : 0;
+            cloned.canvas = canvasRef.current;
+            cloned.left = left;
+            cloned.top = top;
+            clipboardRef.current = {
+              object: cloned,
+              left,
+              top,
+            };
+            resolve(true);
+          },
+          [
+            "data",
+            "selectable",
+            "evented",
+            "erasable",
+            "clipPath",
+          ]
+        );
+      } catch {
+        resolve(false);
+      }
+    });
+  };
+
+  const pasteSelection = async (opts?: { offset?: number }): Promise<boolean> => {
+    const clipboard = clipboardRef.current;
+    const canvas = canvasRef.current;
+    if (!clipboard || !canvas || !clipboard.object || typeof clipboard.object.clone !== "function") {
+      return false;
+    }
+
+    const offset = Number.isFinite(opts?.offset) ? Number(opts?.offset) : 16;
+
+    return new Promise((resolve) => {
+      try {
+        clipboard.object.clone((cloned: any) => {
+          if (!cloned) {
+            resolve(false);
+            return;
+          }
+
+          const baseLeft = typeof clipboard.left === "number" ? clipboard.left : 0;
+          const baseTop = typeof clipboard.top === "number" ? clipboard.top : 0;
+          const nextLeft = baseLeft + offset;
+          const nextTop = baseTop + offset;
+
+          canvas.discardActiveObject?.();
+
+          if (cloned.type === "activeSelection") {
+            cloned.canvas = canvas;
+            cloned.set?.({ left: nextLeft, top: nextTop });
+            const list = typeof cloned.getObjects === "function"
+              ? cloned.getObjects()
+              : Array.isArray((cloned as any)._objects)
+                ? (cloned as any)._objects
+                : [];
+
+            list.forEach((obj: any) => {
+              if (!obj) return;
+              obj.left = (typeof obj.left === "number" ? obj.left : 0) + offset;
+              obj.top = (typeof obj.top === "number" ? obj.top : 0) + offset;
+              obj.selectable = true;
+              obj.evented = true;
+              obj.erasable = obj.erasable !== false;
+              obj.lockMovementX = false;
+              obj.lockMovementY = false;
+              obj.lockScalingX = false;
+              obj.lockScalingY = false;
+              obj.lockRotation = false;
+              if (obj.data) {
+                delete obj.data.__moldaLocked;
+                delete obj.data[LOCK_SNAPSHOT_KEY];
+              }
+              canvas.add(obj);
+            });
+
+            if (fabricRef.current?.ActiveSelection && list.length > 0) {
+              const activeSel = new fabricRef.current.ActiveSelection(list, { canvas });
+              activeSel.set({ left: nextLeft, top: nextTop });
+              activeSel.setCoords?.();
+              canvas.setActiveObject(activeSel);
+            }
+          } else {
+            cloned.set?.({ left: nextLeft, top: nextTop, evented: true, selectable: true });
+            cloned.erasable = cloned.erasable !== false;
+            canvas.add(cloned);
+            canvas.setActiveObject(cloned);
+          }
+
+          clipboard.left = nextLeft;
+          clipboard.top = nextTop;
+          clipboard.object = cloned;
+          canvas.requestRenderAll?.();
+          emitHistory();
+          resolve(true);
+        });
+      } catch {
+        resolve(false);
+      }
+    });
+  };
+
+  const duplicateSelection = async (): Promise<boolean> => {
+    const copied = await copySelection();
+    if (!copied) return false;
+    return pasteSelection({ offset: 24 });
+  };
+
+  const toggleLockSelection = (lockState?: boolean) => {
+    const { canvas, active, items } = getCanvasSelection();
+    if (!canvas || !active) return;
+
+    const targets = items.filter((obj: any) => obj && !isLiveEraserObject(obj));
+    if (targets.length === 0 && !isLiveEraserObject(active)) {
+      targets.push(active);
+    }
+
+    if (targets.length === 0) return;
+
+    const shouldLock = typeof lockState === "boolean" ? lockState : !targets.every(isObjectLocked);
+  targets.forEach((obj: any) => setObjectLocked(obj, shouldLock));
+
+    if (!isRestoringRef.current && !isLoadingRef.current) {
+      historyRef.current?.push(shouldLock ? "lock" : "unlock");
+      emitHistory();
+    }
+
+    canvas.requestRenderAll?.();
+  };
+
+  const reorderSelection = (
+    method: "bringForward" | "sendBackwards" | "bringToFront" | "sendToBack"
+  ) => {
+    const { canvas, active, items } = getCanvasSelection();
+    if (!canvas || !active) return;
+
+    const targets = items.filter((obj: any) => obj && !isLiveEraserObject(obj));
+    if (targets.length === 0 && !isLiveEraserObject(active)) {
+      targets.push(active);
+    }
+
+    if (targets.length === 0) return;
+
+    const op = (canvas as any)[method];
+    if (typeof op !== "function") return;
+
+  targets.forEach((obj: any) => op.call(canvas, obj));
+
+    const typeLabel = String(active.type || "").toLowerCase();
+    if (typeLabel === "activeselection" && fabricRef.current?.ActiveSelection) {
+      canvas.discardActiveObject();
+      const sel = new fabricRef.current.ActiveSelection(targets, { canvas });
+      sel.setCoords?.();
+      canvas.setActiveObject(sel);
+    } else {
+      canvas.setActiveObject(active);
+    }
+
+    canvas.requestRenderAll?.();
+
+    if (!isRestoringRef.current && !isLoadingRef.current) {
+      historyRef.current?.push("arrange");
+      emitHistory();
+    }
+  };
+
+  const bringSelectionForward = () => reorderSelection("bringForward");
+  const sendSelectionBackward = () => reorderSelection("sendBackwards");
+  const bringSelectionToFront = () => reorderSelection("bringToFront");
+  const sendSelectionToBack = () => reorderSelection("sendToBack");
+
+  const groupSelection = () => {
+    const { canvas, active } = getCanvasSelection();
+    if (!canvas || !active) return;
+    if (String(active.type || "").toLowerCase() !== "activeselection") return;
+    if (typeof (active as any).toGroup !== "function") return;
+
+    const group = (active as any).toGroup();
+    if (!group) return;
+    group.erasable = true;
+    group.setCoords?.();
+    canvas.setActiveObject(group);
+    canvas.requestRenderAll?.();
+    if (!isRestoringRef.current && !isLoadingRef.current) {
+      historyRef.current?.push("group");
+      emitHistory();
     }
   };
 
@@ -1224,6 +1587,51 @@ const Editor2D = forwardRef<Editor2DHandle, Props>(function Editor2D(
           if (target) syncFallbackEraserFollowers(target);
         };
         c.on("object:moving", handleFollowerSync);
+        // Evita que itens bloqueados se movam quando em seleção múltipla
+        const preventLockedMoveOnActiveSelection = (evt: any) => {
+          const target = evt?.target;
+          if (!target) return;
+          const ttype = String(target.type || "").toLowerCase();
+          if (ttype !== "activeselection") return;
+
+          const list = typeof target.getObjects === "function"
+            ? target.getObjects()
+            : Array.isArray((target as any)._objects)
+              ? (target as any)._objects
+              : [];
+          if (!Array.isArray(list) || list.length === 0) return;
+
+          const locked = list.filter((o: any) => o && isObjectLocked(o));
+          if (locked.length === 0) return;
+
+          const unlocked = list.filter((o: any) => o && !isObjectLocked(o));
+          const canvas = target.canvas;
+          const AS = fabricRef.current?.ActiveSelection;
+
+          if (unlocked.length === 0) {
+            // Tudo bloqueado: impede movimento da seleção inteira
+            target.lockMovementX = true;
+            target.lockMovementY = true;
+            // opcional: nudga render
+            canvas?.requestRenderAll?.();
+            return;
+          }
+
+          // Recria seleção apenas com itens desbloqueados, para que apenas eles se movimentem
+          try {
+            canvas?.discardActiveObject();
+            if (AS) {
+              const nextSel = new AS(unlocked, { canvas });
+              nextSel.setCoords?.();
+              canvas?.setActiveObject(nextSel);
+            } else {
+              // fallback: seleciona o primeiro desbloqueado
+              canvas?.setActiveObject(unlocked[0]);
+            }
+            canvas?.requestRenderAll?.();
+          } catch {}
+        };
+        c.on("object:moving", preventLockedMoveOnActiveSelection);
         c.on("object:scaling", handleFollowerSync);
         c.on("object:rotating", handleFollowerSync);
         c.on("object:skewing", handleFollowerSync);
@@ -2054,6 +2462,16 @@ const Editor2D = forwardRef<Editor2DHandle, Props>(function Editor2D(
     toJSON,
     loadFromJSON,
     deleteSelection,
+    copySelection,
+    pasteSelection,
+    duplicateSelection,
+    toggleLockSelection,
+    bringSelectionForward,
+    sendSelectionBackward,
+    bringSelectionToFront,
+    sendSelectionToBack,
+    groupSelection,
+    getSelectionInfo,
     // ---- histórico exposto ----
     undo: async () => {
       await historyRef.current?.undo();

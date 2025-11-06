@@ -1,4 +1,5 @@
 import { useState, useMemo, useRef, useEffect, useCallback } from "react";
+import type { MouseEvent as ReactMouseEvent } from "react";
 import { useNavigate, useSearchParams } from "react-router-dom";
 import Header from "../components/Header";
 import Canvas3DViewer from "../components/Canvas3DViewer";
@@ -14,7 +15,16 @@ import Editor2D, {
   Tool,
   BrushVariant,
   ShapeKind,
+  SelectionInfo,
 } from "../components/Editor2D";
+import {
+  ContextMenu,
+  ContextMenuContent,
+  ContextMenuItem,
+  ContextMenuSeparator,
+  ContextMenuShortcut,
+  ContextMenuTrigger,
+} from "../components/ui/context-menu";
 
 type CanvasTab = { id: string; name: string; type: "2d" | "3d" };
 type SelectionKind = "none" | "text" | "other";
@@ -96,7 +106,14 @@ const Creation = () => {
 
     // Listener de seleção apenas uma vez por instância
     if (!selectionListenerGuard.current.has(inst)) {
-      inst.onSelectionChange?.((k) => setSelectionKind(k));
+      inst.onSelectionChange?.((k) => {
+        setSelectionKind(k);
+        if (k === "none") {
+          setSelectionInfo(null);
+        } else {
+          setSelectionInfo(inst.getSelectionInfo?.() ?? null);
+        }
+      });
       selectionListenerGuard.current.add(inst);
     }
 
@@ -177,15 +194,57 @@ const Creation = () => {
     [canvasTabs, activeCanvasTab]
   );
 
+  const [selectionKind, setSelectionKind] = useState<SelectionKind>("none");
+  const [selectionInfo, setSelectionInfo] = useState<SelectionInfo | null>(null);
+
+  const updateSelectionInfo = useCallback(() => {
+    const inst = editorRefs.current[activeCanvasTab];
+    if (!inst) {
+      setSelectionInfo(null);
+      return;
+    }
+    const info = inst.getSelectionInfo?.();
+    setSelectionInfo(info ?? null);
+  }, [activeCanvasTab]);
+
+  const runWithActiveEditor = useCallback(
+    async (fn: (editor: Editor2DHandle) => unknown | Promise<unknown>) => {
+      const inst = editorRefs.current[activeCanvasTab];
+      if (!inst) return;
+      await Promise.resolve(fn(inst));
+      updateSelectionInfo();
+    },
+    [activeCanvasTab, updateSelectionInfo]
+  );
+
+  const handleContextMenu = useCallback(
+    (event: ReactMouseEvent<HTMLDivElement>) => {
+      const inst = editorRefs.current[activeCanvasTab];
+      if (!inst) {
+        event.preventDefault();
+        return;
+      }
+      const info = inst.getSelectionInfo?.();
+      if (!info || !info.hasSelection) {
+        event.preventDefault();
+        setSelectionInfo(null);
+        return;
+      }
+      setSelectionInfo(info);
+    },
+    [activeCanvasTab]
+  );
+
   useEffect(() => {
     if (!activeIs2D) {
       setCanUndo(false);
       setCanRedo(false);
       setSelectionKind("none");
+      setSelectionInfo(null);
+      return;
     }
-  }, [activeIs2D]);
-
-  const [selectionKind, setSelectionKind] = useState<SelectionKind>("none");
+    updateSelectionInfo();
+  }, [activeIs2D, updateSelectionInfo]);
 
   const [tabSnapshots, setTabSnapshots] = useState<Record<string, string>>({});
   const saveActiveTabSnapshot = () => {
@@ -531,73 +590,146 @@ const Creation = () => {
                   </div>
                 </div>
               ) : (
-                <div
-                  className="absolute inset-0"
-                  onDragOver={(e) => e.preventDefault()}
-                  onDrop={(e) => {
-                    e.preventDefault();
-                    const src = e.dataTransfer.getData("text/plain");
-                    const rect = e.currentTarget.getBoundingClientRect();
-                    const x = e.clientX - rect.left;
-                    const y = e.clientY - rect.top;
-                    if (src && activeIs2D) {
-                      editorRefs.current[activeCanvasTab]?.addImage(src, { x, y });
-                    }
-                  }}
-                >
-                  <Editor2D
-                    key={activeCanvasTab}
-                    ref={editorRefCallback}
-                    tool={tool}
-                    brushVariant={brushVariant}
-                    strokeColor={strokeColor}
-                    fillColor={fillColor}
-                    strokeWidth={strokeWidth}
-                    opacity={opacity}
-                    lineMode={lineMode}
-                    isTrashMode={isTrashMode}
-                    onTrashDelete={() => setTool("select")}
-                    onHistoryChange={(u, r) => {
-                      setCanUndo(u);
-                      setCanRedo(r);
-                      if (tabVisibility[activeCanvasTab]) {
-                        captureTabImage(activeCanvasTab);
-                      }
-                    }}
-                  />
-
-                  {/* TextToolbar: dentro do canvas e centralizada */}
-{selectionKind === "text" && (
-  <TextToolbar
-    editor={{ current: editorRefs.current[activeCanvasTab] as Editor2DHandle }}
-    visible={activeIs2D && selectionKind === "text"}
-    position="bottom"
-  />
-)}
-
-                  {/* Toolbar geral (fica mais abaixo) */}
-                  {selectionKind !== "text" && (
-                    <div className="absolute left-1/2 z-10" style={{ bottom: "80px", maxWidth: "95%", transform: "translateX(-50%)" }}>
-                      <FloatingEditorToolbar
-                        strokeColor={strokeColor}
-                        setStrokeColor={setStrokeColor}
-                        strokeWidth={strokeWidth}
-                        setStrokeWidth={setStrokeWidth}
-                        opacity={opacity}
-                        setOpacity={setOpacity}
+                <ContextMenu>
+                  <ContextMenuTrigger asChild>
+                    <div
+                      className="absolute inset-0"
+                      onContextMenu={handleContextMenu}
+                      onDragOver={(e) => e.preventDefault()}
+                      onDrop={(e) => {
+                        e.preventDefault();
+                        const src = e.dataTransfer.getData("text/plain");
+                        const rect = e.currentTarget.getBoundingClientRect();
+                        const x = e.clientX - rect.left;
+                        const y = e.clientY - rect.top;
+                        if (src && activeIs2D) {
+                          editorRefs.current[activeCanvasTab]?.addImage(src, { x, y });
+                        }
+                      }}
+                    >
+                      <Editor2D
+                        key={activeCanvasTab}
+                        ref={editorRefCallback}
                         tool={tool}
-                        setTool={setTool}
+                        brushVariant={brushVariant}
+                        strokeColor={strokeColor}
+                        fillColor={fillColor}
+                        strokeWidth={strokeWidth}
+                        opacity={opacity}
+                        lineMode={lineMode}
                         isTrashMode={isTrashMode}
-                        setTrashMode={setTrashMode}
-                        editor2DRef={editorRefs.current[activeCanvasTab] as Editor2DHandle}
-                        onUndo={activeIs2D ? () => editorRefs.current[activeCanvasTab]?.undo?.() : undefined}
-                        onRedo={activeIs2D ? () => editorRefs.current[activeCanvasTab]?.redo?.() : undefined}
-                        canUndo={canUndo}
-                        canRedo={canRedo}
+                        onTrashDelete={() => setTool("select")}
+                        onHistoryChange={(u, r) => {
+                          setCanUndo(u);
+                          setCanRedo(r);
+                          if (tabVisibility[activeCanvasTab]) {
+                            captureTabImage(activeCanvasTab);
+                          }
+                        }}
                       />
+
+                      {/* TextToolbar: dentro do canvas e centralizada */}
+                      {selectionKind === "text" && (
+                        <TextToolbar
+                          editor={{ current: editorRefs.current[activeCanvasTab] as Editor2DHandle }}
+                          visible={activeIs2D && selectionKind === "text"}
+                          position="bottom"
+                        />
+                      )}
+
+                      {/* Toolbar geral (fica mais abaixo) */}
+                      {selectionKind !== "text" && (
+                        <div className="absolute left-1/2 z-10" style={{ bottom: "80px", maxWidth: "95%", transform: "translateX(-50%)" }}>
+                          <FloatingEditorToolbar
+                            strokeColor={strokeColor}
+                            setStrokeColor={setStrokeColor}
+                            strokeWidth={strokeWidth}
+                            setStrokeWidth={setStrokeWidth}
+                            opacity={opacity}
+                            setOpacity={setOpacity}
+                            tool={tool}
+                            setTool={setTool}
+                            isTrashMode={isTrashMode}
+                            setTrashMode={setTrashMode}
+                            editor2DRef={editorRefs.current[activeCanvasTab] as Editor2DHandle}
+                            onUndo={activeIs2D ? () => editorRefs.current[activeCanvasTab]?.undo?.() : undefined}
+                            onRedo={activeIs2D ? () => editorRefs.current[activeCanvasTab]?.redo?.() : undefined}
+                            canUndo={canUndo}
+                            canRedo={canRedo}
+                          />
+                        </div>
+                      )}
                     </div>
-                  )}
-                </div>
+                  </ContextMenuTrigger>
+                  <ContextMenuContent className="w-56">
+                    <ContextMenuItem
+                      disabled={!selectionInfo?.hasSelection}
+                      onSelect={() => runWithActiveEditor((inst) => inst.copySelection?.())}
+                    >
+                      Copiar
+                      <ContextMenuShortcut>Ctrl+C</ContextMenuShortcut>
+                    </ContextMenuItem>
+                    <ContextMenuItem
+                      disabled={!selectionInfo?.hasClipboard}
+                      onSelect={() => runWithActiveEditor((inst) => inst.pasteSelection?.())}
+                    >
+                      Colar
+                      <ContextMenuShortcut>Ctrl+V</ContextMenuShortcut>
+                    </ContextMenuItem>
+                    <ContextMenuItem
+                      disabled={!selectionInfo?.hasSelection}
+                      onSelect={() => runWithActiveEditor((inst) => inst.duplicateSelection?.())}
+                    >
+                      Duplicar
+                      <ContextMenuShortcut>Ctrl+D</ContextMenuShortcut>
+                    </ContextMenuItem>
+                    <ContextMenuSeparator />
+                    <ContextMenuItem
+                      disabled={!selectionInfo?.hasSelection}
+                      onSelect={() => runWithActiveEditor((inst) => inst.toggleLockSelection?.())}
+                    >
+                      {selectionInfo?.isFullyLocked ? "Desbloquear" : "Bloquear"}
+                      <ContextMenuShortcut>Shift+Ctrl+L</ContextMenuShortcut>
+                    </ContextMenuItem>
+                    <ContextMenuSeparator />
+                    <ContextMenuItem
+                      disabled={!selectionInfo?.canBringForward}
+                      onSelect={() => runWithActiveEditor((inst) => inst.bringSelectionForward?.())}
+                    >
+                      Mover para frente
+                      <ContextMenuShortcut>Ctrl+]</ContextMenuShortcut>
+                    </ContextMenuItem>
+                    <ContextMenuItem
+                      disabled={!selectionInfo?.canSendBackward}
+                      onSelect={() => runWithActiveEditor((inst) => inst.sendSelectionBackward?.())}
+                    >
+                      Mover para trás
+                      <ContextMenuShortcut>Ctrl+[</ContextMenuShortcut>
+                    </ContextMenuItem>
+                    <ContextMenuItem
+                      disabled={!selectionInfo?.canBringToFront}
+                      onSelect={() => runWithActiveEditor((inst) => inst.bringSelectionToFront?.())}
+                    >
+                      Trazer para frente
+                      <ContextMenuShortcut>]</ContextMenuShortcut>
+                    </ContextMenuItem>
+                    <ContextMenuItem
+                      disabled={!selectionInfo?.canSendToBack}
+                      onSelect={() => runWithActiveEditor((inst) => inst.sendSelectionToBack?.())}
+                    >
+                      Enviar para trás
+                      <ContextMenuShortcut>[</ContextMenuShortcut>
+                    </ContextMenuItem>
+                    <ContextMenuSeparator />
+                    <ContextMenuItem
+                      disabled={!selectionInfo?.canGroup}
+                      onSelect={() => runWithActiveEditor((inst) => inst.groupSelection?.())}
+                    >
+                      Agrupar
+                      <ContextMenuShortcut>Ctrl+G</ContextMenuShortcut>
+                    </ContextMenuItem>
+                  </ContextMenuContent>
+                </ContextMenu>
               )}
             </div>
 

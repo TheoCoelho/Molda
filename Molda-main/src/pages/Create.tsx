@@ -34,7 +34,17 @@ const Create = () => {
 
   // Subtipos opcionais por tipo
   const specificModels: Record<string, ModelItem[]> = {
-    Camiseta: [{ name: "Básica" }, { name: "Oversized" }, { name: "Manga Longa" }],
+    Camiseta: [
+      { name: "Básica" },
+      { name: "Oversized" },
+      { name: "Manga Longa" },
+      { name: "Masculino + Shorts" },
+      { name: "Manga Longa Feminina" },
+      { name: "Low Poly (GLB)" },
+      { name: "Low Poly (USDZ)" },
+      { name: "TShirt (GLTF)" },
+      { name: "TShirt 3D Free" },
+    ],
     Camisa: [{ name: "Social" }, { name: "Casual" }],
     Jaqueta: [{ name: "Couro" }, { name: "Jeans" }, { name: "Corta-vento" }],
     Moletom: [{ name: "Com capuz" }, { name: "Sem capuz" }],
@@ -112,7 +122,7 @@ const Create = () => {
                       className="w-full"
                       items={typeOptions.map((it) => ({ id: it.name, label: it.name }))}
                       selectedId={selectedType}
-                      onSelect={(id) => {
+                      onSelect={(id: string | null) => {
                         setSelectedType(id);
                         if (!id) setSelectedSubtype(null);
                       }}
@@ -138,7 +148,7 @@ const Create = () => {
                       className="w-full"
                       items={subtypeOptions.map((it) => ({ id: it.name, label: it.name }))}
                       selectedId={selectedSubtype}
-                      onSelect={(id) => setSelectedSubtype(id)}
+                      onSelect={(id: string | null) => setSelectedSubtype(id)}
                       cardSize={128}
                       cardGapPx={20}
                       dragSensitivity={1}
