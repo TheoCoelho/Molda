@@ -670,6 +670,14 @@ const Editor2D = forwardRef<Editor2DHandle, Props>(function Editor2D(
     if (!obj) return;
     const data = Object.assign({}, obj.data ?? {});
     if (locked) {
+      // Salva controle original do mtr (rotação) em propriedade oculta para restauração
+      try {
+        const saved = getHiddenProperty(obj, "__moldaSavedMtrControl");
+        if (!saved && obj.controls && obj.controls.mtr) {
+          setHiddenProperty(obj, "__moldaSavedMtrControl", obj.controls.mtr);
+        }
+      } catch {}
+
       data[LOCK_SNAPSHOT_KEY] = {
         hasControls: obj.hasControls !== undefined ? obj.hasControls : true,
         hasBorders: obj.hasBorders !== undefined ? obj.hasBorders : true,
@@ -689,6 +697,137 @@ const Editor2D = forwardRef<Editor2DHandle, Props>(function Editor2D(
       // Cursor normal ao passar, mas "not-allowed" durante tentativa de mover
       obj.hoverCursor = "default";
       obj.moveCursor = "not-allowed";
+
+      // Substitui o handle de rotação (mtr) por um cadeado clicável que desbloqueia
+      try {
+        const fabric = fabricRef.current;
+        if (fabric && obj.controls) {
+          const Control = fabric.Control || (fabric as any).control?.Control;
+          const orig = obj.controls.mtr;
+          if (Control) {
+            const sizeFrom = (o: any) => Number(o?.cornerSize || 24);
+            const padlockRender = (
+              ctx: CanvasRenderingContext2D,
+              left: number,
+              top: number,
+              style: any,
+              o: any
+            ) => {
+              // 1) Renderiza o handle padrão do Fabric (círculo/conexão) para manter o estilo do gizmo
+              try {
+                if (typeof orig?.render === "function") {
+                  orig.render.call(orig, ctx, left, top, style, o);
+                }
+              } catch {}
+
+              // 2) Desenha o ícone de cadeado por cima, usando as cores do gizmo
+              const s = Math.max(18, sizeFrom(o));
+              const strokeBase = style?.cornerStrokeColor || o?.cornerStrokeColor || "#111";
+              const fillBase = style?.cornerColor || o?.cornerColor || "#fff";
+              const parseColor = (c: string) => {
+                // aceita #rgb/#rrggbb/rgba/ named; foco em hex para luminância
+                const hex = c.startsWith('#') ? c.replace('#','') : null;
+                if (hex) {
+                  const full = hex.length === 3 ? hex.split('').map(ch=>ch+ch).join('') : hex;
+                  const n = parseInt(full, 16);
+                  return { r: (n>>16)&255, g: (n>>8)&255, b: n&255 };
+                }
+                // fallback: tenta rgba(r,g,b,a)
+                const m = c.match(/rgba?\((\d+)\s*,\s*(\d+)\s*,\s*(\d+)/i);
+                if (m) { return { r: +m[1], g: +m[2], b: +m[3] }; }
+                return { r: 255, g: 255, b: 255 };
+              };
+              const { r, g, b } = parseColor(fillBase);
+              const lum = (0.2126*(r/255) + 0.7152*(g/255) + 0.0722*(b/255));
+              const glyph = lum > 0.6 ? "#111" : "#fff"; // contraste com o botão
+              const w = s * 0.46;
+              const h = s * 0.36;
+              const line = Math.max(2, s * 0.11);
+              const shackleR = s * 0.2;
+
+              ctx.save();
+              ctx.translate(left, top);
+              ctx.lineCap = "round";
+              ctx.lineJoin = "round";
+              // badge interno para reforçar contraste, menor que o círculo externo
+              const innerR = s * 0.46;
+              ctx.beginPath();
+              ctx.arc(0, 0, innerR, 0, Math.PI * 2);
+              ctx.fillStyle = fillBase;
+              ctx.fill();
+
+              ctx.strokeStyle = glyph;
+              ctx.fillStyle = glyph;
+              ctx.lineWidth = line;
+
+              // alça do cadeado (arco)
+              ctx.beginPath();
+              ctx.arc(0, -h * 0.5, shackleR, Math.PI * 0.2, Math.PI * 0.8, false);
+              ctx.stroke();
+
+              // corpo do cadeado (retângulo arredondado)
+              const bw = w;
+              const bh = h;
+              const rx = Math.min(bw, bh) * 0.18;
+              const x = -bw / 2;
+              const y = -bh / 2 + s * 0.04;
+              ctx.beginPath();
+              ctx.moveTo(x + rx, y);
+              ctx.lineTo(x + bw - rx, y);
+              ctx.quadraticCurveTo(x + bw, y, x + bw, y + rx);
+              ctx.lineTo(x + bw, y + bh - rx);
+              ctx.quadraticCurveTo(x + bw, y + bh, x + bw - rx, y + bh);
+              ctx.lineTo(x + rx, y + bh);
+              ctx.quadraticCurveTo(x, y + bh, x, y + bh - rx);
+              ctx.lineTo(x, y + rx);
+              ctx.quadraticCurveTo(x, y, x + rx, y);
+              ctx.fill();
+              // traço fino para destacar borda
+              ctx.stroke();
+
+              // pino central
+              ctx.beginPath();
+              ctx.arc(0, y + bh * 0.58, s * 0.06, 0, Math.PI * 2);
+              ctx.fillStyle = lum > 0.6 ? strokeBase : "#111";
+              ctx.fill();
+
+              // halo suave para destacar em fundos complexos
+              ctx.beginPath();
+              ctx.arc(0, 0, innerR + Math.max(1, s*0.02), 0, Math.PI * 2);
+              ctx.strokeStyle = glyph + '44'; // ~26% alpha
+              ctx.lineWidth = Math.max(1, s*0.06);
+              ctx.stroke();
+
+              ctx.restore();
+            };
+
+            const mouseDownHandler = (_evt: any, transform: any) => {
+              const target = transform?.target;
+              if (target) {
+                setObjectLocked(target, false);
+                target.canvas?.setActiveObject?.(target);
+                target.canvas?.requestRenderAll?.();
+              }
+              return true; // interrompe ação padrão
+            };
+
+            const padlockCtrl = new Control({
+              x: orig?.x ?? 0,
+              y: orig?.y ?? 0,
+              offsetX: orig?.offsetX ?? 0,
+              offsetY: orig?.offsetY ?? 0,
+              positionHandler: orig?.positionHandler,
+              sizeX: orig?.sizeX,
+              sizeY: orig?.sizeY,
+              cursorStyle: "pointer",
+              render: padlockRender,
+              mouseDownHandler,
+              withConnection: orig?.withConnection ?? true,
+            });
+            obj.controls.mtr = padlockCtrl;
+          }
+        }
+      } catch {}
     } else {
       const snapshot = data[LOCK_SNAPSHOT_KEY] ?? {};
       obj.lockMovementX = false;
@@ -703,6 +842,15 @@ const Editor2D = forwardRef<Editor2DHandle, Props>(function Editor2D(
       obj.moveCursor = snapshot.moveCursor ?? "move";
       delete data.__moldaLocked;
       delete data[LOCK_SNAPSHOT_KEY];
+
+      // Restaura o controle original do mtr, se tivermos guardado
+      try {
+        const saved = getHiddenProperty(obj, "__moldaSavedMtrControl");
+        if (saved && obj.controls) {
+          obj.controls.mtr = saved;
+        }
+        setHiddenProperty(obj, "__moldaSavedMtrControl", undefined);
+      } catch {}
     }
     obj.selectable = true;
     obj.evented = true;
@@ -924,10 +1072,123 @@ const Editor2D = forwardRef<Editor2DHandle, Props>(function Editor2D(
 
     if (targets.length === 0) return;
 
-    const op = (canvas as any)[method];
-    if (typeof op !== "function") return;
+    // Reordenação precisa baseada apenas em objetos interativos (ignora paths do apagador)
+    const interactive = getInteractiveCanvasObjects();
+    if (!Array.isArray(interactive) || interactive.length === 0) return;
 
-  targets.forEach((obj: any) => op.call(canvas, obj));
+    const selectedSet = new Set(targets);
+    const mode: "forward" | "backward" | "front" | "back" =
+      method === "bringForward"
+        ? "forward"
+        : method === "sendBackwards"
+        ? "backward"
+        : method === "bringToFront"
+        ? "front"
+        : "back";
+
+    // Calcula nova ordem dos interativos
+    const computeNewInteractiveOrder = (
+      arr: any[],
+      sel: Set<any>,
+      kind: "forward" | "backward" | "front" | "back"
+    ) => {
+      const a = arr.slice();
+      if (kind === "front" || kind === "back") {
+        const kept: any[] = [];
+        const picked: any[] = [];
+        a.forEach((o) => (sel.has(o) ? picked.push(o) : kept.push(o)));
+        return kind === "front" ? kept.concat(picked) : picked.concat(kept);
+      }
+
+      // one-step swap, preservando blocos selecionados
+      if (kind === "forward") {
+        let i = 0;
+        while (i < a.length) {
+          if (!sel.has(a[i])) {
+            i++;
+            continue;
+          }
+          // início de um bloco selecionado
+          let s = i;
+          let e = i;
+          while (e + 1 < a.length && sel.has(a[e + 1])) e++;
+          // se houver um vizinho à frente não selecionado, troca bloco com o vizinho
+          if (e < a.length - 1 && !sel.has(a[e + 1])) {
+            const neighbor = a[e + 1];
+            // move neighbor para posição s, deslocando bloco +1
+            a.splice(e + 1, 1);
+            a.splice(s, 0, neighbor);
+            // bloco agora inicia em s+1
+            i = e + 2; // salta além do bloco que andou
+          } else {
+            i = e + 1;
+          }
+        }
+        return a;
+      }
+
+      // backward
+      let i = 0;
+      while (i < a.length) {
+        if (!sel.has(a[i])) {
+          i++;
+          continue;
+        }
+        // início de um bloco selecionado
+        let s = i;
+        let e = i;
+        while (e + 1 < a.length && sel.has(a[e + 1])) e++;
+        // se houver um vizinho atrás não selecionado, troca bloco com o vizinho
+        if (s > 0 && !sel.has(a[s - 1])) {
+          const neighbor = a[s - 1];
+          // remove neighbor e recoloca após o bloco (posição e)
+          a.splice(s - 1, 1);
+          a.splice(e, 0, neighbor);
+          // como deslocamos um para trás, manter varredura segura
+          i = e + 1;
+        } else {
+          i = e + 1;
+        }
+      }
+      return a;
+    };
+
+    const newInteractiveOrder = computeNewInteractiveOrder(interactive, selectedSet, mode);
+
+    // Mescla a nova ordem interativa preservando âncoras não interativas
+    const all = typeof canvas.getObjects === "function" ? canvas.getObjects() : [];
+    const finalAll: any[] = [];
+    let p = 0;
+    for (let idx = 0; idx < all.length; idx++) {
+      const o = all[idx];
+      if (o && !isLiveEraserObject(o)) {
+        finalAll.push(newInteractiveOrder[p++]);
+      } else {
+        finalAll.push(o);
+      }
+    }
+
+    // Aplica a ordem final no canvas (primeiro via moveTo)
+    finalAll.forEach((obj, idx) => {
+      try {
+        if (typeof (canvas as any).moveTo === "function") {
+          (canvas as any).moveTo(obj, idx);
+        } else if (typeof obj.moveTo === "function") {
+          obj.moveTo(idx);
+        }
+      } catch {}
+    });
+
+    // Verifica se a ordem efetiva bate; se não, força reordenação por splice no array interno
+    try {
+      const current = typeof canvas.getObjects === "function" ? canvas.getObjects() : [];
+      const mismatch =
+        current.length !== finalAll.length || current.some((o: any, i: number) => o !== finalAll[i]);
+      if (mismatch && Array.isArray((canvas as any)._objects)) {
+        const backing = (canvas as any)._objects as any[];
+        backing.splice(0, backing.length, ...finalAll);
+      }
+    } catch {}
 
     const typeLabel = String(active.type || "").toLowerCase();
     if (typeLabel === "activeselection" && fabricRef.current?.ActiveSelection) {
@@ -939,7 +1200,12 @@ const Editor2D = forwardRef<Editor2DHandle, Props>(function Editor2D(
       canvas.setActiveObject(active);
     }
 
-    canvas.requestRenderAll?.();
+    // Força render completo para refletir z-order imediatamente
+    if (typeof (canvas as any).renderAll === "function") {
+      (canvas as any).renderAll();
+    } else {
+      canvas.requestRenderAll?.();
+    }
 
     if (!isRestoringRef.current && !isLoadingRef.current) {
       historyRef.current?.push("arrange");
