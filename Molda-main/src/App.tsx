@@ -12,19 +12,29 @@ import Finalize from "./pages/Finalize";
 import Profile from "./pages/Profile";
 import Login from "./pages/Login";
 import Register from "./pages/Register";
-// ⬇️ FUNDO ANIMADO
-import ShaderBackground from "@/components/ShaderBackground";
+// import ShaderBackground from "@/components/ShaderBackground"; // temporariamente desabilitado
 // ⬇️ Barra de progresso no topo
 import TopProgressBar from "@/components/TopProgressBar";
 
 const queryClient = new QueryClient();
+const TEMP_BACKGROUND_URL = "/images/istockphoto-1205633216-612x612.jpg";
 
 const App = () => (
   <QueryClientProvider client={queryClient}>
     <TooltipProvider>
       <AuthProvider>
         {/* Canvas do fundo (fixo e atrás de tudo) */}
-        <ShaderBackground />
+        {/* <ShaderBackground /> */}
+        {/* Fundo temporário com imagem minimalista preta e vermelha */}
+        <div
+          className="fixed inset-0 z-0 pointer-events-none"
+          style={{
+            backgroundImage: `url(${TEMP_BACKGROUND_URL})`,
+            backgroundSize: "cover",
+            backgroundPosition: "center",
+            backgroundRepeat: "no-repeat",
+          }}
+        />
 
         {/* Conteúdo do app acima do fundo */}
         <div className="relative z-10 min-h-screen is-glassy">

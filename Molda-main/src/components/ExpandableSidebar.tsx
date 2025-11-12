@@ -42,6 +42,7 @@ import {
   type ScribbleType,
   type HeroPatternType,
 } from "../lib/shapeGenerators";
+import type { BrushVariant } from "./Editor2D";
 
 interface ExpandableSidebarProps {
   // dados do projeto
@@ -58,8 +59,8 @@ interface ExpandableSidebarProps {
   // Editor 2D
   tool: "select" | "brush" | "line" | "curve" | "text";
   setTool: (t: "select" | "brush" | "line" | "curve" | "text") => void;
-  brushVariant: "pencil" | "spray" | "eraser" | "calligraphy";
-  setBrushVariant: (v: "pencil" | "spray" | "eraser" | "calligraphy") => void;
+  brushVariant: BrushVariant;
+  setBrushVariant: (v: BrushVariant) => void;
   strokeColor: string;
   setStrokeColor: (c: string) => void;
   fillColor: string;
@@ -314,8 +315,8 @@ function BrushSectionAccordion(props: {
   is2DActive: boolean;
   tool: "select" | "brush" | "line" | "curve" | "text";
   setTool: (t: "select" | "brush" | "line" | "curve" | "text") => void;
-  brushVariant: "pencil" | "spray" | "eraser" | "calligraphy";
-  setBrushVariant: (v: "pencil" | "spray" | "eraser" | "calligraphy") => void;
+  brushVariant: BrushVariant;
+  setBrushVariant: (v: BrushVariant) => void;
   strokeColor: string;
   setStrokeColor: (c: string) => void;
   fillColor: string;

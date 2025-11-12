@@ -1,6 +1,6 @@
 import { useState, useMemo, useRef, useEffect, useCallback } from "react";
 import type { MouseEvent as ReactMouseEvent } from "react";
-import { useNavigate, useSearchParams } from "react-router-dom";
+import { useNavigate, useSearchParams, useLocation } from "react-router-dom";
 import Header from "../components/Header";
 import Canvas3DViewer from "../components/Canvas3DViewer";
 import ExpandableSidebar from "../components/ExpandableSidebar";
@@ -17,6 +17,7 @@ import Editor2D, {
   ShapeKind,
   SelectionInfo,
 } from "../components/Editor2D";
+import { supabase } from "../integrations/supabase/client";
 import {
   ContextMenu,
   ContextMenuContent,
@@ -34,6 +35,17 @@ const TRANSPARENT_PNG =
 
 const Creation = () => {
   const [selectedFontFamily, setSelectedFontFamily] = useState<string>("Inter");
+  const location = useLocation();
+  const navigationState = (location.state ?? {}) as {
+    startFresh?: boolean;
+    restoreDraft?: boolean;
+    draftId?: string;
+    draftKey?: string;
+    projectKey?: string;
+  };
+  const skipInitialLoadRef = useRef<boolean>(Boolean(navigationState.startFresh));
+  const draftKeyRef = useRef<string | null>(navigationState.draftKey ?? navigationState.projectKey ?? null);
+  const draftIdRef = useRef<string | null>(navigationState.draftId ?? null);
 
   // Hook para gerenciar fontes recentes por projeto
   const { resetProject, addRecentFont } = useRecentFonts();
@@ -65,6 +77,10 @@ const Creation = () => {
     { id: "3d", name: "3D", type: "3d" },
   ]);
   const [activeCanvasTab, setActiveCanvasTab] = useState("3d");
+  const canvasTabsRef = useRef<CanvasTab[]>(canvasTabs);
+  useEffect(() => {
+    canvasTabsRef.current = canvasTabs;
+  }, [canvasTabs]);
 
   const [canUndo, setCanUndo] = useState(false);
   const [canRedo, setCanRedo] = useState(false);
@@ -84,60 +100,66 @@ const Creation = () => {
   const selectionListenerGuard = useRef<WeakSet<Editor2DHandle>>(new WeakSet());
 
   // Callback de ref estável (não depende do branch do JSX)
-  const editorRefCallback = useCallback((inst: Editor2DHandle | null) => {
-    const currentTabId = activeCanvasTab;
-    // Evita reações quando a instância não mudou
-    if (inst === prevEditorInstRef.current) return;
+  const editorRefCallback = useCallback(
+    (inst: Editor2DHandle | null) => {
+      const currentTabId = activeCanvasTab;
+      if (inst === prevEditorInstRef.current) return;
 
-    // Unmount do anterior
-    if (!inst) {
-      if (lastEditorTabRef.current) {
-        delete editorRefs.current[lastEditorTabRef.current];
-        lastEditorTabRef.current = null;
-      }
-      prevEditorInstRef.current = null;
-      return;
-    }
-
-    // Mount novo
-    editorRefs.current[currentTabId] = inst;
-    lastEditorTabRef.current = currentTabId;
-    prevEditorInstRef.current = inst;
-
-    // Listener de seleção apenas uma vez por instância
-    if (!selectionListenerGuard.current.has(inst)) {
-      inst.onSelectionChange?.((k) => {
-        setSelectionKind(k);
-        if (k === "none") {
-          setSelectionInfo(null);
-        } else {
-          setSelectionInfo(inst.getSelectionInfo?.() ?? null);
+      if (!inst) {
+        if (lastEditorTabRef.current) {
+          delete editorRefs.current[lastEditorTabRef.current];
+          lastEditorTabRef.current = null;
         }
-      });
-      selectionListenerGuard.current.add(inst);
-    }
+        prevEditorInstRef.current = null;
+        return;
+      }
 
-    // Ao montar a instância atual, força um refresh para evitar tela “vazia”
-    try {
-      requestAnimationFrame(() => inst.refresh?.());
-      setTimeout(() => inst.refresh?.(), 30);
-    } catch {}
-  }, [activeCanvasTab]);
+      editorRefs.current[currentTabId] = inst;
+      lastEditorTabRef.current = currentTabId;
+      prevEditorInstRef.current = inst;
+
+      if (!selectionListenerGuard.current.has(inst)) {
+        inst.onSelectionChange?.((kind) => {
+          setSelectionKind(kind);
+          if (kind === "none") {
+            setSelectionInfo(null);
+          } else {
+            setSelectionInfo(inst.getSelectionInfo?.() ?? null);
+          }
+        });
+        selectionListenerGuard.current.add(inst);
+      }
+
+      try {
+        requestAnimationFrame(() => inst.refresh?.());
+        setTimeout(() => inst.refresh?.(), 30);
+      } catch {}
+    },
+    [activeCanvasTab]
+  );
   const [tabVisibility, setTabVisibility] = useState<Record<string, boolean>>({});
   const [tabDecalPreviews, setTabDecalPreviews] = useState<Record<string, string>>({});
+  const tabVisibilityRef = useRef<Record<string, boolean>>(tabVisibility);
+  const tabDecalPreviewsRef = useRef<Record<string, string>>(tabDecalPreviews);
+  useEffect(() => {
+    tabVisibilityRef.current = tabVisibility;
+  }, [tabVisibility]);
+  useEffect(() => {
+    tabDecalPreviewsRef.current = tabDecalPreviews;
+  }, [tabDecalPreviews]);
 
-  const captureTabImage = useCallback(
-    (tabId: string) => {
-      const inst = editorRefs.current[tabId];
-      const dataUrl = inst?.exportPNG?.();
-      if (dataUrl && tabDecalPreviews[tabId] !== dataUrl) {
-        setTabDecalPreviews((prev) => ({ ...prev, [tabId]: dataUrl }));
-        return dataUrl;
-      }
-      return tabDecalPreviews[tabId] ?? null;
-    },
-    [tabDecalPreviews]
-  );
+  const captureTabImage = useCallback((tabId: string) => {
+    const inst = editorRefs.current[tabId];
+    const dataUrl = inst?.exportPNG?.();
+    const current = tabDecalPreviewsRef.current;
+    if (dataUrl && current[tabId] !== dataUrl) {
+      const next = { ...current, [tabId]: dataUrl };
+      tabDecalPreviewsRef.current = next;
+      setTabDecalPreviews(next);
+      return dataUrl;
+    }
+    return current[tabId] ?? null;
+  }, []);
 
   const decalsFor3D = useMemo(() => {
     return canvasTabs
@@ -166,27 +188,176 @@ const Creation = () => {
     currentProjectRef.current = current;
   }, [part, type, subtype, resetProject]);
 
+  const applyDraftPayload = (payload: any) => {
+    if (!payload || typeof payload !== "object") return;
+    if (typeof payload.projectName === "string") setProjectName(payload.projectName);
+    if (typeof payload.baseColor === "string") setBaseColor(payload.baseColor);
+    if (typeof payload.size === "string") setSize(payload.size);
+    if (typeof payload.fabric === "string") setFabric(payload.fabric);
+    if (typeof payload.notes === "string") setNotes(payload.notes);
+
+    if (Array.isArray(payload.canvasTabs) && payload.canvasTabs.length) {
+      const tabs = payload.canvasTabs as CanvasTab[];
+      canvasTabsRef.current = tabs;
+      setCanvasTabs(tabs);
+    } else if (payload.canvasSnapshots && typeof payload.canvasSnapshots === "object") {
+      const keys = Object.keys(payload.canvasSnapshots as Record<string, unknown>);
+      if (keys.length) {
+        const tabs: CanvasTab[] = [{ id: "3d", name: "3D", type: "3d" }];
+        keys.forEach((k, i) => tabs.push({ id: k, name: `2D - ${i + 1}`, type: "2d" }));
+        canvasTabsRef.current = tabs;
+        setCanvasTabs(tabs);
+      }
+    }
+
+    if (typeof payload.activeCanvasTab === "string") setActiveCanvasTab(payload.activeCanvasTab);
+    if (payload.canvasSnapshots && typeof payload.canvasSnapshots === "object") {
+      const snapshots = payload.canvasSnapshots as Record<string, string>;
+      tabSnapshotsRef.current = snapshots;
+      setTabSnapshots(snapshots);
+    }
+    if (payload.tabVisibility && typeof payload.tabVisibility === "object") {
+      const visibility = payload.tabVisibility as Record<string, boolean>;
+      tabVisibilityRef.current = visibility;
+      setTabVisibility(visibility);
+    }
+    if (payload.tabDecalPreviews && typeof payload.tabDecalPreviews === "object") {
+      const previews = payload.tabDecalPreviews as Record<string, string>;
+      tabDecalPreviewsRef.current = previews;
+      setTabDecalPreviews(previews);
+    }
+  };
+
   // Carrega projeto salvo (se existir) apenas uma vez na inicialização
   useEffect(() => {
-    try {
-      const stored = localStorage.getItem("currentProject");
-      if (stored) {
-        const project = JSON.parse(stored);
-        // Verifica se é um projeto muito diferente (baseado nos parâmetros)
-        const isVeryDifferentProject = 
-          (project.part && part && project.part !== part) || 
-          (project.type && type && project.type !== type) || 
-          (project.subtype && subtype && project.subtype !== subtype);
-        
-        if (isVeryDifferentProject) {
-          // Se é um projeto muito diferente, remove do localStorage
-          localStorage.removeItem("currentProject");
-        }
-      }
-    } catch (error) {
-      console.warn('Erro ao verificar projeto salvo:', error);
-      localStorage.removeItem("currentProject");
+    if (skipInitialLoadRef.current) {
+      draftKeyRef.current = null;
+      draftIdRef.current = null;
+      try {
+        localStorage.removeItem("currentProject");
+      } catch {}
+      return;
     }
+
+    const legacyProjectKey = `${part || ""}:${type || ""}:${subtype || ""}:${projectName}`;
+
+    const resolveMetadataFromLocal = () => {
+      try {
+        const stored = localStorage.getItem("currentProject");
+        if (!stored) return;
+        const parsed = JSON.parse(stored);
+        if (!parsed || typeof parsed !== "object") return;
+        if (!draftKeyRef.current && typeof parsed.draftKey === "string") draftKeyRef.current = parsed.draftKey;
+        if (!draftKeyRef.current && typeof parsed.projectKey === "string") draftKeyRef.current = parsed.projectKey;
+        if (!draftIdRef.current) {
+          if (typeof parsed.draftId === "string") draftIdRef.current = parsed.draftId;
+          else if (typeof parsed.draftId === "number") draftIdRef.current = String(parsed.draftId);
+        }
+      } catch {}
+    };
+
+    resolveMetadataFromLocal();
+
+    let mounted = true;
+    let remoteApplied = false;
+
+    const loadRemote = async () => {
+      try {
+        if (!supabase) return;
+
+        const targetDraftId = navigationState.draftId ?? draftIdRef.current;
+        const targetDraftKey = draftKeyRef.current ?? navigationState.draftKey ?? navigationState.projectKey ?? null;
+
+        let response: any = null;
+        let error: any = null;
+
+        if (targetDraftId) {
+          const result = await supabase
+            .from("project_drafts")
+            .select("id, project_key, data")
+            .eq("id", targetDraftId)
+            .maybeSingle();
+          response = result.data ?? null;
+          error = result.error ?? null;
+        } else if (targetDraftKey) {
+          const result = await supabase
+            .from("project_drafts")
+            .select("id, project_key, data")
+            .eq("project_key", targetDraftKey)
+            .order("updated_at", { ascending: false })
+            .maybeSingle();
+          response = result.data ?? null;
+          error = result.error ?? null;
+        } else {
+          const result = await supabase
+            .from("project_drafts")
+            .select("id, project_key, data")
+            .eq("project_key", legacyProjectKey)
+            .order("updated_at", { ascending: false })
+            .maybeSingle();
+          response = result.data ?? null;
+          error = result.error ?? null;
+        }
+
+        if (error || !response || !mounted) return;
+
+        const payload = { ...(response.data ?? {}) } as Record<string, unknown>;
+        if (response.project_key) {
+          const projectKeyStr = String(response.project_key);
+          if (typeof payload.draftKey !== "string") payload.draftKey = projectKeyStr;
+          if (typeof payload.projectKey !== "string") payload.projectKey = projectKeyStr;
+        }
+        if (response.id && typeof payload.draftId !== "string") payload.draftId = String(response.id);
+
+        if (typeof payload.draftKey === "string") draftKeyRef.current = payload.draftKey;
+        if (typeof payload.draftId === "string") draftIdRef.current = payload.draftId;
+
+        applyDraftPayload(payload);
+        remoteApplied = true;
+
+        try {
+          localStorage.setItem("currentProject", JSON.stringify(payload));
+        } catch {}
+      } catch (err) {
+        // silencioso, fallback local será acionado
+      }
+    };
+
+    loadRemote().finally(() => {
+      if (!mounted || remoteApplied) return;
+      try {
+        const stored = localStorage.getItem("currentProject");
+        if (!stored) return;
+        const project = JSON.parse(stored);
+        if (!project || typeof project !== "object") return;
+
+        if (typeof project.draftKey === "string" && !draftKeyRef.current) draftKeyRef.current = project.draftKey;
+        if (typeof project.projectKey === "string" && !draftKeyRef.current) draftKeyRef.current = project.projectKey;
+        if (!draftIdRef.current) {
+          if (typeof project.draftId === "string") draftIdRef.current = project.draftId;
+          else if (typeof project.draftId === "number") draftIdRef.current = String(project.draftId);
+        }
+
+        const isVeryDifferentProject =
+          (project.part && part && project.part !== part) ||
+          (project.type && type && project.type !== type) ||
+          (project.subtype && subtype && project.subtype !== subtype);
+        if (isVeryDifferentProject) {
+          draftKeyRef.current = null;
+          draftIdRef.current = null;
+          localStorage.removeItem("currentProject");
+          return;
+        }
+
+        applyDraftPayload(project);
+      } catch {
+        // fallback silencioso
+      }
+    });
+
+    return () => {
+      mounted = false;
+    };
   }, []); // Executa apenas uma vez na montagem
 
   const activeIs2D = useMemo(
@@ -247,13 +418,25 @@ const Creation = () => {
   }, [activeIs2D, updateSelectionInfo]);
 
   const [tabSnapshots, setTabSnapshots] = useState<Record<string, string>>({});
-  const saveActiveTabSnapshot = () => {
-    if (!activeIs2D) return;
+  const tabSnapshotsRef = useRef<Record<string, string>>(tabSnapshots);
+  useEffect(() => {
+    tabSnapshotsRef.current = tabSnapshots;
+  }, [tabSnapshots]);
+  const saveActiveTabSnapshot = useCallback((): Record<string, string> => {
+    if (!activeIs2D) {
+      captureTabImage(activeCanvasTab);
+      return tabSnapshotsRef.current;
+    }
     const inst = editorRefs.current[activeCanvasTab];
     const json = inst?.toJSON?.();
-    if (json) setTabSnapshots((s) => ({ ...s, [activeCanvasTab]: json }));
+    if (json) {
+      const next = { ...tabSnapshotsRef.current, [activeCanvasTab]: json };
+      tabSnapshotsRef.current = next;
+      setTabSnapshots(next);
+    }
     captureTabImage(activeCanvasTab);
-  };
+    return tabSnapshotsRef.current;
+  }, [activeCanvasTab, activeIs2D, captureTabImage]);
 
   const syncFontsFromEditor = useCallback(
     (inst?: Editor2DHandle | null) => {
@@ -313,9 +496,18 @@ const Creation = () => {
     saveActiveTabSnapshot();
     const id = `2d-${Date.now()}`;
     const count = canvasTabs.filter((t) => t.type === "2d").length + 1;
-    setCanvasTabs((prev) => [...prev, { id, name: `2D - ${count}`, type: "2d" }]);
+    const newTab: CanvasTab = { id, name: `2D - ${count}`, type: "2d" };
+    setCanvasTabs((prev) => {
+      const next = [...prev, newTab];
+      canvasTabsRef.current = next;
+      return next;
+    });
     setActiveCanvasTab(id);
-    setTabVisibility((prev) => ({ ...prev, [id]: false }));
+    setTabVisibility((prev) => {
+      const next = { ...prev, [id]: false };
+      tabVisibilityRef.current = next;
+      return next;
+    });
   };
 
   const removeCanvasTab = (tabId: string) => {
@@ -323,19 +515,23 @@ const Creation = () => {
     setTabSnapshots((s) => {
       const next = { ...s };
       delete next[tabId];
+      tabSnapshotsRef.current = next;
       return next;
     });
     setTabDecalPreviews((prev) => {
       const next = { ...prev };
       delete next[tabId];
+      tabDecalPreviewsRef.current = next;
       return next;
     });
     setTabVisibility((prev) => {
       const next = { ...prev };
       delete next[tabId];
+      tabVisibilityRef.current = next;
       return next;
     });
     const updated = canvasTabs.filter((t) => t.id !== tabId);
+    canvasTabsRef.current = updated;
     setCanvasTabs(updated);
     if (activeCanvasTab === tabId) setActiveCanvasTab("3d");
     editorRefs.current[tabId] = null;
@@ -357,6 +553,7 @@ const Creation = () => {
     setTabSnapshots((s) => {
       const next = { ...s };
       delete next[activeCanvasTab];
+      tabSnapshotsRef.current = next;
       return next;
     });
     // Removido: resetProject(); - muito agressivo para limpar apenas um canvas
@@ -373,7 +570,17 @@ const Creation = () => {
   };
 
   const saveDraft = () => {
-    saveActiveTabSnapshot();
+    const snapshotMap = saveActiveTabSnapshot();
+    const canvasSnapshots = snapshotMap ?? tabSnapshotsRef.current;
+    let draftKey = draftKeyRef.current;
+    if (!draftKey) {
+      draftKey =
+        typeof globalThis.crypto !== "undefined" && typeof globalThis.crypto.randomUUID === "function"
+          ? globalThis.crypto.randomUUID()
+          : `draft-${Date.now()}-${Math.random().toString(16).slice(2)}`;
+      draftKeyRef.current = draftKey;
+    }
+    const nowIso = new Date().toISOString();
     const payload = {
       projectName,
       baseColor,
@@ -383,11 +590,75 @@ const Creation = () => {
       part,
       type,
       subtype,
-      canvasSnapshots: tabSnapshots,
-      savedAt: new Date().toISOString(),
+  canvasSnapshots,
+  canvasTabs: canvasTabsRef.current,
+  tabVisibility: tabVisibilityRef.current,
+  tabDecalPreviews: tabDecalPreviewsRef.current,
+      activeCanvasTab,
+      savedAt: nowIso,
+      draftKey,
+      draftId: draftIdRef.current ?? undefined,
+      projectKey: draftKey,
     };
-    localStorage.setItem("currentProject", JSON.stringify(payload));
+    // salva localmente como fallback rápido
+    try {
+      localStorage.setItem("currentProject", JSON.stringify(payload));
+    } catch {}
+
+    // tenta persistir remotamente (Supabase). Tolerante a falhas.
+    (async () => {
+      try {
+        if (!supabase) return;
+
+        // Recupera usuário autenticado (necessário para políticas RLS)
+        const { data: userData, error: userErr } = await supabase.auth.getUser();
+        if (userErr) {
+          console.error("Erro ao obter usuário para salvar rascunho:", userErr);
+          return;
+        }
+        const userId = userData?.user?.id;
+        if (!userId) {
+          console.warn("Usuário não autenticado: não será possível salvar rascunho remoto (RLS exige user_id).");
+          return;
+        }
+        const item = {
+          user_id: userId,
+          project_key: draftKey,
+          data: payload,
+          updated_at: nowIso,
+        } as any;
+
+        // upsert no projeto (onConflict por user_id + project_key)
+        const { data: upserted, error } = await supabase
+          .from("project_drafts")
+          .upsert(item, { onConflict: "user_id,project_key" })
+          .select();
+        if (error) {
+          console.error("Falha ao salvar rascunho remoto:", error);
+        } else {
+          if (upserted && upserted.length) {
+            const first = upserted[0] as { id?: string; project_key?: string };
+            if (first?.id) draftIdRef.current = String(first.id);
+            if (first?.project_key) draftKeyRef.current = first.project_key;
+          }
+          console.log("Rascunho salvo remotamente:", upserted);
+        }
+      } catch (err) {
+        console.error("Erro ao persistir rascunho:", err);
+      }
+    })();
   };
+
+  // Salva automaticamente quando o usuário fecha/recarga a página
+  useEffect(() => {
+    const onUnload = () => {
+      try {
+        saveDraft();
+      } catch {}
+    };
+    window.addEventListener("beforeunload", onUnload);
+    return () => window.removeEventListener("beforeunload", onUnload);
+  }, [projectName, baseColor, size, fabric, notes, part, type, subtype, tabSnapshots, canvasTabs, tabVisibility, tabDecalPreviews, activeCanvasTab]);
 
   const finish = () => {
     saveDraft();
@@ -438,7 +709,7 @@ const Creation = () => {
                 }
 
                 // Fallback: garantir uma aba 2D ativa e inserir lá
-                const existing2D = canvasTabs.find((t) => t.type === '2d');
+                const existing2D = canvasTabs.find((t) => t.type === "2d");
                 if (existing2D) {
                   saveActiveTabSnapshot();
                   setActiveCanvasTab(existing2D.id);
@@ -449,11 +720,20 @@ const Creation = () => {
                 } else {
                   // cria nova aba 2D e agenda a inserção nela
                   const newId = `2d-${Date.now()}`;
-                  const count = canvasTabs.filter((t) => t.type === '2d').length + 1;
+                  const count = canvasTabs.filter((t) => t.type === "2d").length + 1;
                   saveActiveTabSnapshot();
-                  setCanvasTabs((prev) => [...prev, { id: newId, name: `2D - ${count}`, type: '2d' }]);
+                  const newTab: CanvasTab = { id: newId, name: `2D - ${count}`, type: "2d" };
+                  setCanvasTabs((prev) => {
+                    const next = [...prev, newTab];
+                    canvasTabsRef.current = next;
+                    return next;
+                  });
                   setActiveCanvasTab(newId);
-                  setTabVisibility((prev) => ({ ...prev, [newId]: false }));
+                  setTabVisibility((prev) => {
+                    const next = { ...prev, [newId]: false };
+                    tabVisibilityRef.current = next;
+                    return next;
+                  });
                   setTimeout(() => {
                     editorRefs.current[newId]?.addImage(src, opts);
                   }, 100);
@@ -473,6 +753,16 @@ const Creation = () => {
           <div className="flex flex-col h-full min-w-0 min-h-0">
             {/* === ÁREA DO CANVAS (preenche toda altura) === */}
             <div className="relative w-full flex-1 min-h-0 glass rounded-2xl border shadow-xl overflow-hidden min-w-0">
+              <div className="absolute right-4 top-4 z-30 flex">
+                <Button
+                  type="button"
+                  variant="outline"
+                  size="sm"
+                  onClick={saveDraft}
+                >
+                  Salvar rascunho
+                </Button>
+              </div>
               {/* Abas do canvas dentro da área */}
               <div className="absolute left-4 top-4 z-20 glass rounded-xl border p-1 shadow-md">
                 <div className="flex items-center gap-1">
@@ -509,17 +799,23 @@ const Creation = () => {
                                   if (!result) {
                                     setTabDecalPreviews((prev) => {
                                       if (prev[tab.id]) return prev;
-                                      return {
+                                      const next = {
                                         ...prev,
                                         [tab.id]: TRANSPARENT_PNG,
                                       };
+                                      tabDecalPreviewsRef.current = next;
+                                      return next;
                                     });
                                   }
                                 }
-                                setTabVisibility((prev) => ({
-                                  ...prev,
-                                  [tab.id]: !currentlyVisible,
-                                }));
+                                setTabVisibility((prev) => {
+                                  const next = {
+                                    ...prev,
+                                    [tab.id]: !currentlyVisible,
+                                  };
+                                  tabVisibilityRef.current = next;
+                                  return next;
+                                });
                               }}
                               className="p-1 rounded-full hover:bg-white/20 transition"
                               aria-label={visibleIn3D ? "Ocultar no 3D" : "Mostrar no 3D"}

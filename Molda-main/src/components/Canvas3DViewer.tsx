@@ -10,16 +10,26 @@ type Props = {
   baseColor?: string;
   className?: string;
   externalDecals?: Array<{ id: string; label: string; dataUrl: string }>;
+  selectionOverride?: {
+    part?: string | null;
+    type?: string | null;
+    subtype?: string | null;
+  };
 };
 
-export default function Canvas3DViewer({ baseColor = "#ffffff", className, externalDecals = [] }: Props) {
+export default function Canvas3DViewer({
+  baseColor = "#ffffff",
+  className,
+  externalDecals = [],
+  selectionOverride,
+}: Props) {
   const [searchParams] = useSearchParams();
   const location = useLocation();
 
   const stateSel = (location.state || {}) as { part?: string; type?: string; subtype?: string } | null;
-  const part = stateSel?.part ?? searchParams.get("part") ?? undefined;
-  const type = stateSel?.type ?? searchParams.get("type") ?? undefined;
-  const subtype = stateSel?.subtype ?? searchParams.get("subtype") ?? undefined;
+  const part = (selectionOverride?.part ?? stateSel?.part ?? searchParams.get("part")) ?? undefined;
+  const type = (selectionOverride?.type ?? stateSel?.type ?? searchParams.get("type")) ?? undefined;
+  const subtype = (selectionOverride?.subtype ?? stateSel?.subtype ?? searchParams.get("subtype")) ?? undefined;
 
   const modelConfig = useMemo(
     () => getModelConfigFromSelection({ part, type, subtype }),
