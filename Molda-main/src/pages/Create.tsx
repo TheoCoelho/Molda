@@ -8,6 +8,7 @@ import { Tabs, TabsContent, TabsList, TabsTrigger } from "@/components/ui/tabs";
 import Canvas3DViewer from "@/components/Canvas3DViewer";
 import { supabase } from "@/integrations/supabase/client";
 import { cn } from "@/lib/utils";
+import type { ExternalDecalData, DecalTransform } from "../types/decals";
 
 type BodyPart = "head" | "torso" | "legs";
 
@@ -45,6 +46,7 @@ type DraftData = {
   canvasTabs?: DraftCanvasTab[];
   tabVisibility?: Record<string, boolean>;
   tabDecalPreviews?: Record<string, string>;
+  tabDecalPlacements?: Record<string, DecalTransform>;
   canvasSnapshots?: Record<string, string>;
   activeCanvasTab?: string;
   savedAt?: string;
@@ -164,14 +166,20 @@ const Create = () => {
     return drafts.find((draft) => draft.id === selectedDraftId) ?? null;
   }, [drafts, selectedDraftId]);
 
-  const selectedDraftDecals = useMemo(() => {
+  const selectedDraftDecals = useMemo<ExternalDecalData[]>(() => {
     if (!selectedDraft) return [];
     const tabs = selectedDraft.data.canvasTabs ?? [];
     const previews = selectedDraft.data.tabDecalPreviews ?? {};
     const visibility = selectedDraft.data.tabVisibility ?? {};
+    const placements = selectedDraft.data.tabDecalPlacements ?? {};
     return tabs
       .filter((tab) => tab.type === "2d" && visibility[tab.id] && previews[tab.id])
-      .map((tab) => ({ id: tab.id, label: tab.name, dataUrl: previews[tab.id] }));
+      .map((tab) => ({
+        id: tab.id,
+        label: tab.name,
+        dataUrl: previews[tab.id],
+        transform: placements[tab.id] ?? null,
+      }));
   }, [selectedDraft]);
 
   const selectedDraftBaseColor = selectedDraft?.data.baseColor || "#ffffff";
@@ -462,6 +470,7 @@ const Create = () => {
                         key={selectedDraft.id}
                         baseColor={selectedDraftBaseColor}
                         externalDecals={selectedDraftDecals}
+                        interactive={false}
                         selectionOverride={{
                           part: selectedDraft.data.part ?? undefined,
                           type: selectedDraft.data.type ?? undefined,

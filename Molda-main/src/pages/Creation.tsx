@@ -26,12 +26,50 @@ import {
   ContextMenuShortcut,
   ContextMenuTrigger,
 } from "../components/ui/context-menu";
+import type { ExternalDecalData, DecalTransform } from "../types/decals";
+import type { DecalStateSnapshot } from "../../../decal-engine/src/usage";
 
 type CanvasTab = { id: string; name: string; type: "2d" | "3d" };
 type SelectionKind = "none" | "text" | "other";
 
 const TRANSPARENT_PNG =
   "data:image/png;base64,iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mP8/x8AAukB9p7i/ZkAAAAASUVORK5CYII=";
+
+const EPSILON = 1e-4;
+const nearlyEqual = (a?: number | null, b?: number | null) => {
+  if (typeof a !== "number" && typeof b !== "number") return true;
+  if (typeof a !== "number" || typeof b !== "number") return false;
+  return Math.abs(a - b) <= EPSILON;
+};
+
+const vectorNearlyEqual = (a?: DecalTransform["position"], b?: DecalTransform["position"]) => {
+  if (!a && !b) return true;
+  if (!a || !b) return false;
+  return nearlyEqual(a.x, b.x) && nearlyEqual(a.y, b.y) && nearlyEqual(a.z, b.z);
+};
+
+const transformNearlyEqual = (a?: DecalTransform | null, b?: DecalTransform | null) => {
+  if (!a && !b) return true;
+  if (!a || !b) return false;
+  return (
+    vectorNearlyEqual(a.position, b.position) &&
+    vectorNearlyEqual(a.normal, b.normal) &&
+    nearlyEqual(a.width, b.width) &&
+    nearlyEqual(a.height, b.height) &&
+    nearlyEqual(a.depth, b.depth) &&
+    nearlyEqual(a.angle, b.angle)
+  );
+};
+
+const decalMapEquals = (a: Record<string, DecalTransform>, b: Record<string, DecalTransform>) => {
+  const aKeys = Object.keys(a);
+  const bKeys = Object.keys(b);
+  if (aKeys.length !== bKeys.length) return false;
+  for (const key of aKeys) {
+    if (!transformNearlyEqual(a[key], b[key])) return false;
+  }
+  return true;
+};
 
 const Creation = () => {
   const [selectedFontFamily, setSelectedFontFamily] = useState<string>("Inter");
@@ -139,14 +177,19 @@ const Creation = () => {
   );
   const [tabVisibility, setTabVisibility] = useState<Record<string, boolean>>({});
   const [tabDecalPreviews, setTabDecalPreviews] = useState<Record<string, string>>({});
+  const [tabDecalPlacements, setTabDecalPlacements] = useState<Record<string, DecalTransform>>({});
   const tabVisibilityRef = useRef<Record<string, boolean>>(tabVisibility);
   const tabDecalPreviewsRef = useRef<Record<string, string>>(tabDecalPreviews);
+  const tabDecalPlacementsRef = useRef<Record<string, DecalTransform>>(tabDecalPlacements);
   useEffect(() => {
     tabVisibilityRef.current = tabVisibility;
   }, [tabVisibility]);
   useEffect(() => {
     tabDecalPreviewsRef.current = tabDecalPreviews;
   }, [tabDecalPreviews]);
+  useEffect(() => {
+    tabDecalPlacementsRef.current = tabDecalPlacements;
+  }, [tabDecalPlacements]);
 
   const captureTabImage = useCallback((tabId: string) => {
     const inst = editorRefs.current[tabId];
@@ -161,11 +204,46 @@ const Creation = () => {
     return current[tabId] ?? null;
   }, []);
 
-  const decalsFor3D = useMemo(() => {
+  const decalsFor3D = useMemo<ExternalDecalData[]>(() => {
     return canvasTabs
       .filter((tab) => tab.type === "2d" && tabVisibility[tab.id] && tabDecalPreviews[tab.id])
-      .map((tab) => ({ id: tab.id, label: tab.name, dataUrl: tabDecalPreviews[tab.id] }));
-  }, [canvasTabs, tabDecalPreviews, tabVisibility]);
+      .map((tab) => ({
+        id: tab.id,
+        label: tab.name,
+        dataUrl: tabDecalPreviews[tab.id],
+        transform: tabDecalPlacements[tab.id] ?? null,
+      }));
+  }, [canvasTabs, tabDecalPreviews, tabVisibility, tabDecalPlacements]);
+
+  const handleDecalStateChange = useCallback((snapshots: DecalStateSnapshot[]) => {
+    setTabDecalPlacements((prev) => {
+      const snapshotIds = new Set(snapshots.map((s) => s.id));
+      const next: Record<string, DecalTransform> = { ...prev };
+
+      snapshots.forEach((snapshot) => {
+        next[snapshot.id] = {
+          position: snapshot.position ? { ...snapshot.position } : null,
+          normal: snapshot.normal ? { ...snapshot.normal } : null,
+          width: snapshot.width,
+          height: snapshot.height,
+          depth: snapshot.depth,
+          angle: snapshot.angle,
+        };
+      });
+
+      Object.keys(next).forEach((key) => {
+        if (snapshotIds.has(key)) return;
+        const visibility = tabVisibilityRef.current[key];
+        if (visibility === undefined || visibility) {
+          delete next[key];
+        }
+      });
+
+      if (decalMapEquals(prev, next)) return prev;
+      tabDecalPlacementsRef.current = next;
+      return next;
+    });
+  }, []);
 
   // Referência estável para os parâmetros do projeto atual
   const currentProjectRef = useRef<{part: string | null, type: string | null, subtype: string | null}>({
@@ -183,6 +261,8 @@ const Creation = () => {
     
     if (hasChanged) {
       resetProject();
+      tabDecalPlacementsRef.current = {};
+      setTabDecalPlacements({});
     }
     
     currentProjectRef.current = current;
@@ -225,6 +305,11 @@ const Creation = () => {
       const previews = payload.tabDecalPreviews as Record<string, string>;
       tabDecalPreviewsRef.current = previews;
       setTabDecalPreviews(previews);
+    }
+    if (payload.tabDecalPlacements && typeof payload.tabDecalPlacements === "object") {
+      const placements = payload.tabDecalPlacements as Record<string, DecalTransform>;
+      tabDecalPlacementsRef.current = placements;
+      setTabDecalPlacements(placements);
     }
   };
 
@@ -530,6 +615,13 @@ const Creation = () => {
       tabVisibilityRef.current = next;
       return next;
     });
+    setTabDecalPlacements((prev) => {
+      if (!(tabId in prev)) return prev;
+      const next = { ...prev };
+      delete next[tabId];
+      tabDecalPlacementsRef.current = next;
+      return next;
+    });
     const updated = canvasTabs.filter((t) => t.id !== tabId);
     canvasTabsRef.current = updated;
     setCanvasTabs(updated);
@@ -594,6 +686,7 @@ const Creation = () => {
   canvasTabs: canvasTabsRef.current,
   tabVisibility: tabVisibilityRef.current,
   tabDecalPreviews: tabDecalPreviewsRef.current,
+  tabDecalPlacements: tabDecalPlacementsRef.current,
       activeCanvasTab,
       savedAt: nowIso,
       draftKey,
@@ -658,7 +751,7 @@ const Creation = () => {
     };
     window.addEventListener("beforeunload", onUnload);
     return () => window.removeEventListener("beforeunload", onUnload);
-  }, [projectName, baseColor, size, fabric, notes, part, type, subtype, tabSnapshots, canvasTabs, tabVisibility, tabDecalPreviews, activeCanvasTab]);
+  }, [projectName, baseColor, size, fabric, notes, part, type, subtype, tabSnapshots, canvasTabs, tabVisibility, tabDecalPreviews, tabDecalPlacements, activeCanvasTab]);
 
   const finish = () => {
     saveDraft();
@@ -860,7 +953,11 @@ const Creation = () => {
               {/* Canvas ocupa toda a área */}
               {activeCanvasTab === "3d" ? (
                 <div className="absolute inset-0">
-                  <Canvas3DViewer baseColor={baseColor} externalDecals={decalsFor3D} />
+                  <Canvas3DViewer
+                    baseColor={baseColor}
+                    externalDecals={decalsFor3D}
+                    onDecalsChange={handleDecalStateChange}
+                  />
                   <div className="absolute bottom-3 left-3 text-xs text-gray-700 glass px-2 py-1 rounded">
                     Arraste para rotacionar · Scroll para zoom
                   </div>

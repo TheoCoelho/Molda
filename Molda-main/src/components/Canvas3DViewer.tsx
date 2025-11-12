@@ -5,11 +5,15 @@ import DecalEngineHost from "./DecalEngineHost";
 // import Model3D from "./Model3D";
 // import TShirt3D from "./TShirt3D";               // ✅ caminho corrigido (mesma pasta)
 import { getModelConfigFromSelection } from "../lib/models";
+import type { ExternalDecalData } from "../types/decals";
+import type { DecalStateSnapshot } from "../../../decal-engine/src/usage";
 
 type Props = {
   baseColor?: string;
   className?: string;
-  externalDecals?: Array<{ id: string; label: string; dataUrl: string }>;
+  externalDecals?: ExternalDecalData[];
+  onDecalsChange?: (state: DecalStateSnapshot[]) => void;
+  interactive?: boolean;
   selectionOverride?: {
     part?: string | null;
     type?: string | null;
@@ -21,6 +25,8 @@ export default function Canvas3DViewer({
   baseColor = "#ffffff",
   className,
   externalDecals = [],
+  onDecalsChange,
+  interactive = true,
   selectionOverride,
 }: Props) {
   const [searchParams] = useSearchParams();
@@ -45,6 +51,8 @@ export default function Canvas3DViewer({
         className="w-full h-full"
         selection={{ part, type, subtype }}
         decals={externalDecals}
+        onDecalsChange={onDecalsChange}
+        interactive={interactive}
       />
     </div>
   );

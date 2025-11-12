@@ -2,15 +2,26 @@ import React, { useEffect, useRef, useState } from "react";
 // Reutiliza o decal-engine diretamente, sem reimplementar
 // Importa a função de inicialização existente
 // Caminho relativo do projeto Molda-main/src/components -> ../../.. -> decal-engine/src/usage.ts
-import initDecalDemo, { DecalDemoHandle } from "../../../decal-engine/src/usage";
+import initDecalDemo, { DecalDemoHandle, DecalStateSnapshot } from "../../../decal-engine/src/usage";
 import { getModelConfigFromSelection } from "../lib/models";
+import type { ExternalDecalData } from "../types/decals";
 
 type Selection = { part?: string | null; type?: string | null; subtype?: string | null };
-type ExternalDecal = { id: string; label: string; dataUrl: string };
+type Props = {
+  className?: string;
+  selection?: Selection;
+  decals?: ExternalDecalData[];
+  onDecalsChange?: (state: DecalStateSnapshot[]) => void;
+  interactive?: boolean;
+};
 
-type Props = { className?: string; selection?: Selection; decals?: ExternalDecal[] };
-
-export default function DecalEngineHost({ className, selection, decals = [] }: Props) {
+export default function DecalEngineHost({
+  className,
+  selection,
+  decals = [],
+  onDecalsChange,
+  interactive = true,
+}: Props) {
   const containerRef = useRef<HTMLDivElement | null>(null);
   const initedRef = useRef(false);
   const apiRef = useRef<DecalDemoHandle | null>(null);
@@ -40,7 +51,7 @@ export default function DecalEngineHost({ className, selection, decals = [] }: P
     const mountEl = containerRef.current;
     const boot = async () => {
       try {
-        const handle = await initDecalDemo(mountEl);
+  const handle = await initDecalDemo(mountEl, { interactive });
         if (cancelled) return;
         apiRef.current = handle;
         setReady(true);
@@ -54,7 +65,7 @@ export default function DecalEngineHost({ className, selection, decals = [] }: P
     return () => {
       cancelled = true;
     };
-  }, [selection?.part, selection?.type, selection?.subtype]);
+  }, [selection?.part, selection?.type, selection?.subtype, interactive]);
 
   useEffect(() => {
     if (!ready) return;
@@ -71,11 +82,37 @@ export default function DecalEngineHost({ className, selection, decals = [] }: P
 
     decals.forEach((decal) => {
       if (!decal?.id || !decal?.dataUrl) return;
-      api.upsertExternalDecal({ id: decal.id, label: decal.label, src: decal.dataUrl });
+      const payload: Parameters<DecalDemoHandle["upsertExternalDecal"]>[0] = {
+        id: decal.id,
+        label: decal.label,
+        src: decal.dataUrl,
+      };
+
+      const t = decal.transform;
+      if (t) {
+        if (typeof t.width === "number") payload.width = t.width;
+        if (typeof t.height === "number") payload.height = t.height;
+        if (typeof t.depth === "number") payload.depth = t.depth;
+        if (typeof t.angle === "number") payload.angle = t.angle;
+        if (t.position) payload.position = t.position;
+        if (t.normal) payload.normal = t.normal;
+      }
+
+      api.upsertExternalDecal(payload);
     });
 
     prevExternalIdsRef.current = nextIds;
   }, [decals, ready]);
+
+  useEffect(() => {
+    if (!ready || !onDecalsChange) return;
+    const api = apiRef.current;
+    if (!api) return;
+    const unsubscribe = api.subscribe(onDecalsChange);
+    return () => {
+      unsubscribe?.();
+    };
+  }, [ready, onDecalsChange]);
 
   useEffect(() => {
     return () => {
