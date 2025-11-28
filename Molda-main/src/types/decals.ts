@@ -19,3 +19,13 @@ export type ExternalDecalData = {
   dataUrl: string;
   transform?: DecalTransform | null;
 };
+
+export type DecalStateSnapshot = {
+  id: string;
+  position?: Vector3Like | null;
+  normal?: Vector3Like | null;
+  width?: number;
+  height?: number;
+  depth?: number;
+  angle?: number;
+};

@@ -1,8 +1,10 @@
 // src/usage.ts
 import * as THREE from "three";
 import { GLTFLoader } from "three/examples/jsm/loaders/GLTFLoader.js";
+import { USDLoader } from "three/examples/jsm/loaders/USDLoader.js";
 import { OrbitControls } from "three/examples/jsm/controls/OrbitControls.js";
 import MeshDecalAdapter from "./engine/three/MeshDecalAdapter";
+import { prepareMeshForDecals } from "./engine/three/MeshPreparation";
 
 export type ExternalDecalPayload = {
   id: string;
@@ -17,9 +19,10 @@ export type ExternalDecalPayload = {
 export type DecalDemoHandle = {
   upsertExternalDecal: (payload: ExternalDecalPayload) => void;
   removeExternalDecal: (id: string) => void;
+  subscribe: (listener: (state: any) => void) => () => void;
 };
 
-export async function initDecalDemo(container: HTMLElement): Promise<DecalDemoHandle> {
+export async function initDecalDemo(container: HTMLElement, opts?: { interactive?: boolean }): Promise<DecalDemoHandle> {
   // ---------------- MENU ----------------
   const params0 = new URLSearchParams(window.location.search);
   const hideMenu = params0.get("hideMenu") === "1" || params0.get("hideMenu") === "true";
@@ -29,6 +32,12 @@ export async function initDecalDemo(container: HTMLElement): Promise<DecalDemoHa
     { label: "Oversized", value: "oversize_t-shirt_free/scene.gltf" },
     { label: "Low Poly", value: "t-shirt_low_poly/scene.gltf" },
     { label: "TShirt Model", value: "tshirt_model/scene.gltf" },
+    { label: "Masculino + Shorts", value: "male_tshirt_and_shorts_-_plain_texture/scene.gltf" },
+    { label: "Manga Longa Feminina", value: "womens_long_sleeve/scene.gltf" },
+    { label: "TShirt (GLTF)", value: "tshirt (1)/scene.gltf" },
+    { label: "TShirt 3D Free", value: "t-shirt_3d_model_free/scene.gltf" },
+    { label: "Low Poly (GLB)", value: "t-shirt_low_poly.glb" },
+    { label: "Low Poly (USDZ)", value: "T-Shirt_Low_Poly.usdz" },
   ];
   const menu = document.createElement("div");
   Object.assign(menu.style, {
@@ -204,9 +213,45 @@ export async function initDecalDemo(container: HTMLElement): Promise<DecalDemoHa
   let activeDecalId: string | null = null;
   const pendingExternalDecals = new Set<string>();
 
+  const depthMultiplier = 1.0;
+  const GIZMO_EXTENT_SCALE = 1.18; // margem extra para reduzir clipping nas bordas
+
+  const computeBaseDepth = (width: number, height: number) =>
+    Math.max(width, height) * depthMultiplier;
+
+  const getScaledDimensions = (
+    width: number,
+    height: number,
+    depth?: number
+  ) => {
+    const baseDepth = depth ?? computeBaseDepth(width, height);
+    return {
+      width: width * GIZMO_EXTENT_SCALE,
+      height: height * GIZMO_EXTENT_SCALE,
+      depth: baseDepth * GIZMO_EXTENT_SCALE,
+    };
+  };
+
+  const applyScaledTransform = (
+    proj: ProjectorLike,
+    position: THREE.Vector3,
+    normal: THREE.Vector3,
+    width: number,
+    height: number,
+    depth: number,
+    angleRad: number
+  ) => {
+    const { width: scaledW, height: scaledH, depth: scaledD } = getScaledDimensions(
+      width,
+      height,
+      depth
+    );
+    proj.setTransform(position, normal, scaledW, scaledH, scaledD, angleRad);
+  };
+
   let defaultWidth = 0.3;
   let defaultHeight = 0.3;
-  let defaultDepth = 0.3;
+  let defaultDepth = computeBaseDepth(defaultWidth, defaultHeight);
   const defaultCenter = new THREE.Vector3(0, 0.5, 0.2);
   const defaultNormal = new THREE.Vector3(0, 0, 1);
 
@@ -327,7 +372,7 @@ export async function initDecalDemo(container: HTMLElement): Promise<DecalDemoHa
       const angle = 0;
       const adapter = new MeshDecalAdapter(scene, texture, projectorOptions) as unknown as ProjectorLike;
       adapter.attachTo(root);
-      adapter.setTransform(center, normal, width, height, depth, angle);
+  applyScaledTransform(adapter, center, normal, width, height, depth, angle);
       const mesh = adapter.getMesh ? adapter.getMesh() : null;
       if (mesh) {
         mesh.userData = mesh.userData || {};
@@ -447,8 +492,8 @@ export async function initDecalDemo(container: HTMLElement): Promise<DecalDemoHa
     }
     projector = record.projector;
     decalWidth = record.width;
-    decalHeight = record.height;
-    decalDepth = record.depth;
+  decalHeight = record.height;
+  decalDepth = record.depth ?? computeBaseDepth(decalWidth, decalHeight);
     decalAngle = record.angle;
     decalCenter = record.center;
     decalNormal = record.normal;
@@ -480,7 +525,8 @@ export async function initDecalDemo(container: HTMLElement): Promise<DecalDemoHa
     if (!root) return;
     decals.forEach((record) => {
       record.projector.attachTo(root!);
-      record.projector.setTransform(
+      applyScaledTransform(
+        record.projector,
         record.center,
         record.normal,
         record.width,
@@ -635,7 +681,7 @@ export async function initDecalDemo(container: HTMLElement): Promise<DecalDemoHa
     50,
     container.clientWidth / container.clientHeight,
     0.1,
-    100
+    500
   );
   camera.position.set(2, 1.5, 2);
   const controls = new OrbitControls(camera, renderer.domElement);
@@ -651,6 +697,18 @@ export async function initDecalDemo(container: HTMLElement): Promise<DecalDemoHa
   const modelContainer = new THREE.Group();
   scene.add(modelContainer);
 
+  const normalizeModelScale = (object: THREE.Object3D) => {
+    const bbox = new THREE.Box3().setFromObject(object);
+    if (bbox.isEmpty()) return;
+    const size = bbox.getSize(new THREE.Vector3());
+    const maxDim = Math.max(size.x, size.y, size.z);
+    const target = 4.0; // mantém escala consistente entre modelos variando de centímetros a metros
+    if (maxDim <= 0) return;
+    if (maxDim <= target) return;
+    const scale = target / maxDim;
+    object.scale.multiplyScalar(scale);
+  };
+
   function centerOnGrid(object: THREE.Object3D) {
     const box = new THREE.Box3().setFromObject(object);
     if (box.isEmpty()) return;
@@ -664,18 +722,65 @@ export async function initDecalDemo(container: HTMLElement): Promise<DecalDemoHa
     object.position.y -= yMin;
   }
 
-  // ---------------- Carregar GLTF ----------------
+  // ---------------- Carregar modelo ----------------
   const params = new URLSearchParams(window.location.search);
   const modelFile = params.get("model") || "tshirt_model/scene.gltf";
   // Modo mesh (DecalGeometry) é o único disponível
-  const depthMultiplier = 1.0;
   const modelUrl = `/models/${modelFile}`;
-  const loader = new GLTFLoader();
+  const gltfLoader = new GLTFLoader();
+  const usdLoader = new USDLoader();
+
+  const loadModel = (
+    url: string,
+    onLoad: (root: THREE.Object3D) => void,
+    onProgress?: (event: ProgressEvent<EventTarget>) => void,
+    onError?: (event: unknown) => void
+  ) => {
+    const lower = url.toLowerCase();
+    if (lower.endsWith(".usdz") || lower.endsWith(".usd")) {
+      usdLoader.load(
+        url,
+        (usd) => {
+          const rootObject = (usd as any)?.scene && (usd as any).scene.isObject3D
+            ? (usd as any).scene
+            : (usd as any)?.isObject3D
+              ? (usd as unknown as THREE.Object3D)
+              : null;
+          if (rootObject) {
+            onLoad(rootObject);
+            return;
+          }
+
+          const group = new THREE.Group();
+          if ((usd as any)?.scenes && Array.isArray((usd as any).scenes)) {
+            (usd as any).scenes.forEach((s: THREE.Object3D) => {
+              if (s?.isObject3D) group.add(s);
+            });
+          }
+          if (!group.children.length) {
+            console.warn("USDLoader: cena vazia ou formato inesperado", usd);
+          }
+          onLoad(group);
+        },
+        onProgress,
+        onError
+      );
+      return;
+    }
+    gltfLoader.load(
+      url,
+      (gltf) => {
+        onLoad(gltf.scene);
+      },
+      onProgress,
+      onError
+    );
+  };
 
   // ---- decal: estado e dimensões ----
   let decalWidth = 0.3;
   let decalHeight = 0.3;
-  let decalDepth = Math.max(decalWidth, decalHeight) * depthMultiplier;
+  let decalDepth = computeBaseDepth(decalWidth, decalHeight);
   let decalAngle = 0;
   let decalCenter = new THREE.Vector3();
   let decalNormal = new THREE.Vector3(0, 0, 1);
@@ -928,9 +1033,14 @@ export async function initDecalDemo(container: HTMLElement): Promise<DecalDemoHa
       isInteracting = true;
       decalCenter.copy(h.point);
       decalNormal.copy(h.normal);
-      projector.setTransform(
-        decalCenter, decalNormal,
-        decalWidth, decalHeight, decalDepth, decalAngle
+      applyScaledTransform(
+        projector,
+        decalCenter,
+        decalNormal,
+        decalWidth,
+        decalHeight,
+        decalDepth,
+        decalAngle
       );
       syncActiveDecalTransform();
       controls.enabled = false;
@@ -942,9 +1052,14 @@ export async function initDecalDemo(container: HTMLElement): Promise<DecalDemoHa
       if (!h) return; // sem hit -> ignora (não sai do objeto)
       decalCenter.copy(h.point);
       decalNormal.copy(h.normal);
-      projector.setTransform(
-        decalCenter, decalNormal,
-        decalWidth, decalHeight, decalDepth, decalAngle
+      applyScaledTransform(
+        projector,
+        decalCenter,
+        decalNormal,
+        decalWidth,
+        decalHeight,
+        decalDepth,
+        decalAngle
       );
       syncActiveDecalTransform();
       updateOverlay();
@@ -1043,15 +1158,20 @@ export async function initDecalDemo(container: HTMLElement): Promise<DecalDemoHa
           decalWidth = Math.max(1e-4, 2 * Math.abs(x));
           decalHeight = Math.max(1e-4, 2 * Math.abs(y));
         }
-  decalDepth = Math.max(decalWidth, decalHeight) * depthMultiplier;
+  decalDepth = computeBaseDepth(decalWidth, decalHeight);
       } else if (dragMode === "rotate") {
         decalAngle = Math.atan2(y, x);
       }
     }
 
-    projector.setTransform(
-      decalCenter, decalNormal,
-      decalWidth, decalHeight, decalDepth, decalAngle
+    applyScaledTransform(
+      projector,
+      decalCenter,
+      decalNormal,
+      decalWidth,
+      decalHeight,
+      decalDepth,
+      decalAngle
     );
     syncActiveDecalTransform();
     updateOverlay();
@@ -1142,7 +1262,7 @@ export async function initDecalDemo(container: HTMLElement): Promise<DecalDemoHa
     if (bbox.isEmpty()) {
       defaultWidth = 0.3;
       defaultHeight = 0.3;
-      defaultDepth = Math.max(defaultWidth, defaultHeight) * depthMultiplier;
+  defaultDepth = computeBaseDepth(defaultWidth, defaultHeight);
       defaultCenter.set(0, 0.5, 0.1);
       defaultNormal.set(0, 0, 1);
       ensureAllSelectedDecals();
@@ -1153,7 +1273,7 @@ export async function initDecalDemo(container: HTMLElement): Promise<DecalDemoHa
     const base = Math.max(size.x, size.y, size.z) || 1.0;
     defaultWidth = base * 0.25;
     defaultHeight = defaultWidth;
-    defaultDepth = Math.max(defaultWidth, defaultHeight) * depthMultiplier;
+  defaultDepth = computeBaseDepth(defaultWidth, defaultHeight);
 
     const center = bbox.getCenter(new THREE.Vector3());
     defaultCenter.set(center.x, center.y, bbox.max.z + 0.02);
@@ -1164,11 +1284,17 @@ export async function initDecalDemo(container: HTMLElement): Promise<DecalDemoHa
   }
 
   // ---------------- Load e enquadramento da câmera ----------------
-  loader.load(
+  loadModel(
     modelUrl,
-    (gltf) => {
+    (loadedRoot) => {
       modelContainer.clear();
-      root = gltf.scene;
+      root = loadedRoot;
+      prepareMeshForDecals(root, {
+        minTriangleArea: 1e-8,
+        weldTolerance: 1e-4,
+        recomputeNormals: "smooth",
+      });
+      normalizeModelScale(root);
       centerOnGrid(root);
       modelContainer.add(root);
 
@@ -1189,7 +1315,7 @@ export async function initDecalDemo(container: HTMLElement): Promise<DecalDemoHa
       attachDragHandlers();
     },
     undefined,
-    (err) => console.error("Falha ao carregar GLTF:", err)
+    (err) => console.error("Falha ao carregar modelo:", err)
   );
 
   // ---------------- Resize ----------------
@@ -1255,9 +1381,41 @@ export async function initDecalDemo(container: HTMLElement): Promise<DecalDemoHa
   };
   tick();
 
+  // --- SUBSCRIBE IMPLEMENTATION ---
+  const listeners: Array<(state: any) => void> = [];
+  function notifyListeners(state: any) {
+    listeners.forEach((fn) => {
+      try { fn(state); } catch {}
+    });
+  }
+
+  // Exemplo: chame notifyListeners sempre que decals mudarem
+  // Adapte para chamar com o estado correto dos decals
+  // Exemplo: notifyListeners(currentDecalState);
+
+  // Exemplo de integração: após upsert/remove, notificar
+  const upsertExternalDecalWithNotify = (payload: ExternalDecalPayload) => {
+    upsertExternalDecal(payload);
+    // notifyListeners(...); // Passe o estado correto
+  };
+  const removeExternalDecalWithNotify = (id: string) => {
+    removeExternalDecal(id);
+    // notifyListeners(...); // Passe o estado correto
+  };
+
+  function subscribe(listener: (state: any) => void) {
+    listeners.push(listener);
+    // Retorna função para remover listener
+    return () => {
+      const idx = listeners.indexOf(listener);
+      if (idx >= 0) listeners.splice(idx, 1);
+    };
+  }
+
   return {
-    upsertExternalDecal,
-    removeExternalDecal,
+    upsertExternalDecal: upsertExternalDecalWithNotify,
+    removeExternalDecal: removeExternalDecalWithNotify,
+    subscribe,
   } satisfies DecalDemoHandle;
 }
 

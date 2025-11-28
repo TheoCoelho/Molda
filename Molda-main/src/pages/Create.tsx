@@ -1,4 +1,4 @@
-import { useEffect, useMemo, useState } from "react";
+import { Suspense, useCallback, useEffect, useMemo, useRef, useState } from "react";
 import type { MouseEvent as ReactMouseEvent } from "react";
 import { useNavigate } from "react-router-dom";
 import Header from "@/components/Header";
@@ -9,6 +9,9 @@ import Canvas3DViewer from "@/components/Canvas3DViewer";
 import { supabase } from "@/integrations/supabase/client";
 import { cn } from "@/lib/utils";
 import type { ExternalDecalData, DecalTransform } from "../types/decals";
+import { Canvas, type ThreeEvent } from "@react-three/fiber";
+import { Bounds, Center, Environment, Html, OrbitControls, useGLTF } from "@react-three/drei";
+import * as THREE from "three";
 
 type BodyPart = "head" | "torso" | "legs";
 
@@ -322,10 +325,10 @@ const Create = () => {
               <div className="mt-3 grid w-full grid-cols-1 items-start gap-10 lg:grid-cols-[360px,1fr]">
                 {/* ESQUERDA: boneco (sticky em lg+) */}
                 <aside className="lg:sticky lg:top-24">
-                  <MannequinOnly
+                  <Mannequin3D
                     selected={selected}
                     setSelected={setSelected}
-                    setSelectedPart={(p) => {
+                    setSelectedPart={(p: BodyPart) => {
                       setSelectedPart(p);
                       setSelectedType(null);
                       setSelectedSubtype(null);
@@ -503,9 +506,9 @@ const Create = () => {
 export default Create;
 
 /* ===========================
-   MannequinOnly — boneco fixo à esquerda (sem mudança funcional)
+   Mannequin3D — viewer 3D com divisão visual por regiões do corpo
    =========================== */
-function MannequinOnly({
+function Mannequin3D({
   selected,
   setSelected,
   setSelectedPart,
@@ -514,95 +517,325 @@ function MannequinOnly({
   setSelected: (b: BodyPart | null) => void;
   setSelectedPart: (b: BodyPart) => void;
 }) {
-  const onSelect = (part: BodyPart) => {
-    setSelected(part);
-    setSelectedPart(part);
-  };
+  const [hovered, setHovered] = useState<BodyPart | null>(null);
+
+  const handleSelect = useCallback(
+    (part: BodyPart) => {
+      setSelected(part);
+      setSelectedPart(part);
+    },
+    [setSelected, setSelectedPart]
+  );
+
+  const overlaySectionClass = useCallback(
+    (part: BodyPart, withDivider: boolean) =>
+      cn(
+        "transition-colors duration-150",
+        withDivider ? "border-b border-indigo-400/35" : "",
+        hovered === part
+          ? "bg-indigo-500/20"
+          : selected === part
+            ? "bg-indigo-400/12"
+            : "bg-transparent"
+      ),
+    [hovered, selected]
+  );
 
   return (
     <div className="pl-1">
-      <svg
-        viewBox="0 0 210 380"
-        className="w-[240px] md:w-[300px] lg:w-[340px] h-auto mt-2"
-        role="img"
-        aria-label="Seleção da parte do corpo"
-      >
-        <defs>
-          <linearGradient id="gradNeutral" x1="0" y1="0" x2="0" y2="1">
-            <stop offset="0%" stopColor="#eef2f7" />
-            <stop offset="100%" stopColor="#d7dfe8" />
-          </linearGradient>
-          <linearGradient id="gradSelected" x1="0" y1="0" x2="0" y2="1">
-            <stop offset="0%" stopColor="#ddd6fe" />
-            <stop offset="100%" stopColor="#a78bfa" />
-          </linearGradient>
-          <filter id="softShadow" colorInterpolationFilters="sRGB">
-            <feDropShadow dx="0" dy="2" stdDeviation="2" floodOpacity="0.18" />
-          </filter>
-          <filter id="selectGlow" colorInterpolationFilters="sRGB">
-            <feDropShadow dx="0" dy="0" stdDeviation="3" floodColor="#a78bfa" floodOpacity="0.32" />
-          </filter>
-        </defs>
+      <div className="relative mx-auto w-full max-w-[420px]" style={{ height: "560px" }}>
+        <Canvas
+          camera={{ position: [0, 0.35, 2.2], fov: 36 }}
+          style={{ width: "100%", height: "100%" }}
+          gl={{ alpha: true, antialias: true }}
+          dpr={[1, 1.8]}
+        >
+          <ambientLight intensity={0.7} />
+          <directionalLight position={[4, 6, 6]} intensity={1.15} />
+          <directionalLight position={[-3, 5, -4]} intensity={0.45} />
 
-        <rect x="92" y="83" width="16" height="14" rx="7" fill="url(#gradNeutral)" filter="url(#softShadow)" />
-        <rect x="36" y="110" width="24" height="100" rx="12" fill="url(#gradNeutral)" filter="url(#softShadow)" opacity="0.92" />
-        <rect x="140" y="110" width="24" height="100" rx="12" fill="url(#gradNeutral)" filter="url(#softShadow)" opacity="0.92" />
+          <Suspense fallback={<Html center className="text-xs text-slate-200">Carregando...</Html>}>
+            <Bounds fit clip observe margin={0.65}>
+              <Center>
+                <SegmentedMannequin
+                  selected={selected}
+                  hovered={hovered}
+                  onHover={setHovered}
+                  onSelect={handleSelect}
+                />
+              </Center>
+            </Bounds>
+          </Suspense>
 
-        <circle
-          cx="100"
-          cy="60"
-          r="34"
-          className="cursor-pointer transition-transform hover:scale-[1.005]"
-          onClick={() => onSelect("head")}
-          fill={selected === "head" ? "url(#gradSelected)" : "url(#gradNeutral)"}
-          filter={selected === "head" ? "url(#selectGlow)" : "url(#softShadow)"}
-        />
+          <Suspense fallback={null}>
+            <Environment files="/hdri/studio_small_03_1k.hdr" backgroundRotation={[0, Math.PI, 0]} />
+          </Suspense>
+          <OrbitControls enablePan={false} enableZoom={false} enableRotate={false} />
+        </Canvas>
 
-        <rect
-          x="62"
-          y="100"
-          width="76"
-          height="110"
-          rx="16"
-          className="cursor-pointer transition-transform hover:scale-[1.005]"
-          onClick={() => onSelect("torso")}
-          fill={selected === "torso" ? "url(#gradSelected)" : "url(#gradNeutral)"}
-          filter={selected === "torso" ? "url(#selectGlow)" : "url(#softShadow)"}
-        />
+        <div className="pointer-events-none absolute inset-0 rounded-lg border border-indigo-400/40 overflow-hidden">
+          <div className="flex h-full flex-col">
+            <div
+              className={overlaySectionClass("head", true)}
+              style={{ flexBasis: "20%", flexGrow: 0, flexShrink: 0 }}
+            />
+            <div
+              className={overlaySectionClass("torso", true)}
+              style={{ flexBasis: "40%", flexGrow: 0, flexShrink: 0 }}
+            />
+            <div
+              className={overlaySectionClass("legs", false)}
+              style={{ flexBasis: "40%", flexGrow: 0, flexShrink: 0 }}
+            />
+          </div>
+        </div>
+      </div>
 
-        <rect
-          x="70"
-          y="208"
-          width="60"
-          height="26"
-          rx="13"
-          fill={selected === "legs" ? "url(#gradSelected)" : "url(#gradNeutral)"}
-          filter={selected === "legs" ? "url(#selectGlow)" : "url(#softShadow)"}
-        />
-
-        <rect
-          x="60"
-          y="230"
-          width="34"
-          height="120"
-          rx="17"
-          fill={selected === "legs" ? "url(#gradSelected)" : "url(#gradNeutral)"}
-          filter={selected === "legs" ? "url(#selectGlow)" : "url(#softShadow)"}
-          className="cursor-pointer transition-transform hover:scale-[1.005]"
-          onClick={() => onSelect("legs")}
-        />
-        <rect
-          x="116"
-          y="230"
-          width="34"
-          height="120"
-          rx="17"
-          fill={selected === "legs" ? "url(#gradSelected)" : "url(#gradNeutral)"}
-          filter={selected === "legs" ? "url(#selectGlow)" : "url(#softShadow)"}
-          className="cursor-pointer transition-transform hover:scale-[1.005]"
-          onClick={() => onSelect("legs")}
-        />
-      </svg>
+      <div className="mt-4 flex justify-center gap-4 text-xs font-semibold uppercase tracking-[0.18em] text-slate-500">
+        <button
+          type="button"
+          onClick={() => handleSelect("head")}
+          onMouseEnter={() => setHovered("head")}
+          onMouseLeave={() => setHovered(null)}
+          className={cn(
+            "transition-colors hover:text-slate-200",
+            selected === "head" ? "text-indigo-300" : undefined
+          )}
+        >
+          Cabeça
+        </button>
+        <button
+          type="button"
+          onClick={() => handleSelect("torso")}
+          onMouseEnter={() => setHovered("torso")}
+          onMouseLeave={() => setHovered(null)}
+          className={cn(
+            "transition-colors hover:text-slate-200",
+            selected === "torso" ? "text-indigo-300" : undefined
+          )}
+        >
+          Tronco
+        </button>
+        <button
+          type="button"
+          onClick={() => handleSelect("legs")}
+          onMouseEnter={() => setHovered("legs")}
+          onMouseLeave={() => setHovered(null)}
+          className={cn(
+            "transition-colors hover:text-slate-200",
+            selected === "legs" ? "text-indigo-300" : undefined
+          )}
+        >
+          Pernas
+        </button>
+      </div>
     </div>
   );
 }
+
+type SegmentedMannequinProps = {
+  selected: BodyPart | null;
+  hovered: BodyPart | null;
+  onHover: (part: BodyPart | null) => void;
+  onSelect: (part: BodyPart) => void;
+};
+
+function SegmentedMannequin({ selected, hovered, onHover, onSelect }: SegmentedMannequinProps) {
+  const { scene } = useGLTF("/models/mannequin/scene.gltf");
+  const clonedScene = useMemo(() => scene.clone(true), [scene]);
+
+  const thresholds = useMemo(() => {
+    const box = new THREE.Box3().setFromObject(clonedScene);
+    const minY = box.min.y;
+    const maxY = box.max.y;
+    const span = maxY - minY || 1;
+    const centerY = (maxY + minY) / 2;
+    return {
+      headStart: maxY - span * 0.2 - centerY,
+      torsoStart: maxY - span * 0.6 - centerY,
+    };
+  }, [clonedScene]);
+
+  const uniformsRef = useRef<{
+    uHeadStart: { value: number };
+    uTorsoStart: { value: number };
+    uSelected: { value: THREE.Vector3 };
+    uHovered: { value: THREE.Vector3 };
+    uSelectedColor: { value: THREE.Color };
+    uHoverColor: { value: THREE.Color };
+  }>();
+
+  if (!uniformsRef.current) {
+    uniformsRef.current = {
+      uHeadStart: { value: thresholds.headStart },
+      uTorsoStart: { value: thresholds.torsoStart },
+      uSelected: { value: new THREE.Vector3(0, 0, 0) },
+      uHovered: { value: new THREE.Vector3(0, 0, 0) },
+      uSelectedColor: { value: new THREE.Color("#a855f7") },
+      uHoverColor: { value: new THREE.Color("#38bdf8") },
+    };
+  }
+
+  const uniforms = uniformsRef.current;
+  uniforms.uHeadStart.value = thresholds.headStart;
+  uniforms.uTorsoStart.value = thresholds.torsoStart;
+
+  useEffect(() => {
+    const enhanceMaterial = (material: THREE.Material | null | undefined): THREE.Material | null | undefined => {
+      if (!material || typeof (material as any).clone !== "function") return material;
+      const clonedMaterial = (material as THREE.MeshStandardMaterial).clone();
+      clonedMaterial.onBeforeCompile = (shader) => {
+  shader.uniforms.uHeadStart = uniforms.uHeadStart;
+  shader.uniforms.uTorsoStart = uniforms.uTorsoStart;
+        shader.uniforms.uSelected = uniforms.uSelected;
+        shader.uniforms.uHovered = uniforms.uHovered;
+        shader.uniforms.uSelectedColor = uniforms.uSelectedColor;
+        shader.uniforms.uHoverColor = uniforms.uHoverColor;
+
+        shader.vertexShader = shader.vertexShader
+          .replace(
+            "#include <common>",
+            "#include <common>\n  varying vec3 vWorldPosition;"
+          )
+          .replace(
+            "#include <worldpos_vertex>",
+            "#include <worldpos_vertex>\n  vWorldPosition = worldPosition.xyz;"
+          );
+
+        shader.fragmentShader = shader.fragmentShader
+          .replace(
+            "#include <common>",
+            `#include <common>
+  varying vec3 vWorldPosition;
+  uniform float uHeadStart;
+  uniform float uTorsoStart;
+  uniform vec3 uSelected;
+  uniform vec3 uHovered;
+  uniform vec3 uSelectedColor;
+  uniform vec3 uHoverColor;`
+          )
+          .replace(
+            "#include <output_fragment>",
+            `
+  float regionIndex;
+  if (vWorldPosition.y >= uHeadStart) {
+    regionIndex = 0.0;
+  } else if (vWorldPosition.y >= uTorsoStart) {
+    regionIndex = 1.0;
+  } else {
+    regionIndex = 2.0;
+  }
+
+  // Determine if any selection is active
+  float anySelected = max(uSelected.x, max(uSelected.y, uSelected.z));
+
+  vec3 baseColor = diffuseColor.rgb;
+  vec3 outColor = baseColor;
+
+  if (anySelected > 0.5) {
+    // Apply selected color ONLY to the selected region; others remain unchanged
+    if (regionIndex < 0.5 && uSelected.x > 0.5) {
+      outColor = uSelectedColor;
+    } else if (regionIndex >= 0.5 && regionIndex < 1.5 && uSelected.y > 0.5) {
+      outColor = uSelectedColor;
+    } else if (regionIndex >= 1.5 && uSelected.z > 0.5) {
+      outColor = uSelectedColor;
+    } else {
+      outColor = baseColor;
+    }
+  } else {
+    // No selection: allow a subtle hover tint only on hovered region
+    float hoverBlend = 0.0;
+    if (regionIndex < 0.5) {
+      hoverBlend = uHovered.x * 0.35;
+    } else if (regionIndex < 1.5) {
+      hoverBlend = uHovered.y * 0.35;
+    } else {
+      hoverBlend = uHovered.z * 0.35;
+    }
+    outColor = mix(baseColor, uHoverColor, hoverBlend);
+  }
+
+  diffuseColor.rgb = outColor;
+  #include <output_fragment>`
+          );
+      };
+      clonedMaterial.needsUpdate = true;
+      return clonedMaterial;
+    };
+
+    clonedScene.traverse((object) => {
+      const mesh = object as THREE.Mesh;
+      if (!mesh?.isMesh) return;
+      const baseMaterial = mesh.material;
+      if (Array.isArray(baseMaterial)) {
+        mesh.material = baseMaterial.map((mat) => enhanceMaterial(mat) as THREE.Material);
+      } else {
+        mesh.material = enhanceMaterial(baseMaterial) as THREE.Material;
+      }
+    });
+  }, [clonedScene, uniforms]);
+
+  useEffect(() => {
+    uniforms.uSelected.value.set(
+      selected === "head" ? 1 : 0,
+      selected === "torso" ? 1 : 0,
+      selected === "legs" ? 1 : 0
+    );
+  }, [selected, uniforms]);
+
+  useEffect(() => {
+    uniforms.uHovered.value.set(
+      hovered === "head" ? 1 : 0,
+      hovered === "torso" ? 1 : 0,
+      hovered === "legs" ? 1 : 0
+    );
+  }, [hovered, uniforms]);
+
+  const resolvePart = useCallback(
+    (y: number): BodyPart => {
+      if (y >= thresholds.headStart) return "head";
+      if (y >= thresholds.torsoStart) return "torso";
+      return "legs";
+    },
+    [thresholds.headStart, thresholds.torsoStart]
+  );
+
+  const handlePointerMove = useCallback(
+    (event: ThreeEvent<PointerEvent>) => {
+      event.stopPropagation();
+      const part = resolvePart(event.point.y);
+      onHover(part);
+    },
+    [onHover, resolvePart]
+  );
+
+  const handlePointerOut = useCallback(
+    (event: ThreeEvent<PointerEvent>) => {
+      event.stopPropagation();
+      if (event.intersections.length === 0) onHover(null);
+    },
+    [onHover]
+  );
+
+  const handleClick = useCallback(
+    (event: ThreeEvent<PointerEvent>) => {
+      event.stopPropagation();
+      const part = resolvePart(event.point.y);
+      onSelect(part);
+    },
+    [onSelect, resolvePart]
+  );
+
+  return (
+    <primitive
+      object={clonedScene}
+      rotation={[0, 0, 0]}
+      onPointerMove={handlePointerMove}
+      onPointerOut={handlePointerOut}
+      onClick={handleClick}
+    />
+  );
+}
+
+useGLTF.preload("/models/mannequin/scene.gltf");

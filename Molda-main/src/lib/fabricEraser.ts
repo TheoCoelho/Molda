@@ -3,8 +3,7 @@
 let installed = false;
 
 export function installFabricEraser(fabric) {
-  if (!fabric || installed || fabric.EraserBrush) {
-    installed = true;
+  if (!fabric || installed) {
     return;
   }
   installed = true;
@@ -73,15 +72,48 @@ export function installFabricEraser(fabric) {
     },
     _drawClipPath: function (ctx, clipPath) {
       __drawClipPath.call(this, ctx, clipPath);
-      if (this.eraser) {
-        var size = this._getNonTransformedDimensions();
-        this.eraser.isType && this.eraser.isType("eraser") &&
-          this.eraser.set({
-            width: size.x,
-            height: size.y,
-          });
-        __drawClipPath.call(this, ctx, this.eraser);
+      var eraser = this.eraser;
+      if (!eraser) {
+        return;
       }
+      if (typeof eraser.shouldCache !== "function") {
+        if (
+          !eraser.__eraserReviving &&
+          eraser.type === "eraser" &&
+          fabric &&
+          fabric.Eraser &&
+          typeof fabric.Eraser.fromObject === "function"
+        ) {
+          var target = this;
+          eraser.__eraserReviving = true;
+          fabric.Eraser.fromObject(eraser)
+            .then(function (revived) {
+              if (!revived) {
+                return;
+              }
+              if (eraser && eraser.excludeFromExport) {
+                revived.excludeFromExport = eraser.excludeFromExport;
+              }
+              target.eraser = revived;
+              target.dirty = true;
+              if (target.canvas) {
+                target.canvas.requestRenderAll();
+              }
+            })
+            .catch(function () {})
+            .finally(function () {
+              delete eraser.__eraserReviving;
+            });
+        }
+        return;
+      }
+      var size = this._getNonTransformedDimensions();
+      eraser.isType && eraser.isType("eraser") &&
+        eraser.set({
+          width: size.x,
+          height: size.y,
+        });
+      __drawClipPath.call(this, ctx, eraser);
     },
     toObject: function (propertiesToInclude) {
       var object = _toObject.call(
@@ -89,7 +121,11 @@ export function installFabricEraser(fabric) {
         ["erasable"].concat(propertiesToInclude)
       );
       if (this.eraser && !this.eraser.excludeFromExport) {
-        object.eraser = this.eraser.toObject(propertiesToInclude);
+        if (this.eraser.isType && this.eraser.isType("eraser") && typeof this.eraser.toObject === "function") {
+          object.eraser = this.eraser.toObject(propertiesToInclude);
+        } else if (this.eraser.type === "eraser" && this.eraser.objects) {
+          object.eraser = this.eraser;
+        }
       }
       return object;
     },
@@ -311,6 +347,9 @@ export function installFabricEraser(fabric) {
         canvas.width = this.canvas.width;
         canvas.height = this.canvas.height;
         var patternCtx = canvas.getContext("2d");
+        if (!patternCtx) {
+          return;
+        }
         if (this.canvas._isRetinaScaling()) {
           var retinaScaling = this.canvas.getRetinaScaling();
           this.canvas.__initRetinaScaling(retinaScaling, canvas, patternCtx);
@@ -323,7 +362,8 @@ export function installFabricEraser(fabric) {
           !this.inverted &&
           ((backgroundImage && !bgErasable) || !!this.canvas.backgroundColor)
         ) {
-          if (bgErasable) {
+          if (bgErasable && backgroundImage) {
+            backgroundImage.eraser = undefined;
             this.canvas.backgroundImage = undefined;
           }
           this.canvas._renderBackground(patternCtx);
@@ -332,12 +372,12 @@ export function installFabricEraser(fabric) {
           }
         } else if (this.inverted) {
           var eraser = backgroundImage && backgroundImage.eraser;
-          if (eraser) {
+          if (eraser && backgroundImage) {
             backgroundImage.eraser = undefined;
             backgroundImage.dirty = true;
           }
           this.canvas._renderBackground(patternCtx);
-          if (eraser) {
+          if (eraser && backgroundImage) {
             backgroundImage.eraser = eraser;
             backgroundImage.dirty = true;
           }
@@ -378,12 +418,12 @@ export function installFabricEraser(fabric) {
           }
         } else if (this.inverted) {
           var eraser = overlayImage && overlayImage.eraser;
-          if (eraser) {
+          if (eraser && overlayImage) {
             overlayImage.eraser = undefined;
             overlayImage.dirty = true;
           }
           __renderOverlay.call(this.canvas, patternCtx);
-          if (eraser) {
+          if (eraser && overlayImage) {
             overlayImage.eraser = eraser;
             overlayImage.dirty = true;
           }
@@ -421,16 +461,20 @@ export function installFabricEraser(fabric) {
         var t = this.canvas.getRetinaScaling(),
           s = 1 / t;
         ctx = this.canvas.getContext();
+        if (!ctx) return;
         if (lineWidth - this.erasingWidthAliasing > 0) {
           this.width = lineWidth - this.erasingWidthAliasing;
           this.callSuper("_render", ctx);
           this.width = lineWidth;
         }
         ctx = this.canvas.contextTop;
+        if (!ctx) return;
         this.canvas.clearContext(ctx);
         ctx.save();
         ctx.scale(s, s);
-        ctx.drawImage(this._patternCanvas, 0, 0);
+        if (this._patternCanvas) {
+          ctx.drawImage(this._patternCanvas, 0, 0);
+        }
         ctx.restore();
         this.callSuper("_render", ctx);
       },

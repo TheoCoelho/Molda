@@ -26,11 +26,31 @@ import {
   ContextMenuShortcut,
   ContextMenuTrigger,
 } from "../components/ui/context-menu";
-import type { ExternalDecalData, DecalTransform } from "../types/decals";
-import type { DecalStateSnapshot } from "../../../decal-engine/src/usage";
+import { useAuth } from "../contexts/AuthContext";
+import type { ExternalDecalData, DecalTransform, DecalStateSnapshot } from "../types/decals";
 
 type CanvasTab = { id: string; name: string; type: "2d" | "3d" };
 type SelectionKind = "none" | "text" | "other";
+type DraftPayload = {
+  projectName: string;
+  baseColor: string;
+  size: string;
+  fabric: string;
+  notes: string;
+  part: string | null;
+  type: string | null;
+  subtype: string | null;
+  canvasSnapshots: Record<string, string>;
+  canvasTabs: CanvasTab[];
+  tabVisibility: Record<string, boolean>;
+  tabDecalPreviews: Record<string, string>;
+  tabDecalPlacements: Record<string, DecalTransform>;
+  activeCanvasTab: string;
+  savedAt: string;
+  draftKey: string;
+  draftId?: string;
+  projectKey: string;
+};
 
 const TRANSPARENT_PNG =
   "data:image/png;base64,iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mP8/x8AAukB9p7i/ZkAAAAASUVORK5CYII=";
@@ -80,10 +100,13 @@ const Creation = () => {
     draftId?: string;
     draftKey?: string;
     projectKey?: string;
+    activeCanvasTab?: string;
   };
+  const { user } = useAuth();
   const skipInitialLoadRef = useRef<boolean>(Boolean(navigationState.startFresh));
   const draftKeyRef = useRef<string | null>(navigationState.draftKey ?? navigationState.projectKey ?? null);
   const draftIdRef = useRef<string | null>(navigationState.draftId ?? null);
+  const initialDraftSavedRef = useRef(false);
 
   // Hook para gerenciar fontes recentes por projeto
   const { resetProject, addRecentFont } = useRecentFonts();
@@ -134,6 +157,9 @@ const Creation = () => {
   const editorRefs = useRef<Record<string, Editor2DHandle | null>>({});
   const lastEditorTabRef = useRef<string | null>(null);
   // Mantém refs estáveis para evitar loops com callback ref inline
+  const prevTabRef = useRef<string>(activeCanvasTab);
+
+  // Salva a tab anterior sempre que a tab ativa muda
   const prevEditorInstRef = useRef<Editor2DHandle | null>(null);
   const selectionListenerGuard = useRef<WeakSet<Editor2DHandle>>(new WeakSet());
 
@@ -142,6 +168,8 @@ const Creation = () => {
     (inst: Editor2DHandle | null) => {
       const currentTabId = activeCanvasTab;
       if (inst === prevEditorInstRef.current) return;
+
+      // Removido: salvamento da tab anterior aqui para evitar loop
 
       if (!inst) {
         if (lastEditorTabRef.current) {
@@ -172,6 +200,8 @@ const Creation = () => {
         requestAnimationFrame(() => inst.refresh?.());
         setTimeout(() => inst.refresh?.(), 30);
       } catch {}
+
+      // Removido: carregamento automático do snapshot para evitar bug de resetar posição dos objetos
     },
     [activeCanvasTab]
   );
@@ -215,36 +245,6 @@ const Creation = () => {
       }));
   }, [canvasTabs, tabDecalPreviews, tabVisibility, tabDecalPlacements]);
 
-  const handleDecalStateChange = useCallback((snapshots: DecalStateSnapshot[]) => {
-    setTabDecalPlacements((prev) => {
-      const snapshotIds = new Set(snapshots.map((s) => s.id));
-      const next: Record<string, DecalTransform> = { ...prev };
-
-      snapshots.forEach((snapshot) => {
-        next[snapshot.id] = {
-          position: snapshot.position ? { ...snapshot.position } : null,
-          normal: snapshot.normal ? { ...snapshot.normal } : null,
-          width: snapshot.width,
-          height: snapshot.height,
-          depth: snapshot.depth,
-          angle: snapshot.angle,
-        };
-      });
-
-      Object.keys(next).forEach((key) => {
-        if (snapshotIds.has(key)) return;
-        const visibility = tabVisibilityRef.current[key];
-        if (visibility === undefined || visibility) {
-          delete next[key];
-        }
-      });
-
-      if (decalMapEquals(prev, next)) return prev;
-      tabDecalPlacementsRef.current = next;
-      return next;
-    });
-  }, []);
-
   // Referência estável para os parâmetros do projeto atual
   const currentProjectRef = useRef<{part: string | null, type: string | null, subtype: string | null}>({
     part: null, type: null, subtype: null
@@ -276,17 +276,18 @@ const Creation = () => {
     if (typeof payload.fabric === "string") setFabric(payload.fabric);
     if (typeof payload.notes === "string") setNotes(payload.notes);
 
+    let restoredTabs: CanvasTab[] = [];
     if (Array.isArray(payload.canvasTabs) && payload.canvasTabs.length) {
-      const tabs = payload.canvasTabs as CanvasTab[];
-      canvasTabsRef.current = tabs;
-      setCanvasTabs(tabs);
+      restoredTabs = payload.canvasTabs as CanvasTab[];
+      canvasTabsRef.current = restoredTabs;
+      setCanvasTabs(restoredTabs);
     } else if (payload.canvasSnapshots && typeof payload.canvasSnapshots === "object") {
       const keys = Object.keys(payload.canvasSnapshots as Record<string, unknown>);
       if (keys.length) {
-        const tabs: CanvasTab[] = [{ id: "3d", name: "3D", type: "3d" }];
-        keys.forEach((k, i) => tabs.push({ id: k, name: `2D - ${i + 1}`, type: "2d" }));
-        canvasTabsRef.current = tabs;
-        setCanvasTabs(tabs);
+        restoredTabs = [{ id: "3d", name: "3D", type: "3d" }];
+        keys.forEach((k, i) => restoredTabs.push({ id: k, name: `2D - ${i + 1}`, type: "2d" }));
+        canvasTabsRef.current = restoredTabs;
+        setCanvasTabs(restoredTabs);
       }
     }
 
@@ -295,6 +296,16 @@ const Creation = () => {
       const snapshots = payload.canvasSnapshots as Record<string, string>;
       tabSnapshotsRef.current = snapshots;
       setTabSnapshots(snapshots);
+      // Após restaurar os snapshots, garantir que cada Editor2D seja funcional
+      setTimeout(() => {
+        Object.entries(snapshots).forEach(([tabId, snap]) => {
+          const editor = editorRefs.current[tabId];
+          if (editor && typeof editor.loadFromJSON === "function") {
+            editor.loadFromJSON(snap);
+            editor.refresh?.();
+          }
+        });
+      }, 100);
     }
     if (payload.tabVisibility && typeof payload.tabVisibility === "object") {
       const visibility = payload.tabVisibility as Record<string, boolean>;
@@ -445,6 +456,16 @@ const Creation = () => {
     };
   }, []); // Executa apenas uma vez na montagem
 
+  // Garante que a tab ativa só seja setada após as tabs serem restauradas
+  useEffect(() => {
+    const navActiveTab = navigationState?.activeCanvasTab;
+    if (canvasTabs.length > 1 && typeof navActiveTab === "string") {
+      setTimeout(() => {
+        setActiveCanvasTab(navActiveTab);
+      }, 50);
+    }
+  }, [canvasTabs, navigationState]);
+
   const activeIs2D = useMemo(
     () => canvasTabs.find((t) => t.id === activeCanvasTab)?.type === "2d",
     [canvasTabs, activeCanvasTab]
@@ -507,21 +528,38 @@ const Creation = () => {
   useEffect(() => {
     tabSnapshotsRef.current = tabSnapshots;
   }, [tabSnapshots]);
-  const saveActiveTabSnapshot = useCallback((): Record<string, string> => {
-    if (!activeIs2D) {
-      captureTabImage(activeCanvasTab);
-      return tabSnapshotsRef.current;
+  const pendingRemotePayloadRef = useRef<DraftPayload | null>(null);
+  const remoteSaveTimeoutRef = useRef<number | null>(null);
+  const remoteSaveInFlightRef = useRef(false);
+  const scheduledDraftSaveRef = useRef<number | null>(null);
+  const pendingScheduledTabRef = useRef<string | null>(null);
+  const skipSnapshotReloadRef = useRef<Set<string>>(new Set());
+  const saveActiveTabSnapshot = useCallback(async (tabId?: string): Promise<Record<string, string>> => {
+    const id = tabId || prevTabRef.current;
+    if (!id) return tabSnapshotsRef.current;
+    // Captura imagem para preview 3D
+    captureTabImage(id);
+    // Salva JSON apenas para persistência (draft/export)
+    const tabType = canvasTabs.find(t => t.id === id)?.type;
+    if (tabType === "2d") {
+      const inst = editorRefs.current[id];
+      if (inst?.waitForIdle) {
+        try {
+          await inst.waitForIdle();
+        } catch {}
+      }
+      const json = inst?.toJSON?.();
+      if (json && tabSnapshotsRef.current[id] !== json) {
+        const next = { ...tabSnapshotsRef.current, [id]: json };
+        tabSnapshotsRef.current = next;
+        skipSnapshotReloadRef.current.add(id);
+        setTabSnapshots(next);
+        return next;
+      }
     }
-    const inst = editorRefs.current[activeCanvasTab];
-    const json = inst?.toJSON?.();
-    if (json) {
-      const next = { ...tabSnapshotsRef.current, [activeCanvasTab]: json };
-      tabSnapshotsRef.current = next;
-      setTabSnapshots(next);
-    }
-    captureTabImage(activeCanvasTab);
     return tabSnapshotsRef.current;
-  }, [activeCanvasTab, activeIs2D, captureTabImage]);
+  }, [canvasTabs, editorRefs, captureTabImage]);
+
 
   const syncFontsFromEditor = useCallback(
     (inst?: Editor2DHandle | null) => {
@@ -539,37 +577,32 @@ const Creation = () => {
 
   useEffect(() => {
     if (!activeIs2D) return;
-    const snap = tabSnapshots[activeCanvasTab];
-    if (!snap) {
-      syncFontsFromEditor();
-      // força re-render quando não há snapshot: aguarda instância ficar pronta e chama refresh algumas vezes
-      const tryRefresh = () => {
-        const inst = editorRefs.current[activeCanvasTab];
-        if (!inst) { requestAnimationFrame(tryRefresh); return; }
-        inst.refresh?.();
-        setTimeout(() => inst.refresh?.(), 60);
-      };
-      requestAnimationFrame(tryRefresh);
-      return;
+    const inst = editorRefs.current[activeCanvasTab];
+    if (inst) {
+      syncFontsFromEditor(inst);
+      inst.refresh?.();
+      setTimeout(() => inst.refresh?.(), 60);
     }
-    const restore = () => {
-      const inst = editorRefs.current[activeCanvasTab];
-      if (inst?.loadFromJSON)
-        inst
-          .loadFromJSON(snap)
-          .then(() => {
-            syncFontsFromEditor(inst);
-            // após restaurar, garantir render/offset atualizados
-            inst.refresh?.();
-          })
-          .catch(() => {
-            // mesmo em falha, ainda força um refresh para mostrar o estado atual
-            inst.refresh?.();
-          });
-      else requestAnimationFrame(restore);
-    };
-    requestAnimationFrame(restore);
-  }, [activeCanvasTab, activeIs2D, tabSnapshots, syncFontsFromEditor]);
+  }, [activeCanvasTab, activeIs2D, syncFontsFromEditor]);
+
+  useEffect(() => {
+    if (!activeIs2D) return;
+    const inst = editorRefs.current[activeCanvasTab];
+    const snap = tabSnapshotsRef.current[activeCanvasTab];
+    if (inst && snap) {
+      if (skipSnapshotReloadRef.current.has(activeCanvasTab)) {
+        skipSnapshotReloadRef.current.delete(activeCanvasTab);
+        return;
+      }
+      void (async () => {
+        try {
+          await inst.loadFromJSON?.(snap);
+          syncFontsFromEditor(inst);
+          inst.refresh?.();
+        } catch {}
+      })();
+    }
+  }, [activeIs2D, activeCanvasTab, tabSnapshots]);
 
   const addText = (value?: string) => {
     if (!activeIs2D) return;
@@ -578,7 +611,7 @@ const Creation = () => {
   };
 
   const add2DTab = () => {
-    saveActiveTabSnapshot();
+    void saveActiveTabSnapshot();
     const id = `2d-${Date.now()}`;
     const count = canvasTabs.filter((t) => t.type === "2d").length + 1;
     const newTab: CanvasTab = { id, name: `2D - ${count}`, type: "2d" };
@@ -661,8 +694,79 @@ const Creation = () => {
     a.click();
   };
 
-  const saveDraft = () => {
-    const snapshotMap = saveActiveTabSnapshot();
+  const flushRemoteSave = useCallback(async () => {
+    if (remoteSaveInFlightRef.current) return;
+    if (!pendingRemotePayloadRef.current) return;
+    if (!supabase || !user?.id) return;
+
+    const payload = pendingRemotePayloadRef.current;
+    pendingRemotePayloadRef.current = null;
+    remoteSaveInFlightRef.current = true;
+
+    try {
+      const item = {
+        user_id: user.id,
+        project_key: payload.draftKey,
+        data: payload,
+        updated_at: payload.savedAt,
+      } as const;
+
+      const { data: upserted, error } = await supabase
+        .from("project_drafts")
+        .upsert(item, { onConflict: "user_id,project_key" })
+        .select();
+      if (error) {
+        console.error("Falha ao salvar rascunho remoto:", error);
+      } else if (upserted && upserted.length) {
+        const first = upserted[0] as { id?: string; project_key?: string };
+        if (first?.id) draftIdRef.current = String(first.id);
+        if (first?.project_key) draftKeyRef.current = first.project_key;
+      }
+    } catch (err) {
+      console.error("Erro ao persistir rascunho:", err);
+    } finally {
+      remoteSaveInFlightRef.current = false;
+      if (pendingRemotePayloadRef.current && !remoteSaveTimeoutRef.current) {
+        remoteSaveTimeoutRef.current = window.setTimeout(() => {
+          remoteSaveTimeoutRef.current = null;
+          void flushRemoteSave();
+        }, 200);
+      }
+    }
+  }, [user?.id]);
+
+  const queueRemoteSave = useCallback(
+    async (payload: DraftPayload, options?: { immediate?: boolean }) => {
+      pendingRemotePayloadRef.current = payload;
+      if (!supabase || !user?.id) return;
+
+      if (options?.immediate) {
+        if (remoteSaveTimeoutRef.current) {
+          window.clearTimeout(remoteSaveTimeoutRef.current);
+          remoteSaveTimeoutRef.current = null;
+        }
+        await flushRemoteSave();
+        return;
+      }
+
+      if (remoteSaveTimeoutRef.current) return;
+
+      remoteSaveTimeoutRef.current = window.setTimeout(() => {
+        remoteSaveTimeoutRef.current = null;
+        void flushRemoteSave();
+      }, 700);
+    },
+    [flushRemoteSave, user?.id]
+  );
+
+  const saveDraft = useCallback(async (options?: { immediateRemote?: boolean; tabId?: string }) => {
+    if (scheduledDraftSaveRef.current) {
+      window.clearTimeout(scheduledDraftSaveRef.current);
+      scheduledDraftSaveRef.current = null;
+    }
+    pendingScheduledTabRef.current = null;
+
+    const snapshotMap = await saveActiveTabSnapshot(options?.tabId);
     const canvasSnapshots = snapshotMap ?? tabSnapshotsRef.current;
     let draftKey = draftKeyRef.current;
     if (!draftKey) {
@@ -673,7 +777,7 @@ const Creation = () => {
       draftKeyRef.current = draftKey;
     }
     const nowIso = new Date().toISOString();
-    const payload = {
+    const payload: DraftPayload = {
       projectName,
       baseColor,
       size,
@@ -682,80 +786,147 @@ const Creation = () => {
       part,
       type,
       subtype,
-  canvasSnapshots,
-  canvasTabs: canvasTabsRef.current,
-  tabVisibility: tabVisibilityRef.current,
-  tabDecalPreviews: tabDecalPreviewsRef.current,
-  tabDecalPlacements: tabDecalPlacementsRef.current,
+      canvasSnapshots,
+      canvasTabs: canvasTabsRef.current,
+      tabVisibility: tabVisibilityRef.current,
+      tabDecalPreviews: tabDecalPreviewsRef.current,
+      tabDecalPlacements: tabDecalPlacementsRef.current,
       activeCanvasTab,
       savedAt: nowIso,
       draftKey,
       draftId: draftIdRef.current ?? undefined,
       projectKey: draftKey,
     };
-    // salva localmente como fallback rápido
+
     try {
       localStorage.setItem("currentProject", JSON.stringify(payload));
     } catch {}
 
-    // tenta persistir remotamente (Supabase). Tolerante a falhas.
-    (async () => {
-      try {
-        if (!supabase) return;
+    if (options?.immediateRemote) {
+      await queueRemoteSave(payload, { immediate: true });
+    } else {
+      void queueRemoteSave(payload);
+    }
 
-        // Recupera usuário autenticado (necessário para políticas RLS)
-        const { data: userData, error: userErr } = await supabase.auth.getUser();
-        if (userErr) {
-          console.error("Erro ao obter usuário para salvar rascunho:", userErr);
-          return;
-        }
-        const userId = userData?.user?.id;
-        if (!userId) {
-          console.warn("Usuário não autenticado: não será possível salvar rascunho remoto (RLS exige user_id).");
-          return;
-        }
-        const item = {
-          user_id: userId,
-          project_key: draftKey,
-          data: payload,
-          updated_at: nowIso,
-        } as any;
+    return payload;
+  }, [activeCanvasTab, baseColor, fabric, notes, part, queueRemoteSave, saveActiveTabSnapshot, size, subtype, projectName, type]);
 
-        // upsert no projeto (onConflict por user_id + project_key)
-        const { data: upserted, error } = await supabase
-          .from("project_drafts")
-          .upsert(item, { onConflict: "user_id,project_key" })
-          .select();
-        if (error) {
-          console.error("Falha ao salvar rascunho remoto:", error);
-        } else {
-          if (upserted && upserted.length) {
-            const first = upserted[0] as { id?: string; project_key?: string };
-            if (first?.id) draftIdRef.current = String(first.id);
-            if (first?.project_key) draftKeyRef.current = first.project_key;
-          }
-          console.log("Rascunho salvo remotamente:", upserted);
-        }
-      } catch (err) {
-        console.error("Erro ao persistir rascunho:", err);
+  useEffect(() => {
+    if (initialDraftSavedRef.current) return;
+    initialDraftSavedRef.current = true;
+    void saveDraft();
+  }, [saveDraft]);
+
+  const scheduleDraftSave = useCallback(
+    (options?: { immediateRemote?: boolean; tabId?: string }) => {
+      if (options?.tabId) {
+        pendingScheduledTabRef.current = options.tabId;
       }
-    })();
-  };
+
+      if (options?.immediateRemote) {
+        if (scheduledDraftSaveRef.current) {
+          window.clearTimeout(scheduledDraftSaveRef.current);
+          scheduledDraftSaveRef.current = null;
+        }
+        const tabId = options?.tabId ?? pendingScheduledTabRef.current ?? undefined;
+        pendingScheduledTabRef.current = null;
+        void saveDraft({ immediateRemote: true, tabId });
+        return;
+      }
+
+      if (scheduledDraftSaveRef.current) return;
+
+      scheduledDraftSaveRef.current = window.setTimeout(() => {
+        scheduledDraftSaveRef.current = null;
+        const tabId = pendingScheduledTabRef.current ?? undefined;
+        pendingScheduledTabRef.current = null;
+        void saveDraft({ tabId });
+      }, 500);
+    },
+    [saveDraft]
+  );
+
+  const handleDecalStateChange = useCallback(
+    (snapshots: DecalStateSnapshot[]) => {
+      let placementsChanged = false;
+      setTabDecalPlacements((prev) => {
+        const snapshotIds = new Set(snapshots.map((s) => s.id));
+        const next: Record<string, DecalTransform> = { ...prev };
+
+        snapshots.forEach((snapshot) => {
+          next[snapshot.id] = {
+            position: snapshot.position ? { ...snapshot.position } : null,
+            normal: snapshot.normal ? { ...snapshot.normal } : null,
+            width: snapshot.width,
+            height: snapshot.height,
+            depth: snapshot.depth,
+            angle: snapshot.angle,
+          };
+        });
+
+        Object.keys(next).forEach((key) => {
+          if (snapshotIds.has(key)) return;
+          const visibility = tabVisibilityRef.current[key];
+          if (visibility === undefined || visibility) {
+            delete next[key];
+          }
+        });
+
+        if (decalMapEquals(prev, next)) return prev;
+        tabDecalPlacementsRef.current = next;
+        placementsChanged = true;
+        return next;
+      });
+      if (placementsChanged) {
+        scheduleDraftSave();
+      }
+    },
+    [scheduleDraftSave]
+  );
+
+  useEffect(() => {
+    if (prevTabRef.current && prevTabRef.current !== activeCanvasTab) {
+      void saveActiveTabSnapshot(prevTabRef.current);
+      void saveDraft();
+    }
+    prevTabRef.current = activeCanvasTab;
+  }, [activeCanvasTab, saveActiveTabSnapshot, saveDraft]);
+
+  useEffect(() => {
+    if (user?.id && pendingRemotePayloadRef.current) {
+      void queueRemoteSave(pendingRemotePayloadRef.current, { immediate: true });
+    }
+  }, [queueRemoteSave, user?.id]);
+
+  useEffect(() => {
+    return () => {
+      if (remoteSaveTimeoutRef.current) {
+        window.clearTimeout(remoteSaveTimeoutRef.current);
+        remoteSaveTimeoutRef.current = null;
+      }
+      if (scheduledDraftSaveRef.current) {
+        window.clearTimeout(scheduledDraftSaveRef.current);
+        scheduledDraftSaveRef.current = null;
+      }
+    };
+  }, []);
 
   // Salva automaticamente quando o usuário fecha/recarga a página
   useEffect(() => {
     const onUnload = () => {
       try {
-        saveDraft();
+        void saveDraft({ immediateRemote: true });
       } catch {}
     };
     window.addEventListener("beforeunload", onUnload);
     return () => window.removeEventListener("beforeunload", onUnload);
-  }, [projectName, baseColor, size, fabric, notes, part, type, subtype, tabSnapshots, canvasTabs, tabVisibility, tabDecalPreviews, tabDecalPlacements, activeCanvasTab]);
+  }, [saveDraft]);
 
   const finish = () => {
-    saveDraft();
-    navigate("/finalize");
+    void (async () => {
+      await saveDraft({ immediateRemote: true });
+      navigate("/finalize");
+    })();
   };
 
   return (
@@ -804,7 +975,7 @@ const Creation = () => {
                 // Fallback: garantir uma aba 2D ativa e inserir lá
                 const existing2D = canvasTabs.find((t) => t.type === "2d");
                 if (existing2D) {
-                  saveActiveTabSnapshot();
+                  void saveActiveTabSnapshot();
                   setActiveCanvasTab(existing2D.id);
                   // aguarda montagem do Editor2D
                   setTimeout(() => {
@@ -814,7 +985,7 @@ const Creation = () => {
                   // cria nova aba 2D e agenda a inserção nela
                   const newId = `2d-${Date.now()}`;
                   const count = canvasTabs.filter((t) => t.type === "2d").length + 1;
-                  saveActiveTabSnapshot();
+                  void saveActiveTabSnapshot();
                   const newTab: CanvasTab = { id: newId, name: `2D - ${count}`, type: "2d" };
                   setCanvasTabs((prev) => {
                     const next = [...prev, newTab];
@@ -851,7 +1022,9 @@ const Creation = () => {
                   type="button"
                   variant="outline"
                   size="sm"
-                  onClick={saveDraft}
+                  onClick={() => {
+                    void saveDraft({ immediateRemote: true });
+                  }}
                 >
                   Salvar rascunho
                 </Button>
@@ -869,17 +1042,30 @@ const Creation = () => {
                           active ? "glass-strong" : "hover:bg-white/20"
                         }`}
                       >
-                        <button
-                          type="button"
-                          className="flex-1 h-full px-1 text-left font-medium focus:outline-none inline-flex items-center"
+                        <span
+                          className="flex-1 h-full px-1 text-left font-medium focus:outline-none inline-flex items-center cursor-pointer"
                           aria-pressed={active}
+                          tabIndex={0}
+                          role="button"
                           onClick={() => {
-                            saveActiveTabSnapshot();
-                            setActiveCanvasTab(tab.id);
+                            void (async () => {
+                              await saveActiveTabSnapshot();
+                              await saveDraft();
+                              setActiveCanvasTab(tab.id);
+                            })();
+                          }}
+                          onKeyDown={e => {
+                            if (e.key === 'Enter' || e.key === ' ') {
+                              void (async () => {
+                                await saveActiveTabSnapshot();
+                                await saveDraft();
+                                setActiveCanvasTab(tab.id);
+                              })();
+                            }
                           }}
                         >
                           {tab.name}
-                        </button>
+                        </span>
                         {tab.type === "2d" && (
                           <div className="flex items-center gap-1">
                             <button
@@ -950,39 +1136,53 @@ const Creation = () => {
                 </div>
               )}
 
-              {/* Canvas ocupa toda a área */}
-              {activeCanvasTab === "3d" ? (
-                <div className="absolute inset-0">
-                  <Canvas3DViewer
-                    baseColor={baseColor}
-                    externalDecals={decalsFor3D}
-                    onDecalsChange={handleDecalStateChange}
-                  />
-                  <div className="absolute bottom-3 left-3 text-xs text-gray-700 glass px-2 py-1 rounded">
-                    Arraste para rotacionar · Scroll para zoom
-                  </div>
-
-                  <div className="absolute left-1/2 z-10" style={{ bottom: "80px", maxWidth: "95%", transform: "translateX(-50%)" }}>
-                    <FloatingEditorToolbar
-                      strokeColor={strokeColor}
-                      setStrokeColor={setStrokeColor}
-                      strokeWidth={strokeWidth}
-                      setStrokeWidth={setStrokeWidth}
-                      opacity={opacity}
-                      setOpacity={setOpacity}
-                      tool={tool}
-                      setTool={setTool}
-                      isTrashMode={isTrashMode}
-                      setTrashMode={setTrashMode}
-                      editor2DRef={editorRefs.current[activeCanvasTab] as Editor2DHandle}
-                      onUndo={activeIs2D ? () => editorRefs.current[activeCanvasTab]?.undo?.() : undefined}
-                      onRedo={activeIs2D ? () => editorRefs.current[activeCanvasTab]?.redo?.() : undefined}
-                      canUndo={canUndo}
-                      canRedo={canRedo}
-                    />
-                  </div>
+              {/* Canvas ocupa toda a área — manter 3D e 2D sempre montados */}
+              <div
+                className="absolute inset-0"
+                style={{
+                  visibility: activeCanvasTab === "3d" ? "visible" : "hidden",
+                  pointerEvents: activeCanvasTab === "3d" ? "auto" : "none",
+                  zIndex: activeCanvasTab === "3d" ? 2 : 1,
+                }}
+              >
+                <Canvas3DViewer
+                  baseColor={baseColor}
+                  externalDecals={decalsFor3D}
+                  onDecalsChange={handleDecalStateChange}
+                />
+                <div className="absolute bottom-3 left-3 text-xs text-gray-700 glass px-2 py-1 rounded">
+                  Arraste para rotacionar · Scroll para zoom
                 </div>
-              ) : (
+
+                <div className="absolute left-1/2 z-10" style={{ bottom: "80px", maxWidth: "95%", transform: "translateX(-50%)" }}>
+                  <FloatingEditorToolbar
+                    strokeColor={strokeColor}
+                    setStrokeColor={setStrokeColor}
+                    strokeWidth={strokeWidth}
+                    setStrokeWidth={setStrokeWidth}
+                    opacity={opacity}
+                    setOpacity={setOpacity}
+                    tool={tool}
+                    setTool={setTool}
+                    isTrashMode={isTrashMode}
+                    setTrashMode={setTrashMode}
+                    editor2DRef={editorRefs.current[activeCanvasTab] as Editor2DHandle}
+                    onUndo={activeIs2D ? () => editorRefs.current[activeCanvasTab]?.undo?.() : undefined}
+                    onRedo={activeIs2D ? () => editorRefs.current[activeCanvasTab]?.redo?.() : undefined}
+                    canUndo={canUndo}
+                    canRedo={canRedo}
+                  />
+                </div>
+              </div>
+
+              <div
+                className="absolute inset-0"
+                style={{
+                  visibility: activeCanvasTab !== "3d" ? "visible" : "hidden",
+                  pointerEvents: activeCanvasTab !== "3d" ? "auto" : "none",
+                  zIndex: activeCanvasTab !== "3d" ? 2 : 1,
+                }}
+              >
                 <ContextMenu>
                   <ContextMenuTrigger asChild>
                     <div
@@ -1000,28 +1200,62 @@ const Creation = () => {
                         }
                       }}
                     >
-                      <Editor2D
-                        key={activeCanvasTab}
-                        ref={editorRefCallback}
-                        tool={tool}
-                        brushVariant={brushVariant}
-                        strokeColor={strokeColor}
-                        fillColor={fillColor}
-                        strokeWidth={strokeWidth}
-                        opacity={opacity}
-                        lineMode={lineMode}
-                        isTrashMode={isTrashMode}
-                        onTrashDelete={() => setTool("select")}
-                        onHistoryChange={(u, r) => {
-                          setCanUndo(u);
-                          setCanRedo(r);
-                          if (tabVisibility[activeCanvasTab]) {
-                            captureTabImage(activeCanvasTab);
-                          }
-                        }}
-                      />
+                      {canvasTabs
+                        .filter((tab) => tab.type === "2d")
+                        .map((tab) => (
+                          <div
+                            key={tab.id}
+                            style={{
+                              position: "absolute",
+                              inset: 0,
+                              visibility: tab.id === activeCanvasTab ? "visible" : "hidden",
+                              pointerEvents: tab.id === activeCanvasTab ? "auto" : "none",
+                              zIndex: tab.id === activeCanvasTab ? 2 : 1,
+                            }}
+                          >
+                            <Editor2D
+                              ref={(inst) => {
+                                if (inst && !editorRefs.current[tab.id]) {
+                                  editorRefs.current[tab.id] = inst;
+                                  if (!selectionListenerGuard.current.has(inst)) {
+                                    inst.onSelectionChange?.((kind) => {
+                                      if (tab.id === activeCanvasTab) {
+                                        setSelectionKind(kind);
+                                        if (kind === "none") {
+                                          setSelectionInfo(null);
+                                        } else {
+                                          setSelectionInfo(inst.getSelectionInfo?.() ?? null);
+                                        }
+                                      }
+                                    });
+                                    selectionListenerGuard.current.add(inst);
+                                  }
+                                }
+                              }}
+                              tool={tool}
+                              brushVariant={brushVariant}
+                              strokeColor={strokeColor}
+                              fillColor={fillColor}
+                              strokeWidth={strokeWidth}
+                              opacity={opacity}
+                              lineMode={lineMode}
+                              isTrashMode={isTrashMode}
+                              onTrashDelete={() => setTool("select")}
+                              onHistoryChange={(u, r) => {
+                                if (tab.id === activeCanvasTab) {
+                                  setCanUndo(u);
+                                  setCanRedo(r);
+                                  if (tabVisibility[tab.id]) {
+                                    captureTabImage(tab.id);
+                                  }
+                                  // Salva o rascunho automaticamente a cada modificação
+                                  scheduleDraftSave({ tabId: tab.id });
+                                }
+                              }}
+                            />
+                          </div>
+                        ))}
 
-                      {/* TextToolbar: dentro do canvas e centralizada */}
                       {selectionKind === "text" && (
                         <TextToolbar
                           editor={{ current: editorRefs.current[activeCanvasTab] as Editor2DHandle }}
@@ -1030,7 +1264,6 @@ const Creation = () => {
                         />
                       )}
 
-                      {/* Toolbar geral (fica mais abaixo) */}
                       {selectionKind !== "text" && (
                         <div className="absolute left-1/2 z-10" style={{ bottom: "80px", maxWidth: "95%", transform: "translateX(-50%)" }}>
                           <FloatingEditorToolbar
@@ -1123,7 +1356,7 @@ const Creation = () => {
                     </ContextMenuItem>
                   </ContextMenuContent>
                 </ContextMenu>
-              )}
+              </div>
             </div>
 
             {/* botões removidos */}

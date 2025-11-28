@@ -24,8 +24,11 @@ export class DecalPlacer {
   ) {
     const loader = new THREE.TextureLoader();
     this.texturePromise = loader.loadAsync(logoUrl).then((tex) => {
-      if ("colorSpace" in tex) (tex as any).colorSpace = THREE.SRGBColorSpace;
-      else (tex as any).encoding = THREE.sRGBEncoding;
+      if ("colorSpace" in tex && (THREE as any).SRGBColorSpace) {
+        (tex as any).colorSpace = (THREE as any).SRGBColorSpace;
+      } else if ((tex as any).encoding !== undefined && (THREE as any).sRGBEncoding !== undefined) {
+        (tex as any).encoding = (THREE as any).sRGBEncoding;
+      }
       tex.generateMipmaps = true;
       tex.minFilter = THREE.LinearMipmapLinearFilter;
       tex.magFilter = THREE.LinearFilter;
@@ -39,7 +42,7 @@ export class DecalPlacer {
     this.opts = {
       angleClampDeg: opts.angleClampDeg ?? 82,
       depthFromSizeScale: opts.depthFromSizeScale ?? 0.2,
-      useFeather: opts.useFeather ?? false, // desativado por padrão
+      useFeather: false, // Força desativado para evitar erro de shader
       feather: opts.feather ?? 0.08,
     };
   }

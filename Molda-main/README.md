@@ -71,3 +71,12 @@ Yes, you can!
 To connect a domain, navigate to Project > Settings > Domains and click Connect Domain.
 
 Read more here: [Setting up a custom domain](https://docs.lovable.dev/tips-tricks/custom-domain#step-by-step-guide)
+
+## Supabase setup
+
+Draft persistence, uploads, and authentication flows rely on Supabase. Make sure these environment variables are defined in your `.env.local` before running the app:
+
+- `VITE_SUPABASE_URL`
+- `VITE_SUPABASE_ANON_KEY`
+
+The Creation page now saves drafts locally and queues Supabase upserts after every edit/move/add action. Remote writes are debounced so that editing stays fluid, but a manual **Salvar rascunho** or navigation to the finalize step will flush immediately.

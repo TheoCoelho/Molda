@@ -35,6 +35,81 @@ export type SurfaceDecalOptions = {
 	maxRadiusFraction?: number; // ex.: 0.6 (60% do max(w,h))
 	/** Limite superior para a profundidade real usada (fração do maior lado). */
 	maxDepthScale?: number; // ex.: 0.35
+	/** Alinhamento mínimo permitido entre normal da face e direção do projetor. */
+	normalAlignmentMin?: number; // -1..1
+	/** Relação máxima entre área real e área projetada (controla estiramento). */
+	maxShearRatio?: number; // ex.: 6 (área real até 6x maior que projetada)
+	/** Fração máxima da profundidade ocupada dentro de um triângulo (reduz skew). */
+	maxDepthSkew?: number; // ex.: 0.7 (70% da profundidade)
+	/** Margem extra aplicada ao z-band para evitar cortes agressivos. */
+	zBandPadding?: number; // ex.: 0.01
+	/** Habilita ajuste dinâmico da profundidade conforme curvatura local. */
+	adaptiveDepth?: boolean;
+	/** Força da redução de profundidade baseada em curvatura. */
+	adaptiveDepthStrength?: number; // 0..1
+	/** Limite inferior para escala de profundidade adaptativa. */
+	adaptiveDepthMinScale?: number; // ex.: 0.45
+	/** Habilita coleta de métricas diagnósticas. */
+	enableDiagnostics?: boolean;
+	/** Rótulo para identificar métricas emitidas. */
+	metricsTag?: string;
+	/** Callback opcional para receber métricas do decal construído. */
+	onMetrics?: (metrics: SurfaceDecalMetrics) => void;
+};
+
+export type SurfaceDecalStageMetrics = {
+	total: number;
+	kept: number;
+	discarded: Record<string, number>;
+	zBand: number;
+};
+
+export type SurfaceDecalWorldMetrics = SurfaceDecalStageMetrics & {
+	maxShear: number;
+	shearSum: number;
+	shearSamples: number;
+	avgShear: number;
+	maxDepthSpan: number;
+	depthSpanSum: number;
+	depthSpanSamples: number;
+	avgDepthSpan: number;
+	minAlignment: number;
+	maxAlignment: number;
+};
+
+export type SurfaceDecalMetrics = {
+	tag: string;
+	size: SurfaceDecalSize;
+	depth: {
+		base: number;
+		final: number;
+		scale: number;
+		curvature: number;
+		samples: number;
+	};
+	stage: {
+		decal: SurfaceDecalStageMetrics;
+		world: SurfaceDecalWorldMetrics;
+	};
+};
+
+type ResolvedSurfaceDecalOptions = Required<
+	Omit<
+		SurfaceDecalOptions,
+		| "onMetrics"
+		| "enableDiagnostics"
+		| "metricsTag"
+		| "adaptiveDepth"
+		| "adaptiveDepthStrength"
+		| "adaptiveDepthMinScale"
+	>
+> & {
+	onMetrics: SurfaceDecalOptions["onMetrics"] | null;
+	enableDiagnostics: boolean;
+	metricsTag: string;
+	adaptiveDepth: boolean;
+	adaptiveDepthStrength: number;
+	adaptiveDepthMinScale: number;
 };
 
 type CandidateTri = {
@@ -47,7 +122,8 @@ type CandidateTri = {
 
 export class SurfaceDecal {
 	public mesh: THREE.Mesh | null = null;
-	private opts: Required<SurfaceDecalOptions>;
+	private opts: ResolvedSurfaceDecalOptions;
+	private curvatureOffsets: Array<[number, number]> | null = null;
 
 	constructor(private texture: THREE.Texture, opts: SurfaceDecalOptions = {}) {
 		this.prepareTexture(this.texture);
@@ -65,6 +141,16 @@ export class SurfaceDecal {
 			zBandMin: opts.zBandMin ?? 0.015,
 			maxRadiusFraction: opts.maxRadiusFraction ?? 1.0,
 			maxDepthScale: opts.maxDepthScale ?? 1.0, // volume máximo para capturar curvas
+			normalAlignmentMin: opts.normalAlignmentMin ?? -0.18,
+			maxShearRatio: opts.maxShearRatio ?? 6.0,
+			maxDepthSkew: opts.maxDepthSkew ?? 0.7,
+			zBandPadding: opts.zBandPadding ?? 0.01,
+			adaptiveDepth: opts.adaptiveDepth ?? true,
+			adaptiveDepthStrength: opts.adaptiveDepthStrength ?? 0.6,
+			adaptiveDepthMinScale: opts.adaptiveDepthMinScale ?? 0.45,
+			enableDiagnostics: opts.enableDiagnostics ?? !!opts.onMetrics,
+			metricsTag: opts.metricsTag ?? "SurfaceDecal",
+			onMetrics: opts.onMetrics ?? null,
 		};
 	}
 
@@ -87,7 +173,120 @@ export class SurfaceDecal {
 		return Math.max(1e-3, Math.min(desired, maxDepth));
 	}
 
-		private computeEulerFromNormal(normal: THREE.Vector3, angleRad = 0) {
+	private cloneDecalSize(size: SurfaceDecalSize): SurfaceDecalSize {
+		return size.depth !== undefined
+			? { width: size.width, height: size.height, depth: size.depth }
+			: { width: size.width, height: size.height };
+	}
+
+	private shouldCollectMetrics() {
+		return this.opts.enableDiagnostics || !!this.opts.onMetrics;
+	}
+
+	private getCurvatureOffsets(): Array<[number, number]> {
+		if (!this.curvatureOffsets) {
+			const offsets: Array<[number, number]> = [];
+			offsets.push([0, 0]);
+			const radii = [0.35, 0.65];
+			const step = Math.PI / 4;
+			for (const r of radii) {
+				for (let angle = 0; angle < Math.PI * 2 - 1e-6; angle += step) {
+					offsets.push([Math.cos(angle) * r, Math.sin(angle) * r]);
+				}
+			}
+			this.curvatureOffsets = offsets;
+		}
+		return this.curvatureOffsets!;
+	}
+
+	private incrementDiscard(bucket: Record<string, number> | undefined, reason: string, count = 1) {
+		if (!bucket || count <= 0) return;
+		bucket[reason] = (bucket[reason] ?? 0) + count;
+	}
+
+	private createMetrics(size: SurfaceDecalSize, baseDepth: number): SurfaceDecalMetrics {
+		return {
+			tag: this.opts.metricsTag,
+			size: this.cloneDecalSize(size),
+			depth: { base: baseDepth, final: baseDepth, scale: 1, curvature: 0, samples: 0 },
+			stage: {
+				decal: { total: 0, kept: 0, discarded: Object.create(null), zBand: 0 },
+				world: {
+					total: 0,
+					kept: 0,
+					discarded: Object.create(null),
+					zBand: 0,
+					maxShear: 0,
+					shearSum: 0,
+					shearSamples: 0,
+					avgShear: 0,
+					maxDepthSpan: 0,
+					depthSpanSum: 0,
+					depthSpanSamples: 0,
+					avgDepthSpan: 0,
+					minAlignment: 1,
+					maxAlignment: -1,
+				},
+			},
+		};
+	}
+
+	private finalizeMetrics(metrics: SurfaceDecalMetrics) {
+		const world = metrics.stage.world;
+		world.avgShear = world.shearSamples ? world.shearSum / world.shearSamples : 0;
+		world.avgDepthSpan = world.depthSpanSamples ? world.depthSpanSum / world.depthSpanSamples : 0;
+		if (!Number.isFinite(world.minAlignment)) world.minAlignment = 0;
+		if (!Number.isFinite(world.maxAlignment)) world.maxAlignment = 0;
+	}
+
+	private estimateCurvature(
+		target: THREE.Mesh,
+		point: THREE.Vector3,
+		normal: THREE.Vector3,
+		size: SurfaceDecalSize,
+		depth: number,
+		basis: { right: THREE.Vector3; up: THREE.Vector3 }
+	) {
+		const needCurvature = this.opts.adaptiveDepth || this.shouldCollectMetrics();
+		if (!needCurvature) return { curvature: 0, samples: 0 };
+		const offsets = this.getCurvatureOffsets();
+		const raycaster = new THREE.Raycaster();
+		const samples: THREE.Vector3[] = [];
+		const outwardNormal = normal.clone().normalize();
+		const inwardDir = outwardNormal.clone().negate();
+		const normalOffset = outwardNormal.clone().multiplyScalar(Math.max(depth * 0.05, 0.002));
+		const radius = Math.max(size.width, size.height) * 0.5;
+		const origin = new THREE.Vector3();
+		const normalMatrix = new THREE.Matrix3();
+		const maxDistance = Math.max(depth * 2.5, radius * 2);
+		for (const offset of offsets) {
+			origin
+				.copy(point)
+				.addScaledVector(basis.right, offset[0] * radius)
+				.addScaledVector(basis.up, offset[1] * radius)
+				.add(normalOffset);
+			raycaster.set(origin, inwardDir);
+			const hit = raycaster.intersectObject(target, true).find((it) => it.distance <= maxDistance);
+			if (!hit || (!hit.face && !hit.normal)) continue;
+			let sampleNormal: THREE.Vector3 | null = null;
+			if (hit.normal) {
+				sampleNormal = hit.normal.clone().normalize();
+			} else if (hit.face) {
+				sampleNormal = hit.face.normal.clone();
+				normalMatrix.getNormalMatrix(hit.object.matrixWorld);
+				sampleNormal.applyMatrix3(normalMatrix).normalize();
+			}
+			if (sampleNormal) samples.push(sampleNormal);
+		}
+		if (!samples.length) return { curvature: 0, samples: 0 };
+		let deviationSum = 0;
+		for (const sample of samples) deviationSum += 1 - Math.abs(sample.dot(outwardNormal));
+		const meanDeviation = deviationSum / samples.length;
+		const curvature = THREE.MathUtils.clamp(meanDeviation * 2.5, 0, 1);
+		return { curvature, samples: samples.length };
+	}
+
+	private computeEulerFromNormal(normal: THREE.Vector3, angleRad = 0) {
 			// No DecalGeometry, o eixo de projeção é +Z local. Alinhar +Z à normal e girar em torno de +Z.
 			const forward = new THREE.Vector3(0, 0, 1);
 			const qAlign = new THREE.Quaternion().setFromUnitVectors(forward, normal.clone().normalize());
@@ -225,13 +424,20 @@ export class SurfaceDecal {
 		geom: THREE.BufferGeometry,
 		maxDeg: number,
 		size: SurfaceDecalSize,
-		actualDepth: number
+		actualDepth: number,
+		metrics?: SurfaceDecalMetrics
 	) {
 		const idx = geom.getIndex();
 		const pos = geom.getAttribute("position") as THREE.BufferAttribute;
 		if (!idx || !pos) return geom;
 
 		const indices = idx.array as any;
+		const stageMetrics = metrics?.stage.decal;
+		if (stageMetrics) {
+			stageMetrics.total = indices.length / 3;
+			stageMetrics.kept = stageMetrics.total;
+		}
+
 		const kept: number[] = [];
 		const candidates: { i0:number;i1:number;i2:number; zc:number; rc:number }[] = [];
 		const maxCos = Math.cos(THREE.MathUtils.degToRad(maxDeg));
@@ -247,65 +453,84 @@ export class SurfaceDecal {
 			b.set(pos.array[ib], pos.array[ib + 1], pos.array[ib + 2]);
 			c.set(pos.array[ic], pos.array[ic + 1], pos.array[ic + 2]);
 			ab.subVectors(b, a); ac.subVectors(c, a); n.crossVectors(ab, ac).normalize();
-			// No espaço do DecalGeometry, +Z é o eixo de projeção
-			const cosOk = (this.opts.frontOnly ? (n.z >= maxCos) : (Math.abs(n.z) >= maxCos));
-			if (!cosOk) continue;
-
-			// Mantém somente a metade da frente do volume quando habilitado
-			if (this.opts.frontHalfOnly) {
-				if (a.z < 0.0 || b.z < 0.0 || c.z < 0.0) continue; // exige TODOS os vértices na frente
+			const cosOk = this.opts.frontOnly ? n.z >= maxCos : Math.abs(n.z) >= maxCos;
+			if (!cosOk) {
+				this.incrementDiscard(stageMetrics?.discarded, "angle");
+				continue;
 			}
-			
-			// Restrição de profundidade extra: se o vértice mais distante em Z está além da metade da profundidade, descarta
+
+			if (this.opts.frontHalfOnly) {
+				if (a.z < 0.0 || b.z < 0.0 || c.z < 0.0) {
+					this.incrementDiscard(stageMetrics?.discarded, "frontHalf");
+					continue;
+				}
+			}
+
 			const maxZ = Math.max(a.z, b.z, c.z);
-			if (maxZ > maxDepth) continue;
+			if (maxZ > maxDepth) {
+				this.incrementDiscard(stageMetrics?.discarded, "depthForward");
+				continue;
+			}
 
 			const minZ = Math.min(a.z, b.z, c.z);
-			const behindLimit = -Math.min(maxDepth * 0.22, 0.03);
-			if (minZ < behindLimit) continue;
+			const behindLimit = -Math.min(actualDepth * 0.22, 0.03);
+			if (minZ < behindLimit) {
+				this.incrementDiscard(stageMetrics?.discarded, "behindLimit");
+				continue;
+			}
 
-			// Filtro anti-filete: avalia aspecto no plano XY local
 			if (this.opts.sliverAspectMin > 0) {
 				a2.set(a.x, a.y); b2.set(b.x, b.y); c2.set(c.x, c.y);
 				const minX = Math.min(a2.x, b2.x, c2.x), maxX = Math.max(a2.x, b2.x, c2.x);
 				const minY = Math.min(a2.y, b2.y, c2.y), maxY = Math.max(a2.y, b2.y, c2.y);
 				const dx = Math.max(1e-6, maxX - minX);
 				const dy = Math.max(1e-6, maxY - minY);
-				const aspect = Math.min(dx, dy) / Math.max(dx, dy); // 0..1 (filete -> quase 0)
-				if (aspect < this.opts.sliverAspectMin) continue;
+				const aspect = Math.min(dx, dy) / Math.max(dx, dy);
+				if (aspect < this.opts.sliverAspectMin) {
+					this.incrementDiscard(stageMetrics?.discarded, "sliver");
+					continue;
+				}
 			}
 
-			// Área mínima no plano XY para cortar fragmentos degenerados
 			if (this.opts.areaMin > 0) {
 				a2.set(a.x, a.y); b2.set(b.x, b.y); c2.set(c.x, c.y);
 				const area = Math.abs((b2.x - a2.x)*(c2.y - a2.y) - (b2.y - a2.y)*(c2.x - a2.x)) * 0.5;
-				if (area < this.opts.areaMin) continue;
+				if (area < this.opts.areaMin) {
+					this.incrementDiscard(stageMetrics?.discarded, "areaMin");
+					continue;
+				}
 			}
 
-			// Calcula distância radial do centroide no plano XY (em torno da origem/centro do decal)
 			const xc = (a.x + b.x + c.x) / 3.0;
 			const yc = (a.y + b.y + c.y) / 3.0;
 			const rc = Math.sqrt(xc*xc + yc*yc);
-			
-			// Descarta triângulos muito distantes do centro (evita pegar pedaços remotos ao ampliar)
-			if (rc > maxRadius) continue;
+			if (rc > maxRadius) {
+				this.incrementDiscard(stageMetrics?.discarded, "radius");
+				continue;
+			}
 
 			const zc = (a.z + b.z + c.z) / 3.0;
 			candidates.push({ i0: indices[i], i1: indices[i+1], i2: indices[i+2], zc, rc });
 		}
 
-		// Mantém só a faixa mais próxima ao projetor (evita duplicação em múltiplas camadas)
 		if (candidates.length) {
 			let minZ = candidates[0].zc;
-			for (const cnd of candidates) if (cnd.zc < minZ) minZ = cnd.zc;
-			const band = Math.max(this.opts.zBandMin, this.opts.zBandFraction * Math.max(1e-6, actualDepth));
-			for (const cnd of candidates) {
-				if (cnd.zc - minZ <= band) {
-					kept.push(cnd.i0, cnd.i1, cnd.i2);
-				}
+			for (const candidate of candidates) if (candidate.zc < minZ) minZ = candidate.zc;
+			const baseBand = Math.max(this.opts.zBandMin, this.opts.zBandFraction * Math.max(1e-6, actualDepth));
+			const band = baseBand + this.opts.zBandPadding;
+			if (stageMetrics) stageMetrics.zBand = band;
+			for (const candidate of candidates) {
+				if (candidate.zc - minZ <= band) kept.push(candidate.i0, candidate.i1, candidate.i2);
+				else this.incrementDiscard(stageMetrics?.discarded, "zBand");
 			}
 		}
-		if (kept.length < 3) return geom;
+
+		if (stageMetrics) stageMetrics.kept = kept.length / 3;
+		if (kept.length < 3) {
+			if (!kept.length) this.incrementDiscard(stageMetrics?.discarded, "empty");
+			return geom;
+		}
+
 		const out = geom.clone();
 		const IndexArray = (pos.count > 65535 ? Uint32Array : Uint16Array) as any;
 		out.setIndex(new IndexArray(kept));
@@ -323,19 +548,29 @@ export class SurfaceDecal {
 		originPoint: THREE.Vector3,
 		basis: { right: THREE.Vector3; up: THREE.Vector3; fwd: THREE.Vector3 },
 		maxDeg: number,
-		actualDepth: number
+		actualDepth: number,
+		metrics?: SurfaceDecalMetrics
 	) {
 		const idx = geom.getIndex();
 		const pos = geom.getAttribute("position") as THREE.BufferAttribute;
 		if (!idx || !pos) return geom;
 
 		const indices = idx.array as any;
+		const stageMetrics = metrics?.stage.world;
+		if (stageMetrics) {
+			stageMetrics.total = indices.length / 3;
+			stageMetrics.kept = stageMetrics.total;
+			stageMetrics.minAlignment = 1;
+			stageMetrics.maxAlignment = -1;
+		}
 		const candidates: CandidateTri[] = [];
 		const maxRadius = Math.max(size.width, size.height) * 0.5 * this.opts.maxRadiusFraction;
 
 		const a = new THREE.Vector3(), b = new THREE.Vector3(), c = new THREE.Vector3();
 		const ra = new THREE.Vector3(), rb = new THREE.Vector3(), rcV = new THREE.Vector3();
-		const ab = new THREE.Vector3(), ac = new THREE.Vector3(), n = new THREE.Vector3();
+		const ab = new THREE.Vector3(), ac = new THREE.Vector3();
+		const n = new THREE.Vector3();
+		const cross = new THREE.Vector3();
 
 		for (let i = 0; i < indices.length; i += 3) {
 			const ia = indices[i] * 3, ib = indices[i + 1] * 3, ic = indices[i + 2] * 3;
@@ -344,12 +579,24 @@ export class SurfaceDecal {
 			c.set(pos.array[ic], pos.array[ic + 1], pos.array[ic + 2]);
 
 			// FILTRO ANTI-DEFORMAÇÃO 1: Rejeita triângulos voltados CONTRA o projetor (backfaces extremos)
-			// Threshold muito permissivo (apenas > -0.3) para não cortar bordas curvadas
 			ab.subVectors(b, a);
 			ac.subVectors(c, a);
-			n.crossVectors(ab, ac).normalize();
+			cross.crossVectors(ab, ac);
+			const areaWorld = cross.length() * 0.5;
+			if (areaWorld < 1e-12) {
+				this.incrementDiscard(stageMetrics?.discarded, "degenerate");
+				continue;
+			}
+			n.copy(cross).normalize();
 			const alignment = n.dot(basis.fwd);
-			if (alignment < -0.18) continue; // tolera curvas moderadas, rejeita inversões severas
+			if (alignment < this.opts.normalAlignmentMin) {
+				this.incrementDiscard(stageMetrics?.discarded, "alignment");
+				continue;
+			}
+			if (stageMetrics) {
+				stageMetrics.minAlignment = Math.min(stageMetrics.minAlignment, alignment);
+				stageMetrics.maxAlignment = Math.max(stageMetrics.maxAlignment, alignment);
+			}
 
 			// Coordenadas locais ao projetor
 			ra.subVectors(a, originPoint);
@@ -366,32 +613,75 @@ export class SurfaceDecal {
 			const dx = Math.max(1e-6, maxX - minX);
 			const dy = Math.max(1e-6, maxY - minY);
 			const aspect = Math.min(dx, dy) / Math.max(dx, dy);
-			if (aspect < 0.001) continue; // Rejeita apenas filetes extremos (1:1000 ou pior)
+			if (aspect < 0.001) {
+				this.incrementDiscard(stageMetrics?.discarded, "sliver");
+				continue;
+			}
 
 			// FILTRO ANTI-DEFORMAÇÃO 3: Rejeita triângulos com área microscópica no espaço XY
 			// Área mínima absoluta muito pequena para pegar apenas degenerados
-			const area = Math.abs((bx - ax)*(cy - ay) - (by - ay)*(cx - ax)) * 0.5;
-			if (area < 1e-8) continue; // Apenas fragmentos microscópicos
+			const areaLocal = Math.abs((bx - ax)*(cy - ay) - (by - ay)*(cx - ax)) * 0.5;
+			if (areaLocal < 1e-8) {
+				this.incrementDiscard(stageMetrics?.discarded, "areaLocal");
+				continue;
+			}
+
+			// FILTRO ANTI-DEFORMAÇÃO 4: evita estiramentos excessivos ao comparar áreas
+			const shear = areaWorld / Math.max(areaLocal, 1e-8);
+			if (shear > this.opts.maxShearRatio) {
+				this.incrementDiscard(stageMetrics?.discarded, "shear");
+				continue;
+			}
 
 			const minZ = Math.min(az, bz, cz);
+			const maxZ = Math.max(az, bz, cz);
+			const depthSpan = maxZ - minZ;
+			const skewLimit = Math.max(actualDepth * this.opts.maxDepthSkew, this.opts.zBandMin * 0.5);
+			if (depthSpan > skewLimit) {
+				this.incrementDiscard(stageMetrics?.discarded, "depthSkew");
+				continue;
+			}
 			const behindLimit = -Math.min(actualDepth * 0.22, 0.03);
-			if (minZ < behindLimit) continue;
+			if (minZ < behindLimit) {
+				this.incrementDiscard(stageMetrics?.discarded, "behindLimit");
+				continue;
+			}
 
 			const xc = (ax + bx + cx) / 3.0;
 			const yc = (ay + by + cy) / 3.0;
 			const rcent = Math.hypot(xc, yc);
 			const zc = (az + bz + cz) / 3.0;
 			
-			if (rcent > maxRadius) continue;
+			if (rcent > maxRadius) {
+				this.incrementDiscard(stageMetrics?.discarded, "radius");
+				continue;
+			}
+
+			if (stageMetrics) {
+				stageMetrics.maxShear = Math.max(stageMetrics.maxShear, shear);
+				stageMetrics.shearSum += shear;
+				stageMetrics.shearSamples += 1;
+				stageMetrics.maxDepthSpan = Math.max(stageMetrics.maxDepthSpan, depthSpan);
+				stageMetrics.depthSpanSum += depthSpan;
+				stageMetrics.depthSpanSamples += 1;
+			}
 			candidates.push({ i0: indices[i], i1: indices[i + 1], i2: indices[i + 2], zc, rc: rcent });
 		}
 
-		if (!candidates.length) return geom;
+		if (!candidates.length) {
+			if (stageMetrics) {
+				stageMetrics.kept = 0;
+				this.incrementDiscard(stageMetrics.discarded, "empty");
+			}
+			return geom;
+		}
 
 		// Z-BAND: mantém apenas triângulos próximos à camada frontal
 		let minZ = candidates[0].zc;
 		for (const cnd of candidates) if (cnd.zc < minZ) minZ = cnd.zc;
-		const band = Math.max(this.opts.zBandMin, this.opts.zBandFraction * Math.max(1e-6, actualDepth));
+		const bandBase = Math.max(this.opts.zBandMin, this.opts.zBandFraction * Math.max(1e-6, actualDepth));
+		const band = bandBase + this.opts.zBandPadding;
+		if (stageMetrics) stageMetrics.zBand = band;
 		let bandCandidates = candidates.filter((cnd) => cnd.zc - minZ <= band);
 		
 		if (!bandCandidates.length) {
@@ -400,15 +690,28 @@ export class SurfaceDecal {
 				curr.zc < prev.zc - 1e-5 ? curr : (Math.abs(curr.zc - prev.zc) <= 1e-5 && curr.rc < prev.rc ? curr : prev)
 			);
 			bandCandidates = [best];
+			if (stageMetrics) this.incrementDiscard(stageMetrics.discarded, "zBandFallback");
+		}
+		if (stageMetrics) {
+			const removedByBand = candidates.length - bandCandidates.length;
+			if (removedByBand > 0) this.incrementDiscard(stageMetrics.discarded, "zBand", removedByBand);
 		}
 
 		// ILHA PRIMÁRIA: garante conectividade, elimina fragmentos isolados que causam duplicação
 		let keptCandidates = this.keepPrimaryIsland(bandCandidates);
 		if (!keptCandidates.length) keptCandidates = bandCandidates;
+		if (stageMetrics) {
+			const removedByIsland = bandCandidates.length - keptCandidates.length;
+			if (removedByIsland > 0) this.incrementDiscard(stageMetrics.discarded, "islandPrune", removedByIsland);
+		}
 
 		const kept: number[] = [];
 		for (const cnd of keptCandidates) kept.push(cnd.i0, cnd.i1, cnd.i2);
-		if (kept.length < 3) return geom;
+		if (stageMetrics) stageMetrics.kept = kept.length / 3;
+		if (kept.length < 3) {
+			if (!kept.length) this.incrementDiscard(stageMetrics?.discarded, "empty");
+			return geom;
+		}
 		
 		const out = geom.clone();
 		const IndexArray = (pos.count > 65535 ? Uint32Array : Uint16Array) as any;
@@ -425,7 +728,27 @@ export class SurfaceDecal {
 		size: SurfaceDecalSize,
 		angleRad = 0
 	) {
-		const depth = this.calcDepth(size);
+		const baseDepth = this.calcDepth(size);
+		const metrics = this.shouldCollectMetrics() ? this.createMetrics(size, baseDepth) : null;
+		const basis = this.makeBasis(normal, angleRad);
+		const curvatureInfo = this.estimateCurvature(target, point, normal, size, baseDepth, basis);
+		if (metrics) {
+			metrics.depth.curvature = curvatureInfo.curvature;
+			metrics.depth.samples = curvatureInfo.samples;
+		}
+		let depthScale = 1;
+		if (this.opts.adaptiveDepth && curvatureInfo.samples) {
+			const strength = THREE.MathUtils.clamp(this.opts.adaptiveDepthStrength, 0, 1);
+			const minScale = THREE.MathUtils.clamp(this.opts.adaptiveDepthMinScale, 0.05, 1);
+			depthScale = THREE.MathUtils.clamp(1 - curvatureInfo.curvature * strength, minScale, 1);
+		}
+		let depth = baseDepth * depthScale;
+		depth = Math.max(1e-3, depth);
+		if (metrics) {
+			metrics.depth.final = depth;
+			metrics.depth.scale = depth / (baseDepth || 1);
+		}
+
 		const euler = this.computeEulerFromNormal(normal, angleRad);
 		const geom = new DecalGeometry(
 			target,
@@ -434,28 +757,49 @@ export class SurfaceDecal {
 			new THREE.Vector3(size.width, size.height, depth)
 		) as THREE.BufferGeometry;
 
+		// Pré-filtração no espaço do decal para remover camadas redundantes e filetes
+		let workingGeom: THREE.BufferGeometry = geom;
+		const filteredDecalSpace = this.filterTriangles(
+			workingGeom,
+			this.opts.angleClampDeg,
+			size,
+			depth,
+			metrics ?? undefined
+		);
+		if (filteredDecalSpace !== workingGeom) {
+			workingGeom.dispose();
+			workingGeom = filteredDecalSpace;
+		}
 
 		// OBS: DecalGeometry já retorna a geometria pronta para uso no mundo.
 		// Evitamos aplicar transformações adicionais para não deslocar a malha.
 		// Usar filtro em espaço de mundo com base do projetor para isolar a camada mais próxima
-		const basis = this.makeBasis(normal, angleRad);
-		const filtered = this.filterTrianglesBasisWorld(
-			geom,
+		const filteredWorldSpace = this.filterTrianglesBasisWorld(
+			workingGeom,
 			size,
 			point,
 			basis,
 			this.opts.angleClampDeg,
-			depth
+			depth,
+			metrics ?? undefined
 		);
+		if (filteredWorldSpace !== workingGeom) {
+			workingGeom.dispose();
+			workingGeom = filteredWorldSpace;
+		}
 		const mat = this.makeMaterial();
-		if (!this.mesh) this.mesh = new THREE.Mesh(filtered, mat);
+		if (!this.mesh) this.mesh = new THREE.Mesh(workingGeom, mat);
 		else {
 			const old = this.mesh.geometry as THREE.BufferGeometry;
-			this.mesh.geometry = filtered;
+			this.mesh.geometry = workingGeom;
 			old.dispose();
 			// preserva material
 		}
 		this.mesh.renderOrder = 999;
+		if (metrics) {
+			this.finalizeMetrics(metrics);
+			if (this.opts.onMetrics) this.opts.onMetrics(metrics);
+		}
 		return this.mesh;
 	}
 
