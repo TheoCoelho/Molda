@@ -56,6 +56,8 @@ type DraftData = {
   draftKey?: string;
   draftId?: string;
   projectKey?: string;
+  isPermanent?: boolean;
+  ephemeralExpiresAt?: string | null;
 };
 
 type DraftRecord = {
@@ -64,6 +66,8 @@ type DraftRecord = {
   updatedAt: string | null;
   data: DraftData;
 };
+
+const COUNTDOWN_TICK_MS = 1000;
 
 const Create = () => {
   const navigate = useNavigate();
@@ -78,6 +82,13 @@ const Create = () => {
   const [draftsLoading, setDraftsLoading] = useState(false);
   const [draftsError, setDraftsError] = useState<string | null>(null);
   const [selectedDraftId, setSelectedDraftId] = useState<string | null>(null);
+  const [nowTs, setNowTs] = useState(() => Date.now());
+  const pendingDeletionRef = useRef<Set<string>>(new Set());
+
+  useEffect(() => {
+    const id = window.setInterval(() => setNowTs(Date.now()), COUNTDOWN_TICK_MS);
+    return () => window.clearInterval(id);
+  }, []);
 
   useEffect(() => {
     if (viewMode !== "drafts") return;
@@ -163,6 +174,83 @@ const Create = () => {
       cancelled = true;
     };
   }, [viewMode]);
+
+  const resolveExpirationTs = useCallback((draft: DraftRecord): number | null => {
+    if (draft.data.isPermanent) return null;
+    if (!draft.data.ephemeralExpiresAt) return null;
+    const ts = Date.parse(draft.data.ephemeralExpiresAt);
+    if (Number.isNaN(ts)) return null;
+    return ts;
+  }, []);
+
+  const removeDraftLocally = useCallback((draftId: string) => {
+    setDrafts((prev) => prev.filter((draft) => draft.id !== draftId));
+    setSelectedDraftId((prev) => (prev === draftId ? null : prev));
+  }, []);
+
+  const handleExpireDraft = useCallback(
+    async (draft: DraftRecord) => {
+      removeDraftLocally(draft.id);
+      if (!supabase) {
+        pendingDeletionRef.current.delete(draft.id);
+        return;
+      }
+      try {
+        await supabase.from("project_drafts").delete().eq("id", draft.id);
+      } catch (err) {
+        console.error("Falha ao excluir rascunho expirado:", err);
+      } finally {
+        pendingDeletionRef.current.delete(draft.id);
+      }
+    },
+    [removeDraftLocally]
+  );
+
+  const handleMakePermanent = useCallback(
+    async (draft: DraftRecord) => {
+      const nextData = {
+        ...draft.data,
+        isPermanent: true,
+        ephemeralExpiresAt: null,
+      } satisfies DraftData;
+
+      setDrafts((prev) =>
+        prev.map((item) => (item.id === draft.id ? { ...item, data: nextData } : item))
+      );
+
+      // Atualiza localStorage imediatamente
+      try {
+        const storedPayload = {
+          ...nextData,
+          draftId: draft.id,
+          draftKey: draft.projectKey || nextData.draftKey || nextData.projectKey,
+          projectKey: draft.projectKey || nextData.draftKey || nextData.projectKey,
+        };
+        localStorage.setItem("currentProject", JSON.stringify(storedPayload));
+      } catch (err) {
+        console.warn("Falha ao atualizar localStorage ao tornar draft permanente:", err);
+      }
+
+      if (!supabase) return;
+      try {
+        await supabase.from("project_drafts").update({ data: nextData }).eq("id", draft.id);
+      } catch (err) {
+        console.error("Falha ao manter rascunho permanentemente:", err);
+      }
+    },
+    []
+  );
+
+  useEffect(() => {
+    drafts.forEach((draft) => {
+      const expiresAt = resolveExpirationTs(draft);
+      if (expiresAt === null) return;
+      if (expiresAt > nowTs) return;
+      if (pendingDeletionRef.current.has(draft.id)) return;
+      pendingDeletionRef.current.add(draft.id);
+      void handleExpireDraft(draft);
+    });
+  }, [drafts, handleExpireDraft, nowTs, resolveExpirationTs]);
 
   const selectedDraft = useMemo(() => {
     if (!selectedDraftId) return null;
@@ -296,6 +384,13 @@ const Create = () => {
     });
   };
 
+  const formatCountdown = (ms: number) => {
+    const totalSeconds = Math.max(0, Math.floor(ms / 1000));
+    const minutes = Math.floor(totalSeconds / 60);
+    const seconds = totalSeconds % 60;
+    return `${minutes}:${seconds.toString().padStart(2, "0")}`;
+  };
+
   return (
     <div className="min-h-screen">
       <Header />
@@ -420,6 +515,13 @@ const Create = () => {
                         const summary = getSelectionSummary(draft.data);
                         const updatedAtLabel = formatDateTime(draft.updatedAt ?? draft.data.savedAt ?? null);
                         const sizeLabel = draft.data.size || "Tamanho livre";
+                        const expiresAt = resolveExpirationTs(draft);
+                        const remainingMs = expiresAt === null ? null : expiresAt - nowTs;
+                        const timerLabel = remainingMs === null
+                          ? null
+                          : remainingMs > 0
+                            ? `Expira em ${formatCountdown(remainingMs)}`
+                            : "Expirando...";
                         return (
                           <li key={draft.id}>
                             <button
@@ -438,6 +540,19 @@ const Create = () => {
                                 <span className="text-xs text-muted-foreground">{updatedAtLabel}</span>
                               </div>
                               <div className="mt-1 text-xs text-muted-foreground">{summary}</div>
+                              {timerLabel && (
+                                <button
+                                  type="button"
+                                  onClick={(event) => {
+                                    event.stopPropagation();
+                                    handleMakePermanent(draft);
+                                  }}
+                                  className="mt-2 inline-flex w-full items-center justify-between gap-2 rounded-lg border border-amber-500/30 bg-amber-500/10 px-3 py-2 text-[11px] font-semibold uppercase tracking-wide text-amber-900 hover:bg-amber-500/20"
+                                >
+                                  <span>{timerLabel}</span>
+                                  <span className="text-[10px] font-bold">Manter rascunho</span>
+                                </button>
+                              )}
                               <div className="mt-3 flex items-center justify-between gap-2">
                                 <span className="inline-flex h-6 items-center gap-2 rounded-full border px-3 text-[11px] uppercase tracking-wide text-muted-foreground">
                                   <span

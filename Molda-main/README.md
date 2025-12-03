@@ -80,3 +80,5 @@ Draft persistence, uploads, and authentication flows rely on Supabase. Make sure
 - `VITE_SUPABASE_ANON_KEY`
 
 The Creation page now saves drafts locally and queues Supabase upserts after every edit/move/add action. Remote writes are debounced so that editing stays fluid, but a manual **Salvar rascunho** or navigation to the finalize step will flush immediately.
+
+Auto-saved drafts that were never confirmed via **Salvar rascunho** remain ephemeral: once you close Creation they start a five-minute countdown that surfaces in the Create page. Click the timer pill to keep the draft permanently; otherwise it will be deleted automatically when the countdown hits zero to keep Supabase tidy.

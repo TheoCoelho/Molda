@@ -50,6 +50,14 @@ type DraftPayload = {
   draftKey: string;
   draftId?: string;
   projectKey: string;
+  isPermanent?: boolean;
+  ephemeralExpiresAt?: string | null;
+};
+
+type SaveDraftOptions = {
+  immediateRemote?: boolean;
+  tabId?: string;
+  markPermanent?: boolean;
 };
 
 const TRANSPARENT_PNG =
@@ -61,6 +69,8 @@ const nearlyEqual = (a?: number | null, b?: number | null) => {
   if (typeof a !== "number" || typeof b !== "number") return false;
   return Math.abs(a - b) <= EPSILON;
 };
+
+const DRAFT_EPHEMERAL_TTL_MS = 5 * 60 * 1000;
 
 const vectorNearlyEqual = (a?: DecalTransform["position"], b?: DecalTransform["position"]) => {
   if (!a && !b) return true;
@@ -107,6 +117,8 @@ const Creation = () => {
   const draftKeyRef = useRef<string | null>(navigationState.draftKey ?? navigationState.projectKey ?? null);
   const draftIdRef = useRef<string | null>(navigationState.draftId ?? null);
   const initialDraftSavedRef = useRef(false);
+  const isDraftPermanentRef = useRef<boolean>(false);
+  const [isDraftPermanent, setIsDraftPermanent] = useState<boolean>(false);
 
   // Hook para gerenciar fontes recentes por projeto
   const { resetProject, addRecentFont } = useRecentFonts();
@@ -322,6 +334,17 @@ const Creation = () => {
       tabDecalPlacementsRef.current = placements;
       setTabDecalPlacements(placements);
     }
+
+    if (typeof payload.isPermanent === "boolean") {
+      isDraftPermanentRef.current = payload.isPermanent;
+      setIsDraftPermanent(payload.isPermanent);
+    } else if (payload.ephemeralExpiresAt) {
+      isDraftPermanentRef.current = false;
+      setIsDraftPermanent(false);
+    } else {
+      isDraftPermanentRef.current = true;
+      setIsDraftPermanent(true);
+    }
   };
 
   // Carrega projeto salvo (se existir) apenas uma vez na inicialização
@@ -329,6 +352,8 @@ const Creation = () => {
     if (skipInitialLoadRef.current) {
       draftKeyRef.current = null;
       draftIdRef.current = null;
+      isDraftPermanentRef.current = false;
+      setIsDraftPermanent(false);
       try {
         localStorage.removeItem("currentProject");
       } catch {}
@@ -759,7 +784,7 @@ const Creation = () => {
     [flushRemoteSave, user?.id]
   );
 
-  const saveDraft = useCallback(async (options?: { immediateRemote?: boolean; tabId?: string }) => {
+  const saveDraft = useCallback(async (options?: SaveDraftOptions) => {
     if (scheduledDraftSaveRef.current) {
       window.clearTimeout(scheduledDraftSaveRef.current);
       scheduledDraftSaveRef.current = null;
@@ -777,6 +802,14 @@ const Creation = () => {
       draftKeyRef.current = draftKey;
     }
     const nowIso = new Date().toISOString();
+    if (options?.markPermanent) {
+      isDraftPermanentRef.current = true;
+      setIsDraftPermanent(true);
+    }
+    const isPermanent = isDraftPermanentRef.current;
+    const expiresAt = isPermanent
+      ? null
+      : new Date(Date.now() + DRAFT_EPHEMERAL_TTL_MS).toISOString();
     const payload: DraftPayload = {
       projectName,
       baseColor,
@@ -796,6 +829,8 @@ const Creation = () => {
       draftKey,
       draftId: draftIdRef.current ?? undefined,
       projectKey: draftKey,
+      isPermanent,
+      ephemeralExpiresAt: expiresAt,
     };
 
     try {
@@ -818,7 +853,7 @@ const Creation = () => {
   }, [saveDraft]);
 
   const scheduleDraftSave = useCallback(
-    (options?: { immediateRemote?: boolean; tabId?: string }) => {
+    (options?: SaveDraftOptions) => {
       if (options?.tabId) {
         pendingScheduledTabRef.current = options.tabId;
       }
@@ -830,7 +865,7 @@ const Creation = () => {
         }
         const tabId = options?.tabId ?? pendingScheduledTabRef.current ?? undefined;
         pendingScheduledTabRef.current = null;
-        void saveDraft({ immediateRemote: true, tabId });
+        void saveDraft({ immediateRemote: true, tabId, markPermanent: options?.markPermanent });
         return;
       }
 
@@ -1017,18 +1052,20 @@ const Creation = () => {
           <div className="flex flex-col h-full min-w-0 min-h-0">
             {/* === ÁREA DO CANVAS (preenche toda altura) === */}
             <div className="relative w-full flex-1 min-h-0 glass rounded-2xl border shadow-xl overflow-hidden min-w-0">
-              <div className="absolute right-4 top-4 z-30 flex">
-                <Button
-                  type="button"
-                  variant="outline"
-                  size="sm"
-                  onClick={() => {
-                    void saveDraft({ immediateRemote: true });
-                  }}
-                >
-                  Salvar rascunho
-                </Button>
-              </div>
+              {!isDraftPermanent && (
+                <div className="absolute right-4 top-4 z-30 flex">
+                  <Button
+                    type="button"
+                    variant="outline"
+                    size="sm"
+                    onClick={() => {
+                      void saveDraft({ immediateRemote: true, markPermanent: true });
+                    }}
+                  >
+                    Salvar rascunho
+                  </Button>
+                </div>
+              )}
               {/* Abas do canvas dentro da área */}
               <div className="absolute left-4 top-4 z-20 glass rounded-xl border p-1 shadow-md">
                 <div className="flex items-center gap-1">
