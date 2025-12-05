@@ -437,3 +437,76 @@ body::before { display: none !important; }
     inset 0 0 0 1.5px hsl(var(--brand-blue) / .65),
     0 10px 28px -14px hsl(var(--brand-blue) / .35);
 }
+
+/* =========================================================
+   Expiration Timer — Relógio animado para rascunhos efêmeros
+   ========================================================= */
+.expiration-timer-container {
+  position: relative;
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  transition: opacity 0.3s ease;
+}
+
+.expiration-timer-container.fade-out {
+  opacity: 0;
+  pointer-events: none;
+}
+
+.expiration-timer-button {
+  position: relative;
+  width: 32px;
+  height: 32px;
+  border-radius: 50%;
+  background: transparent;
+  display: flex;
+  justify-content: center;
+  align-items: center;
+  cursor: pointer;
+  transition:
+    transform 0.4s ease,
+    box-shadow 0.3s ease;
+  overflow: visible;
+  border: none;
+  flex-shrink: 0;
+}
+
+.expiration-timer-button:hover {
+  transform: scale(1.15);
+}
+
+.expiration-timer-icon {
+  width: 30px;
+  height: 30px;
+  color: var(--stroke-color, #00d4ff);
+  transition:
+    transform 0.5s ease-in-out,
+    color 0.3s ease;
+}
+
+.expiration-timer-button:hover .expiration-timer-icon {
+  transform: rotate(360deg);
+}
+
+.expiration-timer-progress {
+  fill: none;
+  stroke: var(--stroke-color, #00d4ff);
+  stroke-width: 2;
+  transform-origin: center;
+  transform: rotate(-90deg);
+}
+
+.expiration-timer-text-side {
+  font-size: 11px;
+  font-weight: 700;
+  letter-spacing: 0.5px;
+  opacity: 0;
+  transition: opacity 0.3s ease;
+  white-space: nowrap;
+  pointer-events: none;
+}
+
+.expiration-timer-container:hover .expiration-timer-text-side {
+  opacity: 1;
+}

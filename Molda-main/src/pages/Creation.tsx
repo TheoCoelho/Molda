@@ -164,7 +164,6 @@ const Creation = () => {
   const [fillColor, setFillColor] = useState("#ffffff");
   const [strokeWidth, setStrokeWidth] = useState(4);
   const [opacity, setOpacity] = useState(1);
-  const [lineMode, setLineMode] = useState<"single" | "polyline">("single");
 
   const editorRefs = useRef<Record<string, Editor2DHandle | null>>({});
   const lastEditorTabRef = useRef<string | null>(null);
@@ -998,8 +997,6 @@ const Creation = () => {
               setOpacity={setOpacity}
               addShape={addShape}
               is2DActive={activeIs2D}
-              lineMode={lineMode}
-              setLineMode={setLineMode}
               onImageInsert={(src, opts) => {
                 console.log('[Creation onImageInsert]', { activeIs2D, activeCanvasTab, editorRef: !!editorRefs.current[activeCanvasTab] });
                 if (activeIs2D) {
@@ -1275,7 +1272,6 @@ const Creation = () => {
                               fillColor={fillColor}
                               strokeWidth={strokeWidth}
                               opacity={opacity}
-                              lineMode={lineMode}
                               isTrashMode={isTrashMode}
                               onTrashDelete={() => setTool("select")}
                               onHistoryChange={(u, r) => {

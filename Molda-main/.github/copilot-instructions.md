@@ -35,5 +35,6 @@
 - `DecalEngineHost` only updates `externalDecals` when IDs stay stable—use the tab ID as the decal ID or you'll leak meshes inside the engine.
 - `Editor2D` exposes `waitForIdle` and `refresh`; call them before exporting PNGs or persisting JSON to avoid empty snapshots, and throttle expensive `saveDraft` calls by piggybacking on `onHistoryChange` (as Creation already does).
 - Upload drag-and-drop sets `text/plain` to the image URL; if you implement new drop targets, read that payload and call the existing `addImage` helper to respect scaling + undo.
+- Straight-line gizmo: `Editor2D` now supports only single-segment lines. Segments live inside `__lineMeta` and `applyLineGeometryFromMeta` keeps the Fabric line aligned to those points. The sidebar simply toggles the tool; creation shows a live preview and Shift snaps to 45°. When customizing interactions, reuse `ensureLineControls` and wrap mutations with `runWithLineTransformGuard` to avoid double transforms or noisy history entries.
 
 Have feedback or see missing context? Let me know which sections need more depth and we'll refine this guide.

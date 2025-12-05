@@ -25,7 +25,6 @@ import {
   Triangle,
   Hexagon,
   Minus,
-  LineChart,
 } from "lucide-react";
 // Novo ícone para a seção de ferramentas
 import { Wrench } from "lucide-react";
@@ -71,10 +70,6 @@ interface ExpandableSidebarProps {
   setOpacity: (n: number) => void;
   addShape: (shape: "rect" | "ellipse" | "triangle" | "polygon") => void;
   is2DActive: boolean;
-
-  // Linhas
-  lineMode: "single" | "polyline";
-  setLineMode: (m: "single" | "polyline") => void;
 
   // Upload -> inserir imagem no canvas
   onImageInsert?: (src: string, opts?: { x?: number; y?: number; scale?: number; meta?: Record<string, unknown> }) => void;
@@ -127,9 +122,7 @@ const ExpandableSidebar: React.FC<ExpandableSidebarProps> = (props) => {
     opacity,
     setOpacity,
     addShape,
-    is2DActive,
-    lineMode,
-    setLineMode,
+  is2DActive,
     onImageInsert,
     addText,
     applyTextStyle,
@@ -229,8 +222,6 @@ const ExpandableSidebar: React.FC<ExpandableSidebarProps> = (props) => {
                 opacity={opacity}
                 setOpacity={setOpacity}
                 addShape={addShape}
-                lineMode={lineMode}
-                setLineMode={setLineMode}
                 onImageInsert={onImageInsert}
                 addText={addText}
                 applyTextStyle={applyTextStyle}
@@ -326,8 +317,6 @@ function BrushSectionAccordion(props: {
   opacity: number;
   setOpacity: (n: number) => void;
   addShape: (shape: "rect" | "ellipse" | "triangle" | "polygon") => void;
-  lineMode: "single" | "polyline";
-  setLineMode: (m: "single" | "polyline") => void;
   onImageInsert?: (src: string, opts?: { x?: number; y?: number; scale?: number; meta?: Record<string, unknown> }) => void;
   addText?: (value?: string) => void;
   applyTextStyle?: (patch: any) => void;
@@ -347,9 +336,7 @@ function BrushSectionAccordion(props: {
     setStrokeWidth,
     opacity,
     setOpacity,
-    addShape,
-    lineMode,
-    setLineMode,
+  addShape,
     onImageInsert,
     addText,
     applyTextStyle,
@@ -743,18 +730,9 @@ function BrushSectionAccordion(props: {
           </button>
         </div>
         {openKey === "linhas" && tool === "line" && (
-          <div className="space-y-2 mt-3">
-            <Label>Modo de desenho</Label>
-            <div className="flex gap-2">
-              <button type="button" className={iconToggleClasses(lineMode === "single", false)} onClick={() => setLineMode("single")} aria-label="Segmento único" title="Segmento único">
-                <Minus className="w-6 h-6" />
-              </button>
-              <button type="button" className={iconToggleClasses(lineMode === "polyline", false)} onClick={() => setLineMode("polyline")} aria-label="Polilinha" title="Polilinha">
-                <LineChart className="w-6 h-6" />
-              </button>
-            </div>
-            {lineMode === "polyline" && <p className="text-xs text-gray-500">Clique para adicionar segmentos • <strong>duplo-clique</strong> para finalizar.</p>}
-          </div>
+          <p className="text-xs text-gray-500 mt-3">
+            Clique e arraste para desenhar uma reta. Use <strong>Shift</strong> para alinhar em ângulos de 45°.
+          </p>
         )}
       </AccordionItem>
       </div>

@@ -14,6 +14,15 @@ export type Tool = "select" | "brush" | "line" | "curve" | "text";
 export type BrushVariant = "pencil" | "spray" | "marker" | "calligraphy" | "eraser";
 export type ShapeKind = "rect" | "triangle" | "ellipse" | "polygon";
 
+type LinePoint = { x: number; y: number };
+type LineMeta = {
+  version: 1;
+  points: LinePoint[];
+  stroke: string;
+  strokeWidth: number;
+  opacity: number;
+};
+
 /** Estilo de texto suportado pelo editor */
 export type TextStyle = Partial<{
   fontFamily: string;
@@ -101,7 +110,6 @@ type Props = {
   fillColor: string;
   strokeWidth: number;
   opacity: number;
-  lineMode: "single" | "polyline";
   isTrashMode?: boolean;
   onTrashDelete?: () => void;
   onHistoryChange?: (canUndo: boolean, canRedo: boolean) => void;
@@ -291,6 +299,32 @@ const Editor2D = forwardRef<Editor2DHandle, Props>(function Editor2D(
   const selectionListenersRef = useRef(new Set<(k: "none" | "text" | "other") => void>());
   const erasingCountRef = useRef(0);
   const idleResolversRef = useRef<Set<() => void>>(new Set());
+  const historyGuardRef = useRef(0);
+  const lineTransformGuardRef = useRef(0);
+
+  const runSilently = (cb: () => void) => {
+    historyGuardRef.current += 1;
+    try {
+      cb();
+    } finally {
+      historyGuardRef.current = Math.max(0, historyGuardRef.current - 1);
+    }
+  };
+
+  const runWithLineTransformGuard = (cb: () => void) => {
+    lineTransformGuardRef.current += 1;
+    try {
+      cb();
+    } finally {
+      lineTransformGuardRef.current = Math.max(
+        0,
+        lineTransformGuardRef.current - 1
+      );
+    }
+  };
+
+  const shouldRecordHistory = () =>
+    !isRestoringRef.current && !isLoadingRef.current && historyGuardRef.current === 0;
 
   const isBusy = () =>
     isLoadingRef.current || isRestoringRef.current || erasingCountRef.current > 0;
@@ -318,7 +352,7 @@ const Editor2D = forwardRef<Editor2DHandle, Props>(function Editor2D(
   }, []);
   
   // Refs para controle de ferramentas
-  const listenersRef = useRef<{ down?: any; move?: any; up?: any }>({});
+  const listenersRef = useRef<{ down?: any; move?: any; up?: any; dbl?: any; keydown?: any }>({});
   const [canvasReady, setCanvasReady] = useState(false);
 
   React.useEffect(() => {
@@ -340,7 +374,7 @@ const Editor2D = forwardRef<Editor2DHandle, Props>(function Editor2D(
   const toJSON = () => {
     const c = canvasRef.current;
     if (c) {
-      const data = c.toJSON(["selectable", "evented", "erasable", "eraser"]);
+      const data = c.toJSON(["selectable", "evented", "erasable", "eraser", "__lineMeta"]);
       return JSON.stringify({ kind: "fabric", data });
     }
     return JSON.stringify({ kind: "empty" });
@@ -362,6 +396,7 @@ const Editor2D = forwardRef<Editor2DHandle, Props>(function Editor2D(
           c.loadFromJSON(parsed.data, async () => {
             try {
               await reviveCanvasErasers(c, fabricRef.current);
+              restoreLineObjects(c);
               setObjectsSelectable(c, true);
               c.renderAll();
               resolve();
@@ -597,18 +632,26 @@ const Editor2D = forwardRef<Editor2DHandle, Props>(function Editor2D(
     });
   };
 
-  const attachLineListeners = (c: FabricCanvas, down: any, move: any, up: any) => {
-    c.on("mouse:down", down);
-    c.on("mouse:move", move);
-    c.on("mouse:up", up);
-    listenersRef.current = { down, move, up };
+  const attachLineListeners = (
+    c: FabricCanvas,
+    handlers: { down?: any; move?: any; up?: any; dbl?: any; keydown?: (event: KeyboardEvent) => void }
+  ) => {
+    const { down, move, up, dbl, keydown } = handlers;
+    if (down) c.on("mouse:down", down);
+    if (move) c.on("mouse:move", move);
+    if (up) c.on("mouse:up", up);
+    if (dbl) c.on("mouse:dblclick", dbl);
+    if (keydown) window.addEventListener("keydown", keydown);
+    listenersRef.current = handlers;
   };
   
   const detachLineListeners = (c: FabricCanvas) => {
-    const { down, move, up } = listenersRef.current;
+    const { down, move, up, dbl, keydown } = listenersRef.current;
     if (down) c.off("mouse:down", down);
     if (move) c.off("mouse:move", move);
     if (up) c.off("mouse:up", up);
+    if (dbl) c.off("mouse:dblclick", dbl);
+    if (keydown) window.removeEventListener("keydown", keydown);
     listenersRef.current = {};
   };
 
@@ -664,7 +707,7 @@ const Editor2D = forwardRef<Editor2DHandle, Props>(function Editor2D(
         }
 
         composeFill(pointOpacity: number) {
-          const source = this.ensureColorSource();
+          const source = this.ensureColorSource() ?? [0, 0, 0, 1];
           const [r, g, b, a = 1] = source;
           const finalOpacity = Math.max(0, Math.min(1, (pointOpacity ?? 1) * a));
           return `rgba(${r}, ${g}, ${b}, ${finalOpacity})`;
@@ -800,6 +843,411 @@ const Editor2D = forwardRef<Editor2DHandle, Props>(function Editor2D(
     }
 
     attachPathMeta(path, meta, safeWidth);
+  };
+
+  const attachLineMeta = (target: any, meta: LineMeta) => {
+    if (!target) return target;
+    target.__lineMeta = meta;
+    if (!target.__lineMetaPatched) {
+      const originalToObject = target.toObject;
+      target.toObject = function toLineObject(this: any, additional?: any[]) {
+        const base = originalToObject.call(this, additional);
+        return { ...base, __lineMeta: this.__lineMeta };
+      };
+      Object.defineProperty(target, "__lineMetaPatched", {
+        value: true,
+        enumerable: false,
+        configurable: true,
+      });
+    }
+    return target;
+  };
+
+  const LINE_HANDLE_RADIUS = 6;
+  const LINE_ROTATION_OFFSET = 52;
+  const DEFAULT_LINE_CAP = "round" as const;
+
+  type LineControlSet = {
+    start: any;
+    end: any;
+    center: any;
+    rotate: any;
+  };
+
+  const cloneLinePoints = (points: LinePoint[]): LinePoint[] =>
+    points.map((p) => ({ x: p.x, y: p.y }));
+
+  const computeLineMetaCenter = (points: LinePoint[]): LinePoint => {
+    if (!points.length) return { x: 0, y: 0 };
+    const first = points[0];
+    const last = points[points.length - 1];
+    return {
+      x: (first.x + last.x) / 2,
+      y: (first.y + last.y) / 2,
+    };
+  };
+
+  const rotatePointAround = (
+    point: LinePoint,
+    center: LinePoint,
+    radians: number
+  ): LinePoint => {
+    const cos = Math.cos(radians);
+    const sin = Math.sin(radians);
+    const dx = point.x - center.x;
+    const dy = point.y - center.y;
+    return {
+      x: center.x + dx * cos - dy * sin,
+      y: center.y + dx * sin + dy * cos,
+    };
+  };
+
+  const ensureLineControls = (): LineControlSet | null => {
+    const fabric = fabricRef.current;
+    if (!fabric) return null;
+
+    const cached = (fabric as any).__moldaLineControls as LineControlSet | undefined;
+    if (cached) return cached;
+
+    const { Control, Point, controlsUtils } = fabric;
+
+    const drawHandle = (
+      ctx: CanvasRenderingContext2D,
+      left: number,
+      top: number,
+      fill: string
+    ) => {
+      ctx.save();
+      ctx.beginPath();
+      ctx.arc(left, top, LINE_HANDLE_RADIUS, 0, Math.PI * 2);
+      ctx.fillStyle = fill;
+      ctx.strokeStyle = "#0f172a";
+      ctx.lineWidth = 1.25;
+      ctx.fill();
+      ctx.stroke();
+      ctx.restore();
+    };
+
+    const endpointPositionHandler = (index: 0 | 1) =>
+      function positionHandler(_dim: any, finalMatrix: number[], target: any) {
+        const meta: LineMeta | undefined = target.__lineMeta;
+        if (!meta || meta.points.length < 2) {
+          return fabric.util.transformPoint(new Point(0, 0), finalMatrix);
+        }
+        const anchorIndex = index === 0 ? 0 : meta.points.length - 1;
+        const worldPoint = meta.points[anchorIndex];
+        const localPoint = target.toLocalPoint(
+          new Point(worldPoint.x, worldPoint.y),
+          "center",
+          "center"
+        );
+        return fabric.util.transformPoint(localPoint, finalMatrix);
+      };
+
+    const endpointActionHandler = (index: 0 | 1) =>
+      function actionHandler(eventData: any, transform: any) {
+        const target: any = transform.target;
+        const meta: LineMeta | undefined = target?.__lineMeta;
+        if (!target || !meta) return false;
+        const canvas = target.canvas;
+        if (!canvas) return false;
+
+        const pointer = canvas.getPointer(eventData.e, false);
+        const anchorIndex = index === 0 ? 0 : meta.points.length - 1;
+        const nextPoints = cloneLinePoints(meta.points);
+        nextPoints[anchorIndex] = { x: pointer.x, y: pointer.y };
+
+        runWithLineTransformGuard(() => {
+          meta.points = nextPoints;
+          attachLineMeta(target, meta);
+          applyLineGeometryFromMeta(target, meta);
+        });
+
+        canvas.requestRenderAll();
+        transform.actionPerformed = true;
+        return true;
+      };
+
+    const endpointRenderer = (
+      ctx: CanvasRenderingContext2D,
+      left: number,
+      top: number
+    ) => drawHandle(ctx, left, top, "#38bdf8");
+
+    const centerPositionHandler = function positionHandler(
+      _dim: any,
+      finalMatrix: number[],
+      _target: any
+    ) {
+      return fabric.util.transformPoint(new Point(0, 0), finalMatrix);
+    };
+
+    const moveActionHandler = (eventData: any, transform: any, x: number, y: number) => {
+      const target: any = transform.target;
+      let performed = false;
+      runWithLineTransformGuard(() => {
+        performed = controlsUtils.dragHandler(eventData, transform, x, y);
+        if (performed) {
+          updateMetaAfterMove(target);
+        }
+      });
+      return performed;
+    };
+
+    const centerRenderer = (
+      ctx: CanvasRenderingContext2D,
+      left: number,
+      top: number
+    ) => drawHandle(ctx, left, top, "#0ea5e9");
+
+    const rotationPositionHandler = function positionHandler(
+      _dim: any,
+      finalMatrix: number[],
+      _target: any
+    ) {
+      return fabric.util.transformPoint(
+        new Point(0, -LINE_ROTATION_OFFSET),
+        finalMatrix
+      );
+    };
+
+    const rotationRenderer = (
+      ctx: CanvasRenderingContext2D,
+      left: number,
+      top: number,
+      _styleOverride: any,
+      _target: any
+    ) => {
+      drawHandle(ctx, left, top, "#0284c7");
+    };
+
+    const rotationActionHandler = (
+      eventData: any,
+      transform: any,
+      x: number,
+      y: number
+    ) => {
+      const target: any = transform.target;
+      let performed = false;
+      runWithLineTransformGuard(() => {
+        performed = controlsUtils.rotationWithSnapping(
+          eventData,
+          transform,
+          x,
+          y
+        );
+        if (performed) {
+          updateMetaAfterMove(target);
+          updateMetaAfterRotate(target);
+        }
+      });
+      return performed;
+    };
+
+    const controls: LineControlSet = {
+      start: new Control({
+        cursorStyle: "crosshair",
+        render: endpointRenderer,
+        positionHandler: endpointPositionHandler(0),
+        actionHandler: endpointActionHandler(0),
+      }),
+      end: new Control({
+        cursorStyle: "crosshair",
+        render: endpointRenderer,
+        positionHandler: endpointPositionHandler(1),
+        actionHandler: endpointActionHandler(1),
+      }),
+      center: new Control({
+        cursorStyle: "move",
+        render: centerRenderer,
+        positionHandler: centerPositionHandler,
+        actionHandler: moveActionHandler,
+      }),
+      rotate: new Control({
+        cursorStyle: "grab",
+        withConnection: true,
+        render: rotationRenderer,
+        positionHandler: rotationPositionHandler,
+        actionHandler: rotationActionHandler,
+      }),
+    };
+
+    (fabric as any).__moldaLineControls = controls;
+    return controls;
+  };
+
+  const applyLineGeometryFromMeta = (target: any, meta: LineMeta) => {
+    if (!meta || meta.points.length < 2) return;
+
+    const start = meta.points[0];
+    const end = meta.points[meta.points.length - 1];
+    const dx = end.x - start.x;
+    const dy = end.y - start.y;
+    const length = Math.max(0.001, Math.hypot(dx, dy));
+    const centerX = start.x + dx / 2;
+    const centerY = start.y + dy / 2;
+    const angle = (Math.atan2(dy, dx) * 180) / Math.PI;
+
+    target.set({
+      stroke: meta.stroke,
+      strokeWidth: meta.strokeWidth,
+      opacity: meta.opacity,
+      strokeLineCap: DEFAULT_LINE_CAP,
+      strokeUniform: true,
+      x1: -length / 2,
+      y1: 0,
+      x2: length / 2,
+      y2: 0,
+      left: centerX,
+      top: centerY,
+      originX: "center",
+      originY: "center",
+      angle,
+      erasable: true,
+      objectCaching: false,
+    });
+    target.setCoords();
+    target.dirty = true;
+  };
+
+  const applyLineGizmo = (target: any, meta: LineMeta | undefined) => {
+    if (!meta) return;
+    const controls = ensureLineControls();
+    if (!controls) return;
+
+    target.hasBorders = false;
+    target.transparentCorners = false;
+    target.cornerColor = "#38bdf8";
+    target.cornerStrokeColor = "#0f172a";
+    target.lockScalingX = true;
+    target.lockScalingY = true;
+    target.lockScalingFlip = true;
+    target.perPixelTargetFind = true;
+    target.objectCaching = false;
+    target.dirty = true;
+    target.controls = {
+      start: controls.start,
+      end: controls.end,
+      center: controls.center,
+      mtr: controls.rotate,
+    };
+    if (typeof target.setControlsVisibility === "function") {
+      target.setControlsVisibility({
+        start: true,
+        end: true,
+        center: true,
+        mtr: true,
+      });
+    }
+  };
+
+  const updateMetaAfterMove = (target: any) => {
+    const meta: LineMeta | undefined = target?.__lineMeta;
+    if (!meta) return;
+    const center = computeLineMetaCenter(meta.points);
+    const targetCenter = target.getCenterPoint?.();
+    if (!targetCenter) return;
+    const dx = targetCenter.x - center.x;
+    const dy = targetCenter.y - center.y;
+    if (Math.abs(dx) < 1e-3 && Math.abs(dy) < 1e-3) return;
+    meta.points = meta.points.map((p) => ({ x: p.x + dx, y: p.y + dy }));
+    attachLineMeta(target, meta);
+    target.dirty = true;
+  };
+
+  const updateMetaAfterRotate = (target: any) => {
+    const meta: LineMeta | undefined = target?.__lineMeta;
+    if (!meta || meta.points.length < 2) return;
+    const targetCenter = target.getCenterPoint?.();
+    if (!targetCenter) return;
+    const currentCenter = computeLineMetaCenter(meta.points);
+    const dx = targetCenter.x - currentCenter.x;
+    const dy = targetCenter.y - currentCenter.y;
+    let workingPoints = meta.points;
+    if (Math.abs(dx) > 1e-3 || Math.abs(dy) > 1e-3) {
+      workingPoints = workingPoints.map((p) => ({ x: p.x + dx, y: p.y + dy }));
+    }
+    const start = workingPoints[0];
+    const end = workingPoints[workingPoints.length - 1];
+    const currentAngle = Math.atan2(end.y - start.y, end.x - start.x);
+    const targetAngleDeg = target.getTotalAngle?.() ?? target.angle ?? 0;
+    const delta = ((targetAngleDeg as number) * Math.PI) / 180 - currentAngle;
+    if (Math.abs(delta) < 1e-3) {
+      if (workingPoints !== meta.points) {
+        meta.points = workingPoints;
+        attachLineMeta(target, meta);
+      }
+      return;
+    }
+    const rotated = workingPoints.map((p) => rotatePointAround(p, targetCenter, delta));
+    meta.points = rotated;
+    attachLineMeta(target, meta);
+    target.dirty = true;
+  };
+
+  const createLineObject = (
+    points: LinePoint[],
+    options: {
+      stroke: string;
+      strokeWidth: number;
+      opacity: number;
+    }
+  ) => {
+    const fabric = fabricRef.current;
+    if (!fabric || points.length < 2) return null;
+
+    const safeWidth = Math.max(1, options.strokeWidth || 1);
+    const line = new fabric.Line(
+      [points[0].x, points[0].y, points[1].x, points[1].y],
+      {
+        stroke: options.stroke,
+        strokeWidth: safeWidth,
+        opacity: options.opacity,
+        strokeLineCap: DEFAULT_LINE_CAP,
+        strokeUniform: true,
+        fill: "transparent",
+        selectable: true,
+        evented: true,
+        objectCaching: false,
+        perPixelTargetFind: true,
+        erasable: true,
+      }
+    );
+
+    const meta: LineMeta = {
+      version: 1,
+      points: cloneLinePoints(points),
+      stroke: options.stroke,
+      strokeWidth: safeWidth,
+      opacity: options.opacity,
+    };
+
+    attachLineMeta(line, meta);
+    applyLineGeometryFromMeta(line, meta);
+    applyLineGizmo(line, meta);
+    line.dirty = true;
+    return line;
+  };
+
+  const restoreLineMetaOnObject = (obj: any) => {
+    if (!obj) return;
+    if (obj.__lineMeta) {
+      const meta = obj.__lineMeta as LineMeta;
+      obj.objectCaching = false;
+      attachLineMeta(obj, meta);
+      applyLineGeometryFromMeta(obj, meta);
+      applyLineGizmo(obj, meta);
+    }
+    if (typeof obj.forEachObject === "function") {
+      obj.forEachObject((child: any) => restoreLineMetaOnObject(child));
+    } else if (Array.isArray(obj._objects)) {
+      obj._objects.forEach((child: any) => restoreLineMetaOnObject(child));
+    }
+  };
+
+  const restoreLineObjects = (canvas: FabricCanvas) => {
+    if (!canvas) return;
+    canvas.getObjects().forEach((obj: any) => restoreLineMetaOnObject(obj));
   };
 
   const createBrush = (
@@ -1287,21 +1735,21 @@ const Editor2D = forwardRef<Editor2DHandle, Props>(function Editor2D(
 
         // Eventos simples do histórico
         const __onAdded = () => {
-          if (!isRestoringRef.current && !isLoadingRef.current)
+          if (shouldRecordHistory())
             historyRef.current?.push("add");
           emitHistory();
           try { c.requestRenderAll(); } catch {}
           notifySelectionKind();
         };
         const __onRemoved = () => {
-          if (!isRestoringRef.current && !isLoadingRef.current)
+          if (shouldRecordHistory())
             historyRef.current?.push("remove");
           emitHistory();
           try { c.requestRenderAll(); } catch {}
           notifySelectionKind();
         };
         const __onModified = () => {
-          if (!isRestoringRef.current && !isLoadingRef.current)
+          if (shouldRecordHistory())
             historyRef.current?.push("modify");
           emitHistory();
           try { c.requestRenderAll(); } catch {}
@@ -1337,10 +1785,22 @@ const Editor2D = forwardRef<Editor2DHandle, Props>(function Editor2D(
             setObjectsSelectable(c, false);
             setHostCursor("crosshair");
           }
-          if (!isRestoringRef.current && !isLoadingRef.current)
+          if (shouldRecordHistory())
             historyRef.current?.push("draw");
           emitHistory();
           try { c.requestRenderAll(); } catch {}
+        };
+
+        const __onMoving = (evt: any) => {
+          if (lineTransformGuardRef.current > 0) return;
+          updateMetaAfterMove(evt?.target);
+        };
+
+        const __onRotating = (evt: any) => {
+          if (lineTransformGuardRef.current > 0) return;
+          const target = evt?.target;
+          updateMetaAfterMove(target);
+          updateMetaAfterRotate(target);
         };
 
         c.on("object:added", __onAdded);
@@ -1353,6 +1813,8 @@ const Editor2D = forwardRef<Editor2DHandle, Props>(function Editor2D(
         c.on("path:created", __onPath);
         c.on("erasing:start", __onErasingStart);
         c.on("erasing:end", __onErasingEnd);
+        c.on("object:moving", __onMoving);
+        c.on("object:rotating", __onRotating);
 
         setCanvasReady(true);
         console.log("[Editor2D] Canvas ready set to true");
@@ -1383,6 +1845,8 @@ const Editor2D = forwardRef<Editor2DHandle, Props>(function Editor2D(
         c.off("path:created");
         c.off("erasing:start");
         c.off("erasing:end");
+        c.off("object:moving");
+        c.off("object:rotating");
         c.dispose?.();
       }
       roRef.current?.disconnect();
@@ -1459,6 +1923,12 @@ const Editor2D = forwardRef<Editor2DHandle, Props>(function Editor2D(
 
     // LINE (modo especial com mouse listeners)
     if (tool === "line") {
+      const fabric = fabricRef.current;
+      if (!fabric) {
+        console.warn("[Editor2D] Fabric não disponível para ferramenta de linha");
+        return;
+      }
+
       c.isDrawingMode = false;
       c.selection = false;
       c.skipTargetFind = true;
@@ -1467,49 +1937,138 @@ const Editor2D = forwardRef<Editor2DHandle, Props>(function Editor2D(
       setHostCursor("crosshair");
 
       let isDrawing = false;
-      let startPoint: { x: number; y: number } | null = null;
-      let line: any = null;
+      let startPoint: LinePoint | null = null;
+      let preview: any = null;
 
-      const onMouseDown = (e: any) => {
-        if (isDrawing) return;
-        const pointer = c.getPointer(e.e);
-        startPoint = { x: pointer.x, y: pointer.y };
-        
-        line = new fabric.Line([pointer.x, pointer.y, pointer.x, pointer.y], {
+      const snapPoint = (current: LinePoint, reference: LinePoint, shiftPressed: boolean): LinePoint => {
+        if (!shiftPressed) return current;
+        const dx = current.x - reference.x;
+        const dy = current.y - reference.y;
+        if (Math.abs(dx) < 1e-3 && Math.abs(dy) < 1e-3) return current;
+        const angle = Math.atan2(dy, dx);
+        const snapped = Math.round(angle / (Math.PI / 4)) * (Math.PI / 4);
+        const length = Math.hypot(dx, dy);
+        return {
+          x: reference.x + Math.cos(snapped) * length,
+          y: reference.y + Math.sin(snapped) * length,
+        };
+      };
+
+      const removePreview = () => {
+        if (preview) {
+          runSilently(() => c.remove(preview));
+          preview = null;
+        }
+      };
+
+      const ensurePreview = (start: LinePoint) => {
+        if (preview) return preview;
+        preview = new fabric.Line([start.x, start.y, start.x, start.y], {
           stroke: strokeColor,
-          strokeWidth: strokeWidth,
-          opacity: opacity,
+          strokeWidth: Math.max(1, strokeWidth || 1),
+          opacity,
+          strokeLineCap: DEFAULT_LINE_CAP,
+          strokeUniform: true,
           selectable: false,
           evented: false,
-          erasable: true,
+          objectCaching: false,
+          perPixelTargetFind: false,
+          excludeFromExport: true,
         });
-        c.add(line);
-        isDrawing = true;
+        preview.__isPreview = true;
+        runSilently(() => c.add(preview));
+        return preview;
       };
 
-      const onMouseMove = (e: any) => {
-        if (!isDrawing || !line || !startPoint) return;
-        const pointer = c.getPointer(e.e);
+      const updatePreview = (from: LinePoint, to: LinePoint, shiftPressed: boolean): LinePoint => {
+        const snapped = snapPoint(to, from, shiftPressed);
+        const line = ensurePreview(from);
         line.set({
-          x2: pointer.x,
-          y2: pointer.y,
+          x1: from.x,
+          y1: from.y,
+          x2: snapped.x,
+          y2: snapped.y,
+          stroke: strokeColor,
+          strokeWidth: Math.max(1, strokeWidth || 1),
+          opacity,
         });
-        c.renderAll();
+        line.dirty = true;
+        line.setCoords();
+        c.requestRenderAll();
+        return snapped;
       };
 
-      const onMouseUp = () => {
-        if (!isDrawing) return;
+      const finalizeLine = (start: LinePoint, end: LinePoint) => {
+        removePreview();
         isDrawing = false;
-        if (line) {
-          line.set({ selectable: true, evented: true });
-          line.setCoords();
-        }
         startPoint = null;
-        line = null;
+        const length = Math.hypot(end.x - start.x, end.y - start.y);
+        if (length < 2) {
+          c.requestRenderAll();
+          return;
+        }
+        const line = createLineObject([start, end], {
+          stroke: strokeColor,
+          strokeWidth,
+          opacity,
+        });
+        if (!line) {
+          c.requestRenderAll();
+          return;
+        }
+        c.add(line);
+        line.setCoords();
+        c.setActiveObject(line);
+        c.requestRenderAll();
       };
 
-      attachLineListeners(c, onMouseDown, onMouseMove, onMouseUp);
-      c.renderAll();
+      const cancelDrawing = () => {
+        removePreview();
+        isDrawing = false;
+        startPoint = null;
+        c.requestRenderAll();
+      };
+
+      const onMouseDown = (evt: any) => {
+        const pointer = c.getPointer(evt.e);
+        const current: LinePoint = { x: pointer.x, y: pointer.y };
+        if (isDrawing) return;
+        isDrawing = true;
+        startPoint = current;
+        ensurePreview(current);
+        updatePreview(current, current, false);
+      };
+
+      const onMouseMove = (evt: any) => {
+        if (!isDrawing || !startPoint) return;
+        const pointer = c.getPointer(evt.e);
+        const current: LinePoint = { x: pointer.x, y: pointer.y };
+        updatePreview(startPoint, current, !!evt.e.shiftKey);
+      };
+
+      const onMouseUp = (evt: any) => {
+        if (!isDrawing || !startPoint) return;
+        const pointer = c.getPointer(evt.e);
+        const current: LinePoint = { x: pointer.x, y: pointer.y };
+        const snapped = updatePreview(startPoint, current, !!evt.e.shiftKey);
+        finalizeLine(startPoint, snapped);
+      };
+
+      const onKeyDown = (evt: KeyboardEvent) => {
+        if (!isDrawing) return;
+        if (evt.key === "Escape") {
+          evt.preventDefault();
+          cancelDrawing();
+        }
+      };
+
+      attachLineListeners(c, {
+        down: onMouseDown,
+        move: onMouseMove,
+        up: onMouseUp,
+        keydown: onKeyDown,
+      });
+      c.requestRenderAll();
       return;
     }
 

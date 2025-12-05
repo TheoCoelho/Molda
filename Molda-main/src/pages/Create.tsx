@@ -6,6 +6,7 @@ import { Button } from "@/components/ui/button";
 import LinearInfiniteCarousel from "@/components/LinearInfiniteCarousel";
 import { Tabs, TabsContent, TabsList, TabsTrigger } from "@/components/ui/tabs";
 import Canvas3DViewer from "@/components/Canvas3DViewer";
+import ExpirationTimer from "@/components/ExpirationTimer";
 import { supabase } from "@/integrations/supabase/client";
 import { cn } from "@/lib/utils";
 import type { ExternalDecalData, DecalTransform } from "../types/decals";
@@ -384,13 +385,6 @@ const Create = () => {
     });
   };
 
-  const formatCountdown = (ms: number) => {
-    const totalSeconds = Math.max(0, Math.floor(ms / 1000));
-    const minutes = Math.floor(totalSeconds / 60);
-    const seconds = totalSeconds % 60;
-    return `${minutes}:${seconds.toString().padStart(2, "0")}`;
-  };
-
   return (
     <div className="min-h-screen">
       <Header />
@@ -492,8 +486,8 @@ const Create = () => {
             </TabsContent>
 
             <TabsContent value="drafts" className="mt-6">
-              <div className="grid gap-6 lg:grid-cols-[minmax(260px,320px)_1fr]">
-                <div className="space-y-3">
+              <div className="grid gap-6 lg:grid-cols-[minmax(260px,320px)_1fr] lg:items-start">
+                <div className="space-y-3 max-h-[calc(100vh-280px)] overflow-y-auto pr-2 scrollbar-soft">
                   {draftsLoading ? (
                     <div className="space-y-3">
                       <div className="h-14 rounded-xl bg-muted/60 animate-pulse" />
@@ -517,11 +511,6 @@ const Create = () => {
                         const sizeLabel = draft.data.size || "Tamanho livre";
                         const expiresAt = resolveExpirationTs(draft);
                         const remainingMs = expiresAt === null ? null : expiresAt - nowTs;
-                        const timerLabel = remainingMs === null
-                          ? null
-                          : remainingMs > 0
-                            ? `Expira em ${formatCountdown(remainingMs)}`
-                            : "Expirando...";
                         return (
                           <li key={draft.id}>
                             <button
@@ -540,27 +529,23 @@ const Create = () => {
                                 <span className="text-xs text-muted-foreground">{updatedAtLabel}</span>
                               </div>
                               <div className="mt-1 text-xs text-muted-foreground">{summary}</div>
-                              {timerLabel && (
-                                <button
-                                  type="button"
-                                  onClick={(event) => {
-                                    event.stopPropagation();
-                                    handleMakePermanent(draft);
-                                  }}
-                                  className="mt-2 inline-flex w-full items-center justify-between gap-2 rounded-lg border border-amber-500/30 bg-amber-500/10 px-3 py-2 text-[11px] font-semibold uppercase tracking-wide text-amber-900 hover:bg-amber-500/20"
-                                >
-                                  <span>{timerLabel}</span>
-                                  <span className="text-[10px] font-bold">Manter rascunho</span>
-                                </button>
-                              )}
+
                               <div className="mt-3 flex items-center justify-between gap-2">
-                                <span className="inline-flex h-6 items-center gap-2 rounded-full border px-3 text-[11px] uppercase tracking-wide text-muted-foreground">
-                                  <span
-                                    className="h-3 w-3 rounded-full border"
-                                    style={{ backgroundColor: draft.data.baseColor || "#ffffff" }}
+                                {/* Timer de expiração ou badge de tamanho */}
+                                {remainingMs !== null && remainingMs > 0 ? (
+                                  <ExpirationTimer
+                                    remainingMs={remainingMs}
+                                    onMakePermanent={() => handleMakePermanent(draft)}
                                   />
-                                  {sizeLabel}
-                                </span>
+                                ) : (
+                                  <span className="inline-flex h-6 items-center gap-2 rounded-full border px-3 text-[11px] uppercase tracking-wide text-muted-foreground">
+                                    <span
+                                      className="h-3 w-3 rounded-full border"
+                                      style={{ backgroundColor: draft.data.baseColor || "#ffffff" }}
+                                    />
+                                    {sizeLabel}
+                                  </span>
+                                )}
                                 <Button
                                   type="button"
                                   size="sm"
@@ -581,7 +566,7 @@ const Create = () => {
                   )}
                 </div>
 
-                <div className="glass relative flex min-h-[320px] items-center justify-center rounded-2xl border shadow-sm">
+                <div className="glass relative flex items-center justify-center rounded-2xl border shadow-sm h-[calc(100vh-280px)] min-h-[500px]">
                   {selectedDraft ? (
                     <div className="relative h-full w-full">
                       <Canvas3DViewer
