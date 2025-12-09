@@ -510,3 +510,62 @@ body::before { display: none !important; }
 .expiration-timer-container:hover .expiration-timer-text-side {
   opacity: 1;
 }
+
+.line-mode-switch {
+  position: relative;
+  display: inline-flex;
+  align-items: center;
+  cursor: pointer;
+}
+
+.line-mode-switch--disabled {
+  cursor: not-allowed;
+  opacity: 0.5;
+}
+
+.line-mode-switch--disabled .line-mode-slider {
+  cursor: not-allowed;
+}
+
+.line-mode-checkbox {
+  display: none;
+}
+
+.line-mode-slider {
+  width: 60px;
+  height: 30px;
+  background-color: lightgray;
+  border-radius: 20px;
+  overflow: hidden;
+  display: flex;
+  align-items: center;
+  border: 4px solid transparent;
+  transition: 0.3s;
+  box-shadow: 0 0 10px 0 rgba(0, 0, 0, 0.25) inset;
+  cursor: pointer;
+}
+
+.line-mode-slider::before {
+  content: "";
+  display: block;
+  width: 100%;
+  height: 100%;
+  background-color: #fff;
+  transform: translateX(-30px);
+  border-radius: 20px;
+  transition: 0.3s;
+  box-shadow: 0 0 10px 3px rgba(0, 0, 0, 0.25);
+}
+
+.line-mode-checkbox:checked ~ .line-mode-slider::before {
+  transform: translateX(30px);
+  box-shadow: 0 0 10px 3px rgba(0, 0, 0, 0.25);
+}
+
+.line-mode-checkbox:checked ~ .line-mode-slider {
+  background-color: #2196f3;
+}
+
+.line-mode-checkbox:active ~ .line-mode-slider::before {
+  transform: translateX(0);
+}

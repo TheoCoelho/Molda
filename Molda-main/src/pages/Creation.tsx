@@ -160,6 +160,7 @@ const Creation = () => {
 
   const [tool, setTool] = useState<Tool>("select");
   const [brushVariant, setBrushVariant] = useState<BrushVariant>("pencil");
+  const [continuousLineMode, setContinuousLineMode] = useState(false);
   const [strokeColor, setStrokeColor] = useState("#000000");
   const [fillColor, setFillColor] = useState("#ffffff");
   const [strokeWidth, setStrokeWidth] = useState(4);
@@ -997,6 +998,11 @@ const Creation = () => {
               setOpacity={setOpacity}
               addShape={addShape}
               is2DActive={activeIs2D}
+              continuousLineEnabled={continuousLineMode}
+              onContinuousLineToggle={(value) => {
+                setContinuousLineMode(value);
+                runWithActiveEditor((inst) => inst.refresh?.());
+              }}
               onImageInsert={(src, opts) => {
                 console.log('[Creation onImageInsert]', { activeIs2D, activeCanvasTab, editorRef: !!editorRefs.current[activeCanvasTab] });
                 if (activeIs2D) {
@@ -1268,6 +1274,11 @@ const Creation = () => {
                               }}
                               tool={tool}
                               brushVariant={brushVariant}
+                              continuousLineMode={continuousLineMode}
+                              onContinuousLineCancel={() => {
+                                setContinuousLineMode(false);
+                                runWithActiveEditor((inst) => inst.refresh?.());
+                              }}
                               strokeColor={strokeColor}
                               fillColor={fillColor}
                               strokeWidth={strokeWidth}

@@ -60,6 +60,8 @@ interface ExpandableSidebarProps {
   setTool: (t: "select" | "brush" | "line" | "curve" | "text") => void;
   brushVariant: BrushVariant;
   setBrushVariant: (v: BrushVariant) => void;
+  continuousLineEnabled: boolean;
+  onContinuousLineToggle: (value: boolean) => void;
   strokeColor: string;
   setStrokeColor: (c: string) => void;
   fillColor: string;
@@ -113,6 +115,8 @@ const ExpandableSidebar: React.FC<ExpandableSidebarProps> = (props) => {
     setTool,
     brushVariant,
     setBrushVariant,
+  continuousLineEnabled,
+  onContinuousLineToggle,
     strokeColor,
     setStrokeColor,
     fillColor,
@@ -213,6 +217,8 @@ const ExpandableSidebar: React.FC<ExpandableSidebarProps> = (props) => {
                 setTool={setTool}
                 brushVariant={brushVariant}
                 setBrushVariant={setBrushVariant}
+                continuousLineEnabled={continuousLineEnabled}
+                onContinuousLineToggle={onContinuousLineToggle}
                 strokeColor={strokeColor}
                 setStrokeColor={setStrokeColor}
                 fillColor={fillColor}
@@ -308,6 +314,8 @@ function BrushSectionAccordion(props: {
   setTool: (t: "select" | "brush" | "line" | "curve" | "text") => void;
   brushVariant: BrushVariant;
   setBrushVariant: (v: BrushVariant) => void;
+  continuousLineEnabled: boolean;
+  onContinuousLineToggle: (value: boolean) => void;
   strokeColor: string;
   setStrokeColor: (c: string) => void;
   fillColor: string;
@@ -328,6 +336,8 @@ function BrushSectionAccordion(props: {
     setTool,
     brushVariant,
     setBrushVariant,
+  continuousLineEnabled,
+  onContinuousLineToggle,
     strokeColor,
     setStrokeColor,
     fillColor,
@@ -356,6 +366,8 @@ function BrushSectionAccordion(props: {
       disabled ? "opacity-35 cursor-not-allowed" : "hover:bg-white/10 focus:outline-none focus-visible:ring-2 focus-visible:ring-purple-300/60",
       active ? "bg-white/20 border-white/35 shadow-[inset_0_0_12px_rgba(255,255,255,0.22)]" : "",
     ].join(" ");
+
+  const lineToolsDisabled = !is2DActive || enabledKey !== "linhas";
 
   useEffect(() => {
     if (autoOpenTextPanelCounter == null) return;
@@ -710,9 +722,9 @@ function BrushSectionAccordion(props: {
         <div className="flex flex-wrap gap-3 mt-2">
           <button
             type="button"
-            className={iconToggleClasses(tool === "line", !is2DActive || enabledKey !== "linhas")}
-            onClick={() => enabledKey === "linhas" && setTool("line")}
-            disabled={!is2DActive || enabledKey !== "linhas"}
+            className={iconToggleClasses(tool === "line", lineToolsDisabled)}
+            onClick={() => !lineToolsDisabled && setTool("line")}
+            disabled={lineToolsDisabled}
             aria-label="Linha reta"
             title="Linha reta"
           >
@@ -720,18 +732,35 @@ function BrushSectionAccordion(props: {
           </button>
           <button
             type="button"
-            className={iconToggleClasses(tool === "curve", !is2DActive || enabledKey !== "linhas")}
-            onClick={() => enabledKey === "linhas" && setTool("curve")}
-            disabled={!is2DActive || enabledKey !== "linhas"}
+            className={iconToggleClasses(tool === "curve", lineToolsDisabled)}
+            onClick={() => !lineToolsDisabled && setTool("curve")}
+            disabled={lineToolsDisabled}
             aria-label="Curva Bézier"
             title="Curva Bézier"
           >
             <PenTool className="w-6 h-6" />
           </button>
         </div>
+        <div className="flex items-center justify-between mt-3 gap-4">
+          <p className="text-xs text-gray-600">Modo contínuo</p>
+          <label className={`line-mode-switch${lineToolsDisabled ? " line-mode-switch--disabled" : ""}`}>
+            <input
+              type="checkbox"
+              className="line-mode-checkbox"
+              disabled={lineToolsDisabled}
+              checked={continuousLineEnabled}
+              onChange={(evt) => {
+                if (lineToolsDisabled) return;
+                onContinuousLineToggle(evt.target.checked);
+              }}
+              aria-label="Ativar modo contínuo de linhas"
+            />
+            <div className="line-mode-slider" aria-hidden="true" />
+          </label>
+        </div>
         {openKey === "linhas" && tool === "line" && (
           <p className="text-xs text-gray-500 mt-3">
-            Clique e arraste para desenhar uma reta. Use <strong>Shift</strong> para alinhar em ângulos de 45°.
+            Clique e arraste para desenhar uma reta. Use <strong>Shift</strong> para alinhar em ângulos de 45°. Ative o modo contínuo para iniciar a próxima reta a partir do ponto final anterior. Pressione <strong>Esc</strong>, <strong>Enter</strong> ou dê um duplo clique para encerrar a sequência.
           </p>
         )}
       </AccordionItem>

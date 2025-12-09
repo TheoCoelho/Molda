@@ -391,10 +391,6 @@ const Create = () => {
 
       <main className="container mx-auto px-6 py-10">
         <div className="flex flex-col">
-          <div className="flex flex-wrap items-center justify-between gap-3">
-            <h1 className="text-3xl font-semibold tracking-tight">Criar peça</h1>
-          </div>
-
           <Tabs
             value={viewMode}
             onValueChange={(value: string) => setViewMode(value as ViewMode)}

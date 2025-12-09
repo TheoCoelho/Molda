@@ -23,6 +23,25 @@ type LineMeta = {
   opacity: number;
 };
 
+type CurveNodeKind = "corner" | "symmetric" | "disconnected";
+
+type CurveNode = {
+  anchor: LinePoint;
+  handleIn: LinePoint | null;
+  handleOut: LinePoint | null;
+  kind: CurveNodeKind;
+};
+
+type CurveMeta = {
+  version: 1;
+  nodes: CurveNode[];
+  closed: boolean;
+  stroke: string;
+  strokeWidth: number;
+  opacity: number;
+  fill: string | null;
+};
+
 /** Estilo de texto suportado pelo editor */
 export type TextStyle = Partial<{
   fontFamily: string;
@@ -106,6 +125,8 @@ export type Editor2DHandle = {
 type Props = {
   tool: Tool;
   brushVariant: BrushVariant;
+  continuousLineMode: boolean;
+  onContinuousLineCancel?: () => void;
   strokeColor: string;
   fillColor: string;
   strokeWidth: number;
@@ -264,6 +285,8 @@ const Editor2D = forwardRef<Editor2DHandle, Props>(function Editor2D(
   {
     tool,
     brushVariant,
+    continuousLineMode,
+    onContinuousLineCancel,
     strokeColor,
     fillColor,
     strokeWidth,
@@ -301,6 +324,20 @@ const Editor2D = forwardRef<Editor2DHandle, Props>(function Editor2D(
   const idleResolversRef = useRef<Set<() => void>>(new Set());
   const historyGuardRef = useRef(0);
   const lineTransformGuardRef = useRef(0);
+  const curveTransformGuardRef = useRef(0);
+  const continuousLineModeRef = useRef(continuousLineMode);
+  const lastLineEndRef = useRef<LinePoint | null>(null);
+  const onContinuousLineCancelRef = useRef(onContinuousLineCancel);
+  const curveStateRef = useRef({
+    isDrawing: false,
+    meta: null as CurveMeta | null,
+    preview: null as any,
+    pointerDownIndex: null as number | null,
+    pointerDownAnchor: null as LinePoint | null,
+    pointerMoved: false,
+    hoverPoint: null as LinePoint | null,
+    isPointerDown: false,
+  });
 
   const runSilently = (cb: () => void) => {
     historyGuardRef.current += 1;
@@ -319,6 +356,18 @@ const Editor2D = forwardRef<Editor2DHandle, Props>(function Editor2D(
       lineTransformGuardRef.current = Math.max(
         0,
         lineTransformGuardRef.current - 1
+      );
+    }
+  };
+
+  const runWithCurveTransformGuard = (cb: () => void) => {
+    curveTransformGuardRef.current += 1;
+    try {
+      cb();
+    } finally {
+      curveTransformGuardRef.current = Math.max(
+        0,
+        curveTransformGuardRef.current - 1
       );
     }
   };
@@ -371,10 +420,25 @@ const Editor2D = forwardRef<Editor2DHandle, Props>(function Editor2D(
     toolRef.current = tool;
   }, [tool]);
 
+  React.useEffect(() => {
+    continuousLineModeRef.current = continuousLineMode;
+    lastLineEndRef.current = null;
+  }, [continuousLineMode]);
+
+  React.useEffect(() => {
+    onContinuousLineCancelRef.current = onContinuousLineCancel;
+  }, [onContinuousLineCancel]);
+
+  React.useEffect(() => {
+    if (tool !== "line") {
+      lastLineEndRef.current = null;
+    }
+  }, [tool]);
+
   const toJSON = () => {
     const c = canvasRef.current;
     if (c) {
-      const data = c.toJSON(["selectable", "evented", "erasable", "eraser", "__lineMeta"]);
+  const data = c.toJSON(["selectable", "evented", "erasable", "eraser", "__lineMeta", "__curveMeta"]);
       return JSON.stringify({ kind: "fabric", data });
     }
     return JSON.stringify({ kind: "empty" });
@@ -397,6 +461,7 @@ const Editor2D = forwardRef<Editor2DHandle, Props>(function Editor2D(
             try {
               await reviveCanvasErasers(c, fabricRef.current);
               restoreLineObjects(c);
+              restoreCurveObjects(c);
               setObjectsSelectable(c, true);
               c.renderAll();
               resolve();
@@ -867,6 +932,11 @@ const Editor2D = forwardRef<Editor2DHandle, Props>(function Editor2D(
   const LINE_ROTATION_OFFSET = 52;
   const DEFAULT_LINE_CAP = "round" as const;
 
+  const CURVE_ANCHOR_RADIUS = 6;
+  const CURVE_HANDLE_RADIUS = 5;
+  const CURVE_CLOSE_THRESHOLD = 12;
+  const CURVE_DEFAULT_FILL = "transparent";
+
   type LineControlSet = {
     start: any;
     end: any;
@@ -1248,6 +1318,497 @@ const Editor2D = forwardRef<Editor2DHandle, Props>(function Editor2D(
   const restoreLineObjects = (canvas: FabricCanvas) => {
     if (!canvas) return;
     canvas.getObjects().forEach((obj: any) => restoreLineMetaOnObject(obj));
+  };
+
+  const cloneCurveNode = (node: CurveNode): CurveNode => ({
+    anchor: { ...node.anchor },
+    handleIn: node.handleIn ? { ...node.handleIn } : null,
+    handleOut: node.handleOut ? { ...node.handleOut } : null,
+    kind: node.kind,
+  });
+
+  const cloneCurveMeta = (meta: CurveMeta): CurveMeta => ({
+    version: 1,
+    nodes: meta.nodes.map(cloneCurveNode),
+    closed: meta.closed,
+    stroke: meta.stroke,
+    strokeWidth: meta.strokeWidth,
+    opacity: meta.opacity,
+    fill: meta.fill,
+  });
+
+  const computeCurveMetaCenter = (meta: CurveMeta): LinePoint => {
+    if (!meta.nodes.length) return { x: 0, y: 0 };
+    let sumX = 0;
+    let sumY = 0;
+    meta.nodes.forEach((node) => {
+      sumX += node.anchor.x;
+      sumY += node.anchor.y;
+    });
+    return { x: sumX / meta.nodes.length, y: sumY / meta.nodes.length };
+  };
+
+  const distanceBetween = (a: LinePoint | null, b: LinePoint | null) => {
+    if (!a || !b) return 0;
+    return Math.hypot(a.x - b.x, a.y - b.y);
+  };
+
+  const snapPointTo45 = (origin: LinePoint, target: LinePoint): LinePoint => {
+    const dx = target.x - origin.x;
+    const dy = target.y - origin.y;
+    if (Math.abs(dx) < 1e-3 && Math.abs(dy) < 1e-3) {
+      return target;
+    }
+    const angle = Math.atan2(dy, dx);
+    const snapped = Math.round(angle / (Math.PI / 4)) * (Math.PI / 4);
+    const length = Math.hypot(dx, dy);
+    return {
+      x: origin.x + Math.cos(snapped) * length,
+      y: origin.y + Math.sin(snapped) * length,
+    };
+  };
+
+  const mirrorHandle = (anchor: LinePoint, handle: LinePoint): LinePoint => ({
+    x: anchor.x - (handle.x - anchor.x),
+    y: anchor.y - (handle.y - anchor.y),
+  });
+
+  const isHandleVisible = (anchor: LinePoint, handle: LinePoint | null) => {
+    if (!handle) return false;
+    return distanceBetween(anchor, handle) > 0.75;
+  };
+
+  const syncCurveControls = (target: any, meta: CurveMeta) => {
+    const fabric = fabricRef.current;
+    if (!fabric || !target) return;
+
+    const { Control, Point } = fabric;
+
+    const drawCircle = (
+      ctx: CanvasRenderingContext2D,
+      left: number,
+      top: number,
+      radius: number,
+      fill: string,
+      stroke: string
+    ) => {
+      ctx.save();
+      ctx.beginPath();
+      ctx.arc(left, top, radius, 0, Math.PI * 2);
+      ctx.fillStyle = fill;
+      ctx.strokeStyle = stroke;
+      ctx.lineWidth = 1.1;
+      ctx.fill();
+      ctx.stroke();
+      ctx.restore();
+    };
+
+    const worldPoint = (nodePoint: LinePoint) => {
+      return new Point(nodePoint.x, nodePoint.y);
+    };
+
+    const makePositionHandler = (getPoint: (meta: CurveMeta) => LinePoint | null) =>
+      function positionHandler(_dim: any, finalMatrix: number[], controlTarget: any) {
+        const workingMeta: CurveMeta | null = controlTarget.__curveMeta || null;
+        const point = workingMeta ? getPoint(workingMeta) : null;
+        const resolved = point || workingMeta?.nodes[0]?.anchor || { x: 0, y: 0 };
+        return new Point(resolved.x, resolved.y);
+      };
+
+    const controls: Record<string, any> = {};
+
+    const createAnchorControl = (index: number) =>
+      new Control({
+        cursorStyle: "pointer",
+        actionName: `curve-anchor-${index}`,
+        positionHandler: makePositionHandler((currentMeta) => currentMeta.nodes[index].anchor),
+        render: (
+          ctx: CanvasRenderingContext2D,
+          left: number,
+          top: number,
+          _styleOverride: any,
+          controlTarget: any
+        ) => {
+          const activeIndex = controlTarget.__curveActiveAnchorIndex;
+          const isActive = typeof activeIndex === "number" && activeIndex === index;
+          drawCircle(ctx, left, top, CURVE_ANCHOR_RADIUS, isActive ? "#38bdf8" : "#0ea5e9", "#0f172a");
+        },
+        actionHandler: (eventData: any, transform: any) => {
+          const controlTarget = transform.target as any;
+          const canvas = controlTarget?.canvas;
+          const meta: CurveMeta | undefined = controlTarget?.__curveMeta;
+          if (!controlTarget || !canvas || !meta) return false;
+          const pointer = canvas.getPointer(eventData.e, false);
+          const next = cloneCurveMeta(meta);
+          const node = next.nodes[index];
+          let nextPosition: LinePoint = { x: pointer.x, y: pointer.y };
+          if (eventData.e?.shiftKey) {
+            const reference = next.nodes[index - 1]?.anchor || next.nodes[index + 1]?.anchor || node.anchor;
+            nextPosition = snapPointTo45(reference, nextPosition);
+          }
+          const dx = nextPosition.x - node.anchor.x;
+          const dy = nextPosition.y - node.anchor.y;
+          node.anchor = nextPosition;
+          if (node.handleIn) {
+            node.handleIn = { x: node.handleIn.x + dx, y: node.handleIn.y + dy };
+          }
+          if (node.handleOut) {
+            node.handleOut = { x: node.handleOut.x + dx, y: node.handleOut.y + dy };
+          }
+          controlTarget.__curveActiveAnchorIndex = index;
+          controlTarget.__curveMeta = next;
+          const commands = computeBezierFromNodes(next.nodes, next.closed);
+          controlTarget.path = commands;
+          controlTarget.dirty = true;
+          controlTarget.setCoords();
+          canvas.requestRenderAll();
+          transform.actionPerformed = true;
+          return true;
+        },
+      });
+
+    const createHandleControl = (index: number, role: "handleIn" | "handleOut") =>
+      new Control({
+        cursorStyle: "crosshair",
+        actionName: `curve-${role}-${index}`,
+        positionHandler: makePositionHandler((currentMeta) => {
+          const node = currentMeta.nodes[index];
+          return node[role] || node.anchor;
+        }),
+        render: (
+          ctx: CanvasRenderingContext2D,
+          left: number,
+          top: number,
+          _styleOverride: any,
+          controlTarget: any
+        ) => {
+          const metaLocal: CurveMeta | undefined = controlTarget.__curveMeta;
+          if (!metaLocal) return;
+          const node = metaLocal.nodes[index];
+          const anchorWorld = worldPoint(node.anchor);
+          ctx.save();
+          ctx.beginPath();
+          ctx.moveTo(anchorWorld.x, anchorWorld.y);
+          ctx.lineTo(left, top);
+          ctx.strokeStyle = role === "handleIn" ? "#facc15" : "#f97316";
+          ctx.lineWidth = 1;
+          ctx.setLineDash([4, 2]);
+          ctx.stroke();
+          ctx.restore();
+          drawCircle(ctx, left, top, CURVE_HANDLE_RADIUS, role === "handleIn" ? "#facc15" : "#f97316", "#0f172a");
+        },
+        actionHandler: (eventData: any, transform: any) => {
+          const controlTarget = transform.target as any;
+          const canvas = controlTarget?.canvas;
+          const meta: CurveMeta | undefined = controlTarget?.__curveMeta;
+          if (!controlTarget || !canvas || !meta) return false;
+          const pointer = canvas.getPointer(eventData.e, false);
+          const next = cloneCurveMeta(meta);
+          const node = next.nodes[index];
+          const snapped = eventData.e?.shiftKey ? snapPointTo45(node.anchor, { x: pointer.x, y: pointer.y }) : { x: pointer.x, y: pointer.y };
+          if (role === "handleIn") {
+            node.handleIn = snapped;
+            if (!eventData.e?.altKey) {
+              node.kind = "symmetric";
+              node.handleOut = mirrorHandle(node.anchor, snapped);
+            } else {
+              node.kind = "disconnected";
+            }
+          } else {
+            node.handleOut = snapped;
+            if (!eventData.e?.altKey) {
+              node.kind = "symmetric";
+              node.handleIn = mirrorHandle(node.anchor, snapped);
+            } else {
+              node.kind = "disconnected";
+            }
+          }
+          if (!isHandleVisible(node.anchor, node.handleIn)) node.handleIn = null;
+          if (!isHandleVisible(node.anchor, node.handleOut)) node.handleOut = null;
+          if (!node.handleIn && !node.handleOut) {
+            node.kind = "corner";
+          }
+          controlTarget.__curveMeta = next;
+          const commands = computeBezierFromNodes(next.nodes, next.closed);
+          controlTarget.path = commands;
+          controlTarget.dirty = true;
+          controlTarget.setCoords();
+          canvas.requestRenderAll();
+          transform.actionPerformed = true;
+          return true;
+        },
+      });
+
+    meta.nodes.forEach((node, index) => {
+      controls[`curve_anchor_${index}`] = createAnchorControl(index);
+      if (isHandleVisible(node.anchor, node.handleIn)) {
+        controls[`curve_handleIn_${index}`] = createHandleControl(index, "handleIn");
+      }
+      if (isHandleVisible(node.anchor, node.handleOut)) {
+        controls[`curve_handleOut_${index}`] = createHandleControl(index, "handleOut");
+      }
+    });
+
+    target.controls = controls;
+    target.hasBorders = false;
+    target.hasControls = true;
+    target.transparentCorners = true;
+    target.cornerStyle = "circle";
+    target.cornerColor = "#38bdf8";
+    target.cornerStrokeColor = "#0f172a";
+    target.lockScalingX = true;
+    target.lockScalingY = true;
+    target.lockScalingFlip = true;
+    target.lockSkewingX = true;
+    target.lockSkewingY = true;
+    target.lockRotation = true;
+    target.objectCaching = false;
+    target.perPixelTargetFind = false;
+    target.subTargetCheck = true;
+    target.selectable = true;
+    target.evented = true;
+    target.hoverCursor = "move";
+    target.setCoords();
+  };
+
+  const createCurveMetaFromPath = (path: any): CurveMeta | null => {
+    if (!path || !Array.isArray(path.path)) return null;
+    const nodes: CurveNode[] = [];
+    let prevPoint: LinePoint | null = null;
+    let prevHandleOut: LinePoint | null = null;
+    for (const segment of path.path) {
+      const [cmd, ...args] = segment;
+      if (cmd === "M") {
+        const [x, y] = args;
+        prevPoint = { x, y };
+        prevHandleOut = null;
+        nodes.push({
+          anchor: { x, y },
+          handleIn: null,
+          handleOut: null,
+          kind: "corner",
+        });
+      } else if (cmd === "C" && prevPoint) {
+        const [x1, y1, x2, y2, x, y] = args;
+        const handleIn: LinePoint = { x: x1, y: y1 };
+        const handleOut: LinePoint = { x: x2, y: y2 };
+        const anchor: LinePoint = { x, y };
+        const kind: CurveNodeKind = "corner";
+        const last = nodes[nodes.length - 1];
+        if (last) {
+          last.handleOut = handleIn;
+        }
+        nodes.push({
+          anchor,
+          handleIn: handleOut,
+          handleOut: null,
+          kind,
+        });
+        prevPoint = anchor;
+        prevHandleOut = handleOut;
+      } else if (cmd === "L") {
+        const [x, y] = args;
+        const anchor: LinePoint = { x, y };
+        const last = nodes[nodes.length - 1];
+        if (last) {
+          last.handleOut = null;
+        }
+        nodes.push({
+          anchor,
+          handleIn: null,
+          handleOut: null,
+          kind: "corner",
+        });
+        prevPoint = anchor;
+        prevHandleOut = null;
+      } else if (cmd === "Z" || cmd === "z") {
+        if (nodes.length > 1) {
+          const first = nodes[0];
+          const last = nodes[nodes.length - 1];
+          last.handleOut = first.handleIn;
+        }
+      }
+    }
+    if (!nodes.length) return null;
+    return {
+      version: 1,
+      nodes,
+      closed: /z/i.test(path.path[path.path.length - 1]?.[0] ?? ""),
+      stroke: path.stroke || "#000000",
+      strokeWidth: path.strokeWidth || 2,
+      opacity: path.opacity == null ? 1 : path.opacity,
+      fill: path.fill || CURVE_DEFAULT_FILL,
+    };
+  };
+
+  const attachCurveMeta = (target: any, meta: CurveMeta | null) => {
+    if (!target || !meta) return;
+    target.__curveMeta = meta;
+    if (!target.__curveMetaPatched) {
+      const originalToObject = target.toObject;
+      target.toObject = function toCurveObject(this: any, additional?: any[]) {
+        const base = originalToObject.call(this, additional);
+        return { ...base, __curveMeta: this.__curveMeta };
+      };
+      Object.defineProperty(target, "__curveMetaPatched", {
+        value: true,
+        enumerable: false,
+        configurable: true,
+      });
+    }
+    return target;
+  };
+
+  const computeBezierFromNodes = (nodes: CurveNode[], closed: boolean) => {
+    const commands: any[] = [];
+    if (!nodes.length) return commands;
+    const first = nodes[0];
+    commands.push(["M", first.anchor.x, first.anchor.y]);
+    for (let i = 1; i < nodes.length; i += 1) {
+      const prev = nodes[i - 1];
+      const current = nodes[i];
+      const cp1 = prev.handleOut || prev.anchor;
+      const cp2 = current.handleIn || current.anchor;
+      commands.push(["C", cp1.x, cp1.y, cp2.x, cp2.y, current.anchor.x, current.anchor.y]);
+    }
+    if (closed) {
+      const prev = nodes[nodes.length - 1];
+      const cp1 = prev.handleOut || prev.anchor;
+      const cp2 = first.handleIn || first.anchor;
+      commands.push(["C", cp1.x, cp1.y, cp2.x, cp2.y, first.anchor.x, first.anchor.y]);
+      commands.push(["Z"]);
+    }
+    return commands;
+  };
+
+  const applyCurveMetaToPath = (target: any, meta: CurveMeta) => {
+    if (!target || !meta) return;
+    const fabric = fabricRef.current;
+    if (!fabric) return;
+    const commands = computeBezierFromNodes(meta.nodes, meta.closed);
+    target.path = commands;
+    target.dirty = true;
+    target.stroke = meta.stroke;
+    target.strokeWidth = Math.max(0.1, meta.strokeWidth || 1);
+    target.opacity = meta.opacity == null ? 1 : meta.opacity;
+    target.strokeUniform = true;
+    target.fill = meta.fill || CURVE_DEFAULT_FILL;
+    target.objectCaching = false;
+    target.setCoords();
+    target.__curveLastCenter = computeCurveMetaCenter(meta);
+    if (curveTransformGuardRef.current === 0) {
+      target.__curveNeedsControlSync = false;
+      syncCurveControls(target, meta);
+    } else {
+      target.__curveNeedsControlSync = true;
+    }
+  };
+
+  const createCurveObject = (meta: CurveMeta) => {
+    const fabric = fabricRef.current;
+    if (!fabric) return null;
+    const commands = computeBezierFromNodes(meta.nodes, meta.closed);
+    const path = new fabric.Path(commands, {
+      stroke: meta.stroke,
+      strokeWidth: Math.max(0.1, meta.strokeWidth || 1),
+      strokeUniform: true,
+      fill: meta.fill || CURVE_DEFAULT_FILL,
+      opacity: meta.opacity == null ? 1 : meta.opacity,
+      objectCaching: false,
+      perPixelTargetFind: false,
+      subTargetCheck: true,
+      selectable: true,
+      evented: true,
+      erasable: true,
+      hoverCursor: "move",
+    });
+    attachCurveMeta(path, meta);
+    path.__curveLastCenter = computeCurveMetaCenter(meta);
+    runWithCurveTransformGuard(() => {
+      applyCurveMetaToPath(path, meta);
+    });
+    syncCurveControls(path, meta);
+    return path;
+  };
+
+  const restoreCurveMetaOnObject = (obj: any) => {
+    if (!obj) return;
+    if (obj.__curveMeta) {
+      const meta = cloneCurveMeta(obj.__curveMeta as CurveMeta);
+      attachCurveMeta(obj, meta);
+      applyCurveMetaToPath(obj, meta);
+      syncCurveControls(obj, meta);
+    }
+    if (typeof obj.forEachObject === "function") {
+      obj.forEachObject((child: any) => restoreCurveMetaOnObject(child));
+    } else if (Array.isArray(obj._objects)) {
+      obj._objects.forEach((child: any) => restoreCurveMetaOnObject(child));
+    }
+  };
+
+  const restoreCurveObjects = (canvas: FabricCanvas) => {
+    if (!canvas) return;
+    canvas.getObjects().forEach((obj: any) => restoreCurveMetaOnObject(obj));
+  };
+
+  const translateCurveMeta = (meta: CurveMeta, dx: number, dy: number): CurveMeta => {
+    const next = cloneCurveMeta(meta);
+    next.nodes = next.nodes.map((node) => ({
+      anchor: { x: node.anchor.x + dx, y: node.anchor.y + dy },
+      handleIn: node.handleIn ? { x: node.handleIn.x + dx, y: node.handleIn.y + dy } : null,
+      handleOut: node.handleOut ? { x: node.handleOut.x + dx, y: node.handleOut.y + dy } : null,
+      kind: node.kind,
+    }));
+    return next;
+  };
+
+  const updateCurveMetaAfterMove = (target: any) => {
+    const meta: CurveMeta | undefined = target?.__curveMeta;
+    if (!meta) return;
+    const center = target.getCenterPoint?.();
+    if (!center) return;
+    const last = target.__curveLastCenter as LinePoint | undefined;
+    if (!last) {
+      target.__curveLastCenter = { x: center.x, y: center.y };
+      return;
+    }
+    const dx = center.x - last.x;
+    const dy = center.y - last.y;
+    if (Math.abs(dx) < 1e-2 && Math.abs(dy) < 1e-2) return;
+    const next = translateCurveMeta(meta, dx, dy);
+    target.__curveMeta = next;
+    target.__curveNeedsControlSync = false;
+    syncCurveControls(target, next);
+    target.__curveLastCenter = { x: center.x, y: center.y };
+  };
+
+  const clearCurvePreview = (canvas?: FabricCanvas | null) => {
+    const state = curveStateRef.current;
+    if (state.preview && canvas) {
+      try {
+        runSilently(() => {
+          canvas.remove(state.preview);
+        });
+      } catch {}
+    }
+    state.preview = null;
+  };
+
+  const resetCurveState = (canvas?: FabricCanvas | null) => {
+    const state = curveStateRef.current;
+    if (canvas) {
+      clearCurvePreview(canvas);
+      try { canvas.requestRenderAll(); } catch {}
+    } else {
+      state.preview = null;
+    }
+    state.isDrawing = false;
+    state.meta = null;
+    state.pointerDownIndex = null;
+    state.pointerDownAnchor = null;
+    state.pointerMoved = false;
+    state.hoverPoint = null;
+    state.isPointerDown = false;
   };
 
   const createBrush = (
@@ -1776,7 +2337,6 @@ const Editor2D = forwardRef<Editor2DHandle, Props>(function Editor2D(
           const activeTool = toolRef.current;
           if (
             activeTool === "brush" ||
-            activeTool === "curve" ||
             brushMetaRef.current.variant === "eraser"
           ) {
             c.isDrawingMode = true;
@@ -1792,8 +2352,14 @@ const Editor2D = forwardRef<Editor2DHandle, Props>(function Editor2D(
         };
 
         const __onMoving = (evt: any) => {
-          if (lineTransformGuardRef.current > 0) return;
-          updateMetaAfterMove(evt?.target);
+          const target = evt?.target;
+          if (!target) return;
+          if (lineTransformGuardRef.current === 0) {
+            updateMetaAfterMove(target);
+          }
+          if (curveTransformGuardRef.current === 0) {
+            updateCurveMetaAfterMove(target);
+          }
         };
 
         const __onRotating = (evt: any) => {
@@ -1914,8 +2480,259 @@ const Editor2D = forwardRef<Editor2DHandle, Props>(function Editor2D(
       return;
     }
 
-    // BRUSH/CURVE/ERASER (eraser é um variant especial)
-    if (tool === "brush" || tool === "curve" || brushVariant === "eraser") {
+    const curveState = curveStateRef.current;
+    if (tool !== "curve" && (curveState.isDrawing || curveState.preview)) {
+      resetCurveState(c);
+      setHostCursor("default");
+    }
+
+    if (tool === "curve") {
+      c.isDrawingMode = false;
+      c.selection = false;
+      c.skipTargetFind = true;
+      setObjectsSelectable(c, false);
+      c.discardActiveObject();
+      setHostCursor("crosshair");
+
+      const ensurePreview = () => {
+        if (curveState.preview) return curveState.preview;
+        const previewPath = new fabric.Path("M 0 0", {
+          stroke: strokeColor,
+          strokeWidth: Math.max(0.1, strokeWidth || 1),
+          strokeUniform: true,
+          fill: CURVE_DEFAULT_FILL,
+          opacity,
+          selectable: false,
+          evented: false,
+          objectCaching: false,
+          excludeFromExport: true,
+        });
+        previewPath.__isPreview = true;
+        curveState.preview = previewPath;
+        runSilently(() => c.add(previewPath));
+        return previewPath;
+      };
+
+      const updatePreview = () => {
+        const meta = curveState.meta;
+        if (!meta || !curveState.preview) return;
+        meta.stroke = strokeColor;
+        meta.strokeWidth = strokeWidth;
+        meta.opacity = opacity;
+        const commands = computeBezierFromNodes(meta.nodes, meta.closed);
+        curveState.preview.path = commands;
+        curveState.preview.set({
+          stroke: meta.stroke,
+          strokeWidth: Math.max(0.1, meta.strokeWidth || 1),
+          opacity: meta.opacity,
+        });
+        curveState.preview.dirty = true;
+        curveState.preview.setCoords();
+        try { c.requestRenderAll(); } catch {}
+      };
+
+      const cancelDrawing = () => {
+        clearCurvePreview(c);
+        resetCurveState(null);
+        setHostCursor("crosshair");
+        try { c.requestRenderAll(); } catch {}
+      };
+
+      const finalizeCurve = (sourceMeta: CurveMeta, forceClose = false) => {
+        if (!sourceMeta || sourceMeta.nodes.length < 2) {
+          cancelDrawing();
+          return;
+        }
+        const metaClone = cloneCurveMeta(sourceMeta);
+        metaClone.stroke = strokeColor;
+        metaClone.strokeWidth = strokeWidth;
+        metaClone.opacity = opacity;
+        if (forceClose) {
+          metaClone.closed = true;
+        }
+        clearCurvePreview(c);
+        resetCurveState(null);
+        const curveObject = createCurveObject(metaClone);
+        if (!curveObject) {
+          try { c.requestRenderAll(); } catch {}
+          return;
+        }
+        c.add(curveObject);
+        runSilently(() => {
+          c.setActiveObject(curveObject);
+        });
+        try { c.requestRenderAll(); } catch {}
+      };
+
+      const onMouseDown = (evt: any) => {
+        if (evt?.e?.button && evt.e.button !== 0) return;
+        const pointer = c.getPointer(evt.e);
+        const current: LinePoint = { x: pointer.x, y: pointer.y };
+        if (!curveState.isDrawing || !curveState.meta) {
+          const meta: CurveMeta = {
+            version: 1,
+            nodes: [
+              {
+                anchor: current,
+                handleIn: null,
+                handleOut: null,
+                kind: "corner",
+              },
+            ],
+            closed: false,
+            stroke: strokeColor,
+            strokeWidth,
+            opacity,
+            fill: CURVE_DEFAULT_FILL,
+          };
+          curveState.meta = meta;
+          curveState.isDrawing = true;
+          curveState.pointerDownIndex = 0;
+          curveState.pointerDownAnchor = current;
+          curveState.pointerMoved = false;
+          curveState.hoverPoint = null;
+          curveState.isPointerDown = true;
+          ensurePreview();
+          updatePreview();
+          return;
+        }
+
+        const meta = curveState.meta;
+        curveState.isPointerDown = true;
+        const first = meta.nodes[0];
+        const last = meta.nodes[meta.nodes.length - 1];
+        const basePoint = evt.e.shiftKey ? snapPointTo45(last.anchor, current) : current;
+        const closing =
+          meta.nodes.length > 2 && Math.hypot(current.x - first.anchor.x, current.y - first.anchor.y) <= CURVE_CLOSE_THRESHOLD;
+        if (closing) {
+          meta.closed = true;
+          updatePreview();
+          finalizeCurve(meta, true);
+          return;
+        }
+        const node: CurveNode = {
+          anchor: basePoint,
+          handleIn: null,
+          handleOut: null,
+          kind: "corner",
+        };
+        meta.nodes.push(node);
+        curveState.pointerDownIndex = meta.nodes.length - 1;
+        curveState.pointerDownAnchor = basePoint;
+        curveState.pointerMoved = false;
+        ensurePreview();
+        updatePreview();
+      };
+
+      const onMouseMove = (evt: any) => {
+        const meta = curveState.meta;
+        if (!meta) return;
+        const pointer = c.getPointer(evt.e);
+        const current: LinePoint = { x: pointer.x, y: pointer.y };
+        if (curveState.isPointerDown && typeof curveState.pointerDownIndex === "number") {
+          curveState.pointerMoved = true;
+          const index = curveState.pointerDownIndex;
+          const node = meta.nodes[index];
+          const anchor = node.anchor;
+          let handlePoint = current;
+          if (evt.e.shiftKey) {
+            handlePoint = snapPointTo45(anchor, handlePoint);
+          }
+          const vector = {
+            x: handlePoint.x - anchor.x,
+            y: handlePoint.y - anchor.y,
+          };
+          const handleOut = { x: anchor.x + vector.x, y: anchor.y + vector.y };
+          if (evt.e.altKey) {
+            node.handleOut = handleOut;
+            node.handleIn = null;
+            node.kind = "corner";
+          } else {
+            node.handleOut = handleOut;
+            node.handleIn = mirrorHandle(anchor, handleOut);
+            node.kind = "symmetric";
+          }
+          if (!isHandleVisible(anchor, node.handleIn)) node.handleIn = null;
+          if (!isHandleVisible(anchor, node.handleOut)) node.handleOut = null;
+          if (!node.handleIn && !node.handleOut) node.kind = "corner";
+          ensurePreview();
+          updatePreview();
+          return;
+        }
+
+        if (meta.nodes.length > 1) {
+          const first = meta.nodes[0];
+          const distance = Math.hypot(current.x - first.anchor.x, current.y - first.anchor.y);
+          if (curveState.isDrawing && distance <= CURVE_CLOSE_THRESHOLD && meta.nodes.length > 2) {
+            setHostCursor("pointer");
+          } else {
+            setHostCursor("crosshair");
+          }
+        }
+      };
+
+      const onMouseUp = () => {
+        curveState.isPointerDown = false;
+        curveState.pointerDownAnchor = null;
+        curveState.pointerDownIndex = null;
+        setHostCursor("crosshair");
+      };
+
+      const onDoubleClick = () => {
+        if (!curveState.meta) return;
+        curveState.meta.closed = false;
+        finalizeCurve(curveState.meta, false);
+      };
+
+      const onKeyDown = (evt: KeyboardEvent) => {
+        if (!curveState.isDrawing || !curveState.meta) {
+          if (evt.key === "Escape") {
+            evt.preventDefault();
+            cancelDrawing();
+          }
+          return;
+        }
+        if (evt.key === "Escape") {
+          evt.preventDefault();
+          cancelDrawing();
+          return;
+        }
+        if (evt.key === "Enter") {
+          evt.preventDefault();
+          finalizeCurve(curveState.meta, false);
+          return;
+        }
+        if (evt.key === "Backspace" || evt.key === "Delete") {
+          evt.preventDefault();
+          if (curveState.meta.nodes.length <= 1) {
+            cancelDrawing();
+          } else {
+            curveState.meta.nodes.pop();
+            curveState.pointerDownIndex = curveState.meta.nodes.length - 1;
+            ensurePreview();
+            updatePreview();
+          }
+        }
+      };
+
+      if (curveState.meta && curveState.isDrawing) {
+        ensurePreview();
+        updatePreview();
+      }
+
+      attachLineListeners(c, {
+        down: onMouseDown,
+        move: onMouseMove,
+        up: onMouseUp,
+        dbl: onDoubleClick,
+        keydown: onKeyDown,
+      });
+      c.requestRenderAll();
+      return;
+    }
+
+    // BRUSH/ERASER (eraser é um variant especial)
+    if (tool === "brush" || brushVariant === "eraser") {
       enableDrawingMode("crosshair");
       setupFreeDrawingBrush();
       return;
@@ -1939,6 +2756,10 @@ const Editor2D = forwardRef<Editor2DHandle, Props>(function Editor2D(
       let isDrawing = false;
       let startPoint: LinePoint | null = null;
       let preview: any = null;
+
+      const resetContinuousChain = () => {
+        lastLineEndRef.current = null;
+      };
 
       const snapPoint = (current: LinePoint, reference: LinePoint, shiftPressed: boolean): LinePoint => {
         if (!shiftPressed) return current;
@@ -1998,6 +2819,13 @@ const Editor2D = forwardRef<Editor2DHandle, Props>(function Editor2D(
         return snapped;
       };
 
+      const getLineStart = (pointerPoint: LinePoint): LinePoint => {
+        if (continuousLineModeRef.current && lastLineEndRef.current) {
+          return { x: lastLineEndRef.current.x, y: lastLineEndRef.current.y };
+        }
+        return pointerPoint;
+      };
+
       const finalizeLine = (start: LinePoint, end: LinePoint) => {
         removePreview();
         isDrawing = false;
@@ -2020,6 +2848,11 @@ const Editor2D = forwardRef<Editor2DHandle, Props>(function Editor2D(
         line.setCoords();
         c.setActiveObject(line);
         c.requestRenderAll();
+        if (continuousLineModeRef.current) {
+          lastLineEndRef.current = { x: end.x, y: end.y };
+        } else {
+          lastLineEndRef.current = null;
+        }
       };
 
       const cancelDrawing = () => {
@@ -2033,10 +2866,11 @@ const Editor2D = forwardRef<Editor2DHandle, Props>(function Editor2D(
         const pointer = c.getPointer(evt.e);
         const current: LinePoint = { x: pointer.x, y: pointer.y };
         if (isDrawing) return;
+        const baseStart = getLineStart(current);
         isDrawing = true;
-        startPoint = current;
-        ensurePreview(current);
-        updatePreview(current, current, false);
+        startPoint = baseStart;
+        ensurePreview(baseStart);
+        updatePreview(baseStart, current, !!evt.e.shiftKey);
       };
 
       const onMouseMove = (evt: any) => {
@@ -2054,11 +2888,31 @@ const Editor2D = forwardRef<Editor2DHandle, Props>(function Editor2D(
         finalizeLine(startPoint, snapped);
       };
 
+      const onDoubleClick = () => {
+        resetContinuousChain();
+        cancelDrawing();
+      };
+
       const onKeyDown = (evt: KeyboardEvent) => {
-        if (!isDrawing) return;
         if (evt.key === "Escape") {
+          if (isDrawing) {
+            evt.preventDefault();
+            resetContinuousChain();
+            cancelDrawing();
+          }
+          return;
+        }
+        if (evt.key === "Enter") {
           evt.preventDefault();
-          cancelDrawing();
+          resetContinuousChain();
+          if (isDrawing) {
+            cancelDrawing();
+          }
+          if (continuousLineModeRef.current) {
+            try {
+              onContinuousLineCancelRef.current?.();
+            } catch {}
+          }
         }
       };
 
@@ -2066,13 +2920,14 @@ const Editor2D = forwardRef<Editor2DHandle, Props>(function Editor2D(
         down: onMouseDown,
         move: onMouseMove,
         up: onMouseUp,
+        dbl: onDoubleClick,
         keydown: onKeyDown,
       });
       c.requestRenderAll();
       return;
     }
 
-  }, [tool, brushVariant, strokeColor, strokeWidth, opacity, canvasReady]);
+  }, [tool, brushVariant, strokeColor, strokeWidth, opacity, canvasReady, continuousLineMode]);
 
   // Atalhos de teclado para undo/redo
   useEffect(() => {
