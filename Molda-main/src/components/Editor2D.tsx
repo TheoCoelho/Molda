@@ -1404,7 +1404,8 @@ const Editor2D = forwardRef<Editor2DHandle, Props>(function Editor2D(
     };
 
     const worldPoint = (nodePoint: LinePoint) => {
-      return new Point(nodePoint.x, nodePoint.y);
+      const local = target.toLocalPoint(new Point(nodePoint.x, nodePoint.y), "center", "center");
+      return fabric.util.transformPoint(local, target.calcTransformMatrix());
     };
 
     const makePositionHandler = (getPoint: (meta: CurveMeta) => LinePoint | null) =>
@@ -1412,7 +1413,8 @@ const Editor2D = forwardRef<Editor2DHandle, Props>(function Editor2D(
         const workingMeta: CurveMeta | null = controlTarget.__curveMeta || null;
         const point = workingMeta ? getPoint(workingMeta) : null;
         const resolved = point || workingMeta?.nodes[0]?.anchor || { x: 0, y: 0 };
-        return new Point(resolved.x, resolved.y);
+        const local = controlTarget.toLocalPoint(new Point(resolved.x, resolved.y), "center", "center");
+        return fabric.util.transformPoint(local, finalMatrix);
       };
 
     const controls: Record<string, any> = {};
@@ -1457,10 +1459,13 @@ const Editor2D = forwardRef<Editor2DHandle, Props>(function Editor2D(
           }
           controlTarget.__curveActiveAnchorIndex = index;
           controlTarget.__curveMeta = next;
-          const commands = computeBezierFromNodes(next.nodes, next.closed);
-          controlTarget.path = commands;
-          controlTarget.dirty = true;
-          controlTarget.setCoords();
+          runWithCurveTransformGuard(() => {
+            applyCurveMetaToPath(controlTarget, next);
+          });
+          if (controlTarget.__curveNeedsControlSync && controlTarget.__curveMeta) {
+            syncCurveControls(controlTarget, controlTarget.__curveMeta as CurveMeta);
+            controlTarget.__curveNeedsControlSync = false;
+          }
           canvas.requestRenderAll();
           transform.actionPerformed = true;
           return true;
@@ -1529,10 +1534,13 @@ const Editor2D = forwardRef<Editor2DHandle, Props>(function Editor2D(
             node.kind = "corner";
           }
           controlTarget.__curveMeta = next;
-          const commands = computeBezierFromNodes(next.nodes, next.closed);
-          controlTarget.path = commands;
-          controlTarget.dirty = true;
-          controlTarget.setCoords();
+          runWithCurveTransformGuard(() => {
+            applyCurveMetaToPath(controlTarget, next);
+          });
+          if (controlTarget.__curveNeedsControlSync && controlTarget.__curveMeta) {
+            syncCurveControls(controlTarget, controlTarget.__curveMeta as CurveMeta);
+            controlTarget.__curveNeedsControlSync = false;
+          }
           canvas.requestRenderAll();
           transform.actionPerformed = true;
           return true;
@@ -1551,7 +1559,6 @@ const Editor2D = forwardRef<Editor2DHandle, Props>(function Editor2D(
 
     target.controls = controls;
     target.hasBorders = false;
-    target.hasControls = true;
     target.transparentCorners = true;
     target.cornerStyle = "circle";
     target.cornerColor = "#38bdf8";
@@ -1563,12 +1570,7 @@ const Editor2D = forwardRef<Editor2DHandle, Props>(function Editor2D(
     target.lockSkewingY = true;
     target.lockRotation = true;
     target.objectCaching = false;
-    target.perPixelTargetFind = false;
-    target.subTargetCheck = true;
-    target.selectable = true;
-    target.evented = true;
-    target.hoverCursor = "move";
-    target.setCoords();
+    target.perPixelTargetFind = true;
   };
 
   const createCurveMetaFromPath = (path: any): CurveMeta | null => {
@@ -1715,18 +1717,13 @@ const Editor2D = forwardRef<Editor2DHandle, Props>(function Editor2D(
       fill: meta.fill || CURVE_DEFAULT_FILL,
       opacity: meta.opacity == null ? 1 : meta.opacity,
       objectCaching: false,
-      perPixelTargetFind: false,
-      subTargetCheck: true,
+      perPixelTargetFind: true,
       selectable: true,
       evented: true,
       erasable: true,
-      hoverCursor: "move",
     });
     attachCurveMeta(path, meta);
-    path.__curveLastCenter = computeCurveMetaCenter(meta);
-    runWithCurveTransformGuard(() => {
-      applyCurveMetaToPath(path, meta);
-    });
+    applyCurveMetaToPath(path, meta);
     syncCurveControls(path, meta);
     return path;
   };
@@ -1777,8 +1774,13 @@ const Editor2D = forwardRef<Editor2DHandle, Props>(function Editor2D(
     if (Math.abs(dx) < 1e-2 && Math.abs(dy) < 1e-2) return;
     const next = translateCurveMeta(meta, dx, dy);
     target.__curveMeta = next;
-    target.__curveNeedsControlSync = false;
-    syncCurveControls(target, next);
+    runWithCurveTransformGuard(() => {
+      applyCurveMetaToPath(target, next);
+    });
+    if (target.__curveNeedsControlSync && target.__curveMeta) {
+      syncCurveControls(target, target.__curveMeta as CurveMeta);
+      target.__curveNeedsControlSync = false;
+    }
     target.__curveLastCenter = { x: center.x, y: center.y };
   };
 
