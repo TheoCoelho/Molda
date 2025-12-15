@@ -127,6 +127,8 @@ type Props = {
   brushVariant: BrushVariant;
   continuousLineMode: boolean;
   onContinuousLineCancel?: () => void;
+  /** Allow Editor2D to request changing the current tool (tool state lives in the parent). */
+  onRequestToolChange?: (tool: Tool) => void;
   strokeColor: string;
   fillColor: string;
   strokeWidth: number;
@@ -287,6 +289,7 @@ const Editor2D = forwardRef<Editor2DHandle, Props>(function Editor2D(
     brushVariant,
     continuousLineMode,
     onContinuousLineCancel,
+    onRequestToolChange,
     strokeColor,
     fillColor,
     strokeWidth,
@@ -328,6 +331,9 @@ const Editor2D = forwardRef<Editor2DHandle, Props>(function Editor2D(
   const continuousLineModeRef = useRef(continuousLineMode);
   const lastLineEndRef = useRef<LinePoint | null>(null);
   const onContinuousLineCancelRef = useRef(onContinuousLineCancel);
+  const onRequestToolChangeRef = useRef(onRequestToolChange);
+  // Used to implement: only when user presses Enter the last created object should be selected.
+  const lastCreatedObjectRef = useRef<any>(null);
   const curveStateRef = useRef({
     isDrawing: false,
     meta: null as CurveMeta | null,
@@ -430,10 +436,62 @@ const Editor2D = forwardRef<Editor2DHandle, Props>(function Editor2D(
   }, [onContinuousLineCancel]);
 
   React.useEffect(() => {
+    onRequestToolChangeRef.current = onRequestToolChange;
+  }, [onRequestToolChange]);
+
+  React.useEffect(() => {
     if (tool !== "line") {
       lastLineEndRef.current = null;
     }
   }, [tool]);
+
+  // Global Enter behavior requested:
+  // Select (and keep selected) the last created object (curve, brush stroke, etc).
+  // Do not auto-switch tools here; selection stays until user selects something else
+  // or changes tool.
+  React.useEffect(() => {
+    const onGlobalKeyDown = (evt: KeyboardEvent) => {
+      if (evt.key !== "Enter") return;
+
+      const c: any = canvasRef.current;
+      if (!c) return;
+
+      // If user is currently editing text, Enter should behave normally.
+      const active: any = c.getActiveObject?.();
+      const isTextEditing =
+        !!active &&
+        (active.isEditing === true ||
+          (typeof active.enterEditing === "function" && active.hiddenTextarea));
+      if (isTextEditing) return;
+
+      const last = lastCreatedObjectRef.current;
+      if (!last) return;
+      if (typeof c.setActiveObject === "function") {
+        evt.preventDefault();
+        try {
+          c.setActiveObject(last);
+          c.requestRenderAll?.();
+        } catch {}
+
+        // Also switch to selection tool, as requested.
+        // Defer one tick to avoid any tool-switch side-effects racing with Fabric selection.
+        try {
+          setTimeout(() => {
+            try {
+              onRequestToolChangeRef.current?.("select");
+            } catch {}
+          }, 0);
+        } catch {
+          try {
+            onRequestToolChangeRef.current?.("select");
+          } catch {}
+        }
+      }
+    };
+
+    window.addEventListener("keydown", onGlobalKeyDown);
+    return () => window.removeEventListener("keydown", onGlobalKeyDown);
+  }, []);
 
   const toJSON = () => {
     const c = canvasRef.current;
@@ -1533,10 +1591,18 @@ const Editor2D = forwardRef<Editor2DHandle, Props>(function Editor2D(
           const metaLocal: CurveMeta | undefined = controlTarget.__curveMeta;
           if (!metaLocal) return;
           const node = metaLocal.nodes[index];
+          // `left/top` are in CANVAS coordinates (already include viewportTransform).
+          // Our meta conversion currently yields WORLD coordinates, so we must apply
+          // viewportTransform to draw connector lines in the same space.
+          const canvas = controlTarget?.canvas as any;
+          const vpt = canvas?.viewportTransform || null;
           const anchorWorld = toWorldPoint(controlTarget, node.anchor);
+          const anchorCanvas = vpt
+            ? fabric.util.transformPoint(new Point(anchorWorld.x, anchorWorld.y), vpt)
+            : new Point(anchorWorld.x, anchorWorld.y);
           ctx.save();
           ctx.beginPath();
-          ctx.moveTo(anchorWorld.x, anchorWorld.y);
+          ctx.moveTo(anchorCanvas.x, anchorCanvas.y);
           ctx.lineTo(left, top);
           ctx.strokeStyle = role === "handleIn" ? "#facc15" : "#f97316";
           ctx.lineWidth = 1;
@@ -2427,6 +2493,9 @@ const Editor2D = forwardRef<Editor2DHandle, Props>(function Editor2D(
             ) {
               path.set({ erasable: true });
             }
+
+            // Remember last created stroke; selection will be applied only on Enter.
+            lastCreatedObjectRef.current = path;
           }
           const activeTool = toolRef.current;
           if (
@@ -2498,10 +2567,10 @@ const Editor2D = forwardRef<Editor2DHandle, Props>(function Editor2D(
           }
         };
 
-        c.on("object:added", __onAdded);
-        c.on("object:removed", __onRemoved);
-  c.on("object:modified", __onModified);
-  c.on("object:modified", __onModifiedSyncControls);
+    c.on("object:added", __onAdded);
+    c.on("object:removed", __onRemoved);
+    c.on("object:modified", __onModified);
+    c.on("object:modified", __onModifiedSyncControls);
         c.on("object:selected", notifySelectionKind);
         c.on("selection:created", notifySelectionKind);
         c.on("selection:updated", notifySelectionKind);
@@ -2598,22 +2667,58 @@ const Editor2D = forwardRef<Editor2DHandle, Props>(function Editor2D(
 
     // SELECT
     if (tool === "select") {
-      disableDrawingMode("default");
+      // Keep current selection when switching to select.
+      c.isDrawingMode = false;
+      c.selection = true;
+      c.skipTargetFind = false;
+      setObjectsSelectable(c, true);
+      setHostCursor("default");
       c.renderAll();
       return;
     }
 
     // TEXT (funciona como select)
     if (tool === "text") {
-      disableDrawingMode("default");
+      // Same behavior as select (do not discard selection).
+      c.isDrawingMode = false;
+      c.selection = true;
+      c.skipTargetFind = false;
+      setObjectsSelectable(c, true);
+      setHostCursor("default");
       c.renderAll();
       return;
     }
 
     const curveState = curveStateRef.current;
+    // If the user leaves the curve tool while a curve is in progress, finalize it as an OPEN curve
+    // (same edit/handles functionality as closed curves). Previously we were discarding the state.
     if (tool !== "curve" && (curveState.isDrawing || curveState.preview)) {
-      resetCurveState(c);
+      if (curveState.isDrawing && curveState.meta && curveState.meta.nodes.length >= 2) {
+        try {
+          const metaClone = cloneCurveMeta(curveState.meta);
+          metaClone.stroke = strokeColor;
+          metaClone.strokeWidth = strokeWidth;
+          metaClone.opacity = opacity;
+          metaClone.closed = !!metaClone.closed;
+          clearCurvePreview(c);
+          resetCurveState(null);
+          const curveObject = createCurveObject(metaClone);
+          if (curveObject) {
+            c.add(curveObject);
+            runSilently(() => {
+              c.setActiveObject(curveObject);
+            });
+            lastCreatedObjectRef.current = curveObject;
+          }
+        } catch {
+          // fallback: just reset like before
+          resetCurveState(c);
+        }
+      } else {
+        resetCurveState(c);
+      }
       setHostCursor("default");
+      try { c.requestRenderAll(); } catch {}
     }
 
     if (tool === "curve") {
@@ -2692,6 +2797,7 @@ const Editor2D = forwardRef<Editor2DHandle, Props>(function Editor2D(
           c.setActiveObject(curveObject);
         });
         try { c.requestRenderAll(); } catch {}
+        lastCreatedObjectRef.current = curveObject;
       };
 
       const onMouseDown = (evt: any) => {

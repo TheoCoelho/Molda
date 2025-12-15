@@ -1275,6 +1275,10 @@ const Creation = () => {
                               tool={tool}
                               brushVariant={brushVariant}
                               continuousLineMode={continuousLineMode}
+                              onRequestToolChange={(nextTool) => {
+                                // Editor requests changing tool (e.g., auto-switch to select after finishing a curve)
+                                setTool(nextTool);
+                              }}
                               onContinuousLineCancel={() => {
                                 setContinuousLineMode(false);
                                 runWithActiveEditor((inst) => inst.refresh?.());
