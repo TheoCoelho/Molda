@@ -1373,6 +1373,48 @@ const Editor2D = forwardRef<Editor2DHandle, Props>(function Editor2D(
     y: anchor.y - (handle.y - anchor.y),
   });
 
+  // ---- Curve coordinate helpers ----
+  // We store `__curveMeta` in the object's LOCAL coordinate space.
+  // This avoids drift during dragging because Fabric transforms the object,
+  // and controls can be positioned by applying the object's transform matrix.
+  const curveWorldToLocal = (target: any, pt: LinePoint): LinePoint => {
+    const fabric = fabricRef.current;
+    if (!fabric || !target) return { ...pt };
+    const { Point } = fabric;
+    const local = target.toLocalPoint(new Point(pt.x, pt.y), "center", "center");
+    return { x: local.x, y: local.y };
+  };
+
+  const curveLocalToWorld = (target: any, pt: LinePoint): LinePoint => {
+    const fabric = fabricRef.current;
+    if (!fabric || !target) return { ...pt };
+    const { Point } = fabric;
+    const world = fabric.util.transformPoint(new Point(pt.x, pt.y), target.calcTransformMatrix());
+    return { x: world.x, y: world.y };
+  };
+
+  const curveMetaWorldToLocal = (target: any, meta: CurveMeta): CurveMeta => {
+    const next = cloneCurveMeta(meta);
+    next.nodes = next.nodes.map((node) => ({
+      anchor: curveWorldToLocal(target, node.anchor),
+      handleIn: node.handleIn ? curveWorldToLocal(target, node.handleIn) : null,
+      handleOut: node.handleOut ? curveWorldToLocal(target, node.handleOut) : null,
+      kind: node.kind,
+    }));
+    return next;
+  };
+
+  const curveMetaLocalToWorld = (target: any, meta: CurveMeta): CurveMeta => {
+    const next = cloneCurveMeta(meta);
+    next.nodes = next.nodes.map((node) => ({
+      anchor: curveLocalToWorld(target, node.anchor),
+      handleIn: node.handleIn ? curveLocalToWorld(target, node.handleIn) : null,
+      handleOut: node.handleOut ? curveLocalToWorld(target, node.handleOut) : null,
+      kind: node.kind,
+    }));
+    return next;
+  };
+
   const isHandleVisible = (anchor: LinePoint, handle: LinePoint | null) => {
     if (!handle) return false;
     return distanceBetween(anchor, handle) > 0.75;
@@ -1403,18 +1445,18 @@ const Editor2D = forwardRef<Editor2DHandle, Props>(function Editor2D(
       ctx.restore();
     };
 
-    const worldPoint = (nodePoint: LinePoint) => {
-      const local = target.toLocalPoint(new Point(nodePoint.x, nodePoint.y), "center", "center");
-      return fabric.util.transformPoint(local, target.calcTransformMatrix());
+    const toWorldPoint = (controlTarget: any, ptLocal: LinePoint) => {
+      // meta is local -> world for rendering connector lines
+      return curveLocalToWorld(controlTarget, ptLocal);
     };
 
     const makePositionHandler = (getPoint: (meta: CurveMeta) => LinePoint | null) =>
-      function positionHandler(_dim: any, finalMatrix: number[], controlTarget: any) {
+      function positionHandler(_dim: any, _finalMatrix: number[], controlTarget: any) {
         const workingMeta: CurveMeta | null = controlTarget.__curveMeta || null;
-        const point = workingMeta ? getPoint(workingMeta) : null;
-        const resolved = point || workingMeta?.nodes[0]?.anchor || { x: 0, y: 0 };
-        const local = controlTarget.toLocalPoint(new Point(resolved.x, resolved.y), "center", "center");
-        return fabric.util.transformPoint(local, finalMatrix);
+        const ptLocal = (workingMeta ? getPoint(workingMeta) : null) ||
+          workingMeta?.nodes[0]?.anchor || { x: 0, y: 0 };
+        // ptLocal is already in LOCAL space
+        return fabric.util.transformPoint(new Point(ptLocal.x, ptLocal.y), controlTarget.calcTransformMatrix());
       };
 
     const controls: Record<string, any> = {};
@@ -1440,7 +1482,8 @@ const Editor2D = forwardRef<Editor2DHandle, Props>(function Editor2D(
           const canvas = controlTarget?.canvas;
           const meta: CurveMeta | undefined = controlTarget?.__curveMeta;
           if (!controlTarget || !canvas || !meta) return false;
-          const pointer = canvas.getPointer(eventData.e, false);
+          const pointerWorld = canvas.getPointer(eventData.e, false);
+          const pointer = curveWorldToLocal(controlTarget, { x: pointerWorld.x, y: pointerWorld.y });
           const next = cloneCurveMeta(meta);
           const node = next.nodes[index];
           let nextPosition: LinePoint = { x: pointer.x, y: pointer.y };
@@ -1490,7 +1533,7 @@ const Editor2D = forwardRef<Editor2DHandle, Props>(function Editor2D(
           const metaLocal: CurveMeta | undefined = controlTarget.__curveMeta;
           if (!metaLocal) return;
           const node = metaLocal.nodes[index];
-          const anchorWorld = worldPoint(node.anchor);
+          const anchorWorld = toWorldPoint(controlTarget, node.anchor);
           ctx.save();
           ctx.beginPath();
           ctx.moveTo(anchorWorld.x, anchorWorld.y);
@@ -1507,7 +1550,8 @@ const Editor2D = forwardRef<Editor2DHandle, Props>(function Editor2D(
           const canvas = controlTarget?.canvas;
           const meta: CurveMeta | undefined = controlTarget?.__curveMeta;
           if (!controlTarget || !canvas || !meta) return false;
-          const pointer = canvas.getPointer(eventData.e, false);
+          const pointerWorld = canvas.getPointer(eventData.e, false);
+          const pointer = curveWorldToLocal(controlTarget, { x: pointerWorld.x, y: pointerWorld.y });
           const next = cloneCurveMeta(meta);
           const node = next.nodes[index];
           const snapped = eventData.e?.shiftKey ? snapPointTo45(node.anchor, { x: pointer.x, y: pointer.y }) : { x: pointer.x, y: pointer.y };
@@ -1687,7 +1731,12 @@ const Editor2D = forwardRef<Editor2DHandle, Props>(function Editor2D(
     if (!target || !meta) return;
     const fabric = fabricRef.current;
     if (!fabric) return;
-    const commands = computeBezierFromNodes(meta.nodes, meta.closed);
+    // Preserve current visual position. Updating `path` changes `pathOffset` and can make
+    // Fabric shift the object unless we restore its center afterwards.
+    const prevCenter = typeof target.getCenterPoint === "function" ? target.getCenterPoint() : null;
+    // meta is LOCAL; convert to world before updating Fabric's path
+    const worldMeta = curveMetaLocalToWorld(target, meta);
+    const commands = computeBezierFromNodes(worldMeta.nodes, worldMeta.closed);
     target.path = commands;
     target.dirty = true;
     target.stroke = meta.stroke;
@@ -1697,7 +1746,17 @@ const Editor2D = forwardRef<Editor2DHandle, Props>(function Editor2D(
     target.fill = meta.fill || CURVE_DEFAULT_FILL;
     target.objectCaching = false;
     target.setCoords();
-    target.__curveLastCenter = computeCurveMetaCenter(meta);
+
+    if (prevCenter && typeof target.setPositionByOrigin === "function") {
+      try {
+        target.setPositionByOrigin(prevCenter, "center", "center");
+        target.setCoords();
+      } catch {}
+    }
+    // NOTE: do not overwrite drag baselines here. During object:moving, Fabric updates
+    // left/top continuously; if we reset "last center" every tick, our delta math can
+    // drift and handles appear to move at a different speed.
+    target.__curveMetaCenter = computeCurveMetaCenter(meta);
     if (curveTransformGuardRef.current === 0) {
       target.__curveNeedsControlSync = false;
       syncCurveControls(target, meta);
@@ -1709,8 +1768,8 @@ const Editor2D = forwardRef<Editor2DHandle, Props>(function Editor2D(
   const createCurveObject = (meta: CurveMeta) => {
     const fabric = fabricRef.current;
     if (!fabric) return null;
-    const commands = computeBezierFromNodes(meta.nodes, meta.closed);
-    const path = new fabric.Path(commands, {
+    // meta is world when created; convert to local for storage
+    const tempPath = new fabric.Path(computeBezierFromNodes(meta.nodes, meta.closed), {
       stroke: meta.stroke,
       strokeWidth: Math.max(0.1, meta.strokeWidth || 1),
       strokeUniform: true,
@@ -1722,15 +1781,18 @@ const Editor2D = forwardRef<Editor2DHandle, Props>(function Editor2D(
       evented: true,
       erasable: true,
     });
-    attachCurveMeta(path, meta);
-    applyCurveMetaToPath(path, meta);
-    syncCurveControls(path, meta);
-    return path;
+    // After fabric creates it, its transforms are available; now store meta as local.
+    const localMeta = curveMetaWorldToLocal(tempPath, meta);
+    attachCurveMeta(tempPath, localMeta);
+    applyCurveMetaToPath(tempPath, localMeta);
+    syncCurveControls(tempPath, localMeta);
+    return tempPath;
   };
 
   const restoreCurveMetaOnObject = (obj: any) => {
     if (!obj) return;
     if (obj.__curveMeta) {
+      // Stored meta is LOCAL
       const meta = cloneCurveMeta(obj.__curveMeta as CurveMeta);
       attachCurveMeta(obj, meta);
       applyCurveMetaToPath(obj, meta);
@@ -1749,39 +1811,43 @@ const Editor2D = forwardRef<Editor2DHandle, Props>(function Editor2D(
   };
 
   const translateCurveMeta = (meta: CurveMeta, dx: number, dy: number): CurveMeta => {
-    const next = cloneCurveMeta(meta);
-    next.nodes = next.nodes.map((node) => ({
-      anchor: { x: node.anchor.x + dx, y: node.anchor.y + dy },
-      handleIn: node.handleIn ? { x: node.handleIn.x + dx, y: node.handleIn.y + dy } : null,
-      handleOut: node.handleOut ? { x: node.handleOut.x + dx, y: node.handleOut.y + dy } : null,
-      kind: node.kind,
-    }));
-    return next;
+    // meta is LOCAL; moving the object should not translate local points.
+    // Keep helper for potential future use (e.g. baking transforms), but no-op here.
+    if (Math.abs(dx) < 1e-9 && Math.abs(dy) < 1e-9) return meta;
+    return meta;
   };
 
   const updateCurveMetaAfterMove = (target: any) => {
     const meta: CurveMeta | undefined = target?.__curveMeta;
     if (!meta) return;
-    const center = target.getCenterPoint?.();
-    if (!center) return;
-    const last = target.__curveLastCenter as LinePoint | undefined;
-    if (!last) {
-      target.__curveLastCenter = { x: center.x, y: center.y };
+
+    // Use Fabric's left/top deltas as ground truth during dragging.
+    // This avoids drift caused by recomputing centers from meta every mouse move.
+    const left = typeof target.left === "number" ? target.left : null;
+    const top = typeof target.top === "number" ? target.top : null;
+    if (left == null || top == null) return;
+
+    const lastLT = target.__curveLastLT as LinePoint | undefined;
+    if (!lastLT) {
+      target.__curveLastLT = { x: left, y: top };
       return;
     }
-    const dx = center.x - last.x;
-    const dy = center.y - last.y;
-    if (Math.abs(dx) < 1e-2 && Math.abs(dy) < 1e-2) return;
+
+    const dx = left - lastLT.x;
+    const dy = top - lastLT.y;
+    if (Math.abs(dx) < 1e-3 && Math.abs(dy) < 1e-3) return;
+
+    // meta is LOCAL; object move doesn't change local points. Keep baseline updated.
     const next = translateCurveMeta(meta, dx, dy);
-    target.__curveMeta = next;
-    runWithCurveTransformGuard(() => {
-      applyCurveMetaToPath(target, next);
-    });
-    if (target.__curveNeedsControlSync && target.__curveMeta) {
-      syncCurveControls(target, target.__curveMeta as CurveMeta);
-      target.__curveNeedsControlSync = false;
+    if (next !== meta) {
+      target.__curveMeta = next;
+      runWithCurveTransformGuard(() => {
+        applyCurveMetaToPath(target, next);
+      });
     }
-    target.__curveLastCenter = { x: center.x, y: center.y };
+
+    // Keep baseline aligned to Fabric movement
+    target.__curveLastLT = { x: left, y: top };
   };
 
   const clearCurvePreview = (canvas?: FabricCanvas | null) => {
@@ -2318,6 +2384,32 @@ const Editor2D = forwardRef<Editor2DHandle, Props>(function Editor2D(
           try { c.requestRenderAll(); } catch {}
           notifySelectionKind();
         };
+
+        const __onModifiedSyncControls = (evt: any) => {
+          const target = evt?.target;
+          if (!target) return;
+
+          const syncObj = (obj: any) => {
+            if (!obj) return;
+            if (obj.__curveMeta) {
+              try { syncCurveControls(obj, obj.__curveMeta as CurveMeta); } catch {}
+            }
+            // reset drag baseline for next move
+            if (typeof obj.left === "number" && typeof obj.top === "number") {
+              obj.__curveLastLT = { x: obj.left, y: obj.top };
+            } else {
+              obj.__curveLastLT = undefined;
+            }
+          };
+
+          if (typeof target.forEachObject === "function") {
+            try { target.forEachObject((child: any) => syncObj(child)); } catch { syncObj(target); }
+          } else if (Array.isArray(target._objects) && target._objects.length) {
+            target._objects.forEach((child: any) => syncObj(child));
+          } else {
+            syncObj(target);
+          }
+        };
         const __onErasingStart = () => {
           erasingCountRef.current += 1;
         };
@@ -2356,24 +2448,60 @@ const Editor2D = forwardRef<Editor2DHandle, Props>(function Editor2D(
         const __onMoving = (evt: any) => {
           const target = evt?.target;
           if (!target) return;
-          if (lineTransformGuardRef.current === 0) {
-            updateMetaAfterMove(target);
-          }
-          if (curveTransformGuardRef.current === 0) {
-            updateCurveMetaAfterMove(target);
+
+          const applyToObj = (obj: any) => {
+            if (!obj) return;
+            if (lineTransformGuardRef.current === 0) {
+              updateMetaAfterMove(obj);
+            }
+            if (curveTransformGuardRef.current === 0) {
+              updateCurveMetaAfterMove(obj);
+            }
+          };
+
+          // If the target is a group/ActiveSelection, update children as well
+          if (typeof target.forEachObject === "function") {
+            try {
+              target.forEachObject((child: any) => applyToObj(child));
+            } catch {
+              // fallback to single target
+              applyToObj(target);
+            }
+          } else if (Array.isArray(target._objects) && target._objects.length) {
+            target._objects.forEach((child: any) => applyToObj(child));
+          } else {
+            applyToObj(target);
           }
         };
 
         const __onRotating = (evt: any) => {
           if (lineTransformGuardRef.current > 0) return;
           const target = evt?.target;
-          updateMetaAfterMove(target);
-          updateMetaAfterRotate(target);
+          if (!target) return;
+
+          const applyRotateToObj = (obj: any) => {
+            if (!obj) return;
+            updateMetaAfterMove(obj);
+            updateMetaAfterRotate(obj);
+          };
+
+          if (typeof target.forEachObject === "function") {
+            try {
+              target.forEachObject((child: any) => applyRotateToObj(child));
+            } catch {
+              applyRotateToObj(target);
+            }
+          } else if (Array.isArray(target._objects) && target._objects.length) {
+            target._objects.forEach((child: any) => applyRotateToObj(child));
+          } else {
+            applyRotateToObj(target);
+          }
         };
 
         c.on("object:added", __onAdded);
         c.on("object:removed", __onRemoved);
-        c.on("object:modified", __onModified);
+  c.on("object:modified", __onModified);
+  c.on("object:modified", __onModifiedSyncControls);
         c.on("object:selected", notifySelectionKind);
         c.on("selection:created", notifySelectionKind);
         c.on("selection:updated", notifySelectionKind);
