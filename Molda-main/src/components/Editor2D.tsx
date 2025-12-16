@@ -69,6 +69,8 @@ export type SelectionInfo = {
   canBringToFront: boolean;
   canSendToBack: boolean;
   canGroup: boolean;
+  canApplyPattern: boolean;
+  hasPattern: boolean;
 };
 
 export type Editor2DHandle = {
@@ -117,6 +119,12 @@ export type Editor2DHandle = {
   bringSelectionToFront: () => void;
   sendSelectionToBack: () => void;
   groupSelection: () => void;
+  applyPatternToSelection: (
+    patternUrl: string,
+    patternRepeat?: "repeat" | "repeat-x" | "repeat-y" | "no-repeat",
+    patternScale?: number
+  ) => void;
+  removePatternFromSelection: () => void;
   refresh: () => void;
   listUsedFonts: () => string[];
   waitForIdle: () => Promise<void>;
@@ -496,7 +504,21 @@ const Editor2D = forwardRef<Editor2DHandle, Props>(function Editor2D(
   const toJSON = () => {
     const c = canvasRef.current;
     if (c) {
-  const data = c.toJSON(["selectable", "evented", "erasable", "eraser", "__lineMeta", "__curveMeta"]);
+  const data = c.toJSON([
+        "selectable",
+        "evented",
+        "erasable",
+        "eraser",
+        "__lineMeta",
+        "__curveMeta",
+        "__moldaHasPattern",
+        "__moldaPatternTarget",
+        "__moldaPatternUrl",
+        "__moldaPatternRepeat",
+        "__moldaPatternScale",
+        "__moldaOriginalFill",
+        "__moldaOriginalStroke",
+      ]);
       return JSON.stringify({ kind: "fabric", data });
     }
     return JSON.stringify({ kind: "empty" });
@@ -2084,6 +2106,8 @@ const Editor2D = forwardRef<Editor2DHandle, Props>(function Editor2D(
         canBringToFront: false,
         canSendToBack: false,
         canGroup: false,
+        canApplyPattern: false,
+        hasPattern: false,
       };
     }
 
@@ -2107,6 +2131,25 @@ const Editor2D = forwardRef<Editor2DHandle, Props>(function Editor2D(
     // Can group if more than one object selected and they're not already grouped
     const canGroup = selectedObjects.length > 1 && !selectedObjects.some((obj: any) => obj.type === 'group');
 
+    const compatibleTypes = new Set([
+      "path",
+      "rect",
+      "circle",
+      "ellipse",
+      "polygon",
+      "triangle",
+      "textbox",
+      "i-text",
+      "text",
+      "group",
+      "activeSelection",
+    ]);
+    const baseType = String(activeObject?.type || "").toLowerCase();
+    const canApplyPattern = compatibleTypes.has(baseType);
+
+    // Detect pattern on selection (any selected object has metadata)
+    const hasPattern = selectedObjects.some((obj: any) => !!obj?.__moldaHasPattern);
+
     return {
       hasSelection: true,
       hasClipboard: !!clipboardRef.current,
@@ -2116,7 +2159,153 @@ const Editor2D = forwardRef<Editor2DHandle, Props>(function Editor2D(
       canBringToFront,
       canSendToBack,
       canGroup,
+      canApplyPattern,
+      hasPattern,
     };
+  };
+
+  const applyPatternToSelection = (
+    patternUrl: string,
+    patternRepeat: "repeat" | "repeat-x" | "repeat-y" | "no-repeat" = "repeat",
+    patternScale = 0.5
+  ) => {
+    const c = canvasRef.current;
+    const fabric = fabricRef.current;
+    if (!c || !fabric) return;
+
+    const selectedObjects = c.getActiveObjects?.() ?? [];
+    if (!selectedObjects.length) return;
+
+    const applyPatternToObject = (obj: any, pattern: any) => {
+      if (!obj) return;
+
+      const t = String(obj.type || "").toLowerCase();
+      const applyTo: "stroke" | "fill" = t === "path" ? "stroke" : "fill";
+
+      // Save originals once
+      if (obj.__moldaOriginalFill === undefined) obj.__moldaOriginalFill = obj.fill;
+      if (obj.__moldaOriginalStroke === undefined) obj.__moldaOriginalStroke = obj.stroke;
+
+      if (applyTo === "stroke") {
+        obj.set({
+          stroke: pattern,
+          strokeUniform: true,
+          strokeLineCap: "round",
+          strokeLineJoin: "round",
+          objectCaching: false,
+        });
+      } else {
+        obj.set({ fill: pattern });
+      }
+
+      obj.__moldaHasPattern = true;
+      obj.__moldaPatternTarget = applyTo;
+      obj.__moldaPatternUrl = patternUrl;
+      obj.__moldaPatternRepeat = patternRepeat;
+      obj.__moldaPatternScale = patternScale;
+      try {
+        obj.setCoords?.();
+      } catch {}
+    };
+
+    fabric.util.loadImage(
+      patternUrl,
+      (img: HTMLImageElement | null) => {
+        if (!img) return;
+
+        const pattern = new fabric.Pattern({
+          source: img,
+          repeat: patternRepeat,
+          patternTransform: [patternScale, 0, 0, patternScale, 0, 0],
+        });
+
+        // Apply to each object; if group, apply to its children as well
+        for (const obj of selectedObjects) {
+          const t = String(obj?.type || "").toLowerCase();
+          if (t === "group" && typeof obj.forEachObject === "function") {
+            obj.forEachObject((child: any) => applyPatternToObject(child, pattern));
+            // Mark group too (useful for detection)
+            obj.__moldaHasPattern = true;
+          } else {
+            applyPatternToObject(obj, pattern);
+          }
+        }
+
+        try {
+          c.requestRenderAll?.();
+        } catch {
+          try { c.renderAll?.(); } catch {}
+        }
+
+        // Push history snapshot
+        historyRef.current?.push("apply-pattern");
+        emitHistory();
+      },
+      null,
+      { crossOrigin: "anonymous" }
+    );
+  };
+
+  const removePatternFromSelection = () => {
+    const c = canvasRef.current;
+    if (!c) return;
+    const selectedObjects = c.getActiveObjects?.() ?? [];
+    if (!selectedObjects.length) return;
+
+    const removeFromObject = (obj: any) => {
+      if (!obj) return;
+      const target = obj.__moldaPatternTarget as "stroke" | "fill" | undefined;
+      const originalFill = obj.__moldaOriginalFill;
+      const originalStroke = obj.__moldaOriginalStroke;
+
+      if (target === "stroke") {
+        obj.set({
+          stroke: originalStroke ?? obj.stroke ?? "#000000",
+          objectCaching: false,
+        });
+      } else if (target === "fill") {
+        obj.set({
+          fill: originalFill ?? obj.fill ?? "#000000",
+        });
+      } else {
+        // Fallback: clear pattern if present
+        if (obj.stroke && typeof obj.stroke === "object" && obj.stroke.source) {
+          obj.set({ stroke: originalStroke ?? "#000000" });
+        }
+        if (obj.fill && typeof obj.fill === "object" && obj.fill.source) {
+          obj.set({ fill: originalFill ?? "#000000" });
+        }
+      }
+
+      delete obj.__moldaHasPattern;
+      delete obj.__moldaPatternTarget;
+      delete obj.__moldaPatternUrl;
+      delete obj.__moldaPatternRepeat;
+      delete obj.__moldaPatternScale;
+      // keep originals so undo/redo roundtrips are stable
+
+      try {
+        obj.setCoords?.();
+      } catch {}
+    };
+
+    for (const obj of selectedObjects) {
+      const t = String(obj?.type || "").toLowerCase();
+      if (t === "group" && typeof obj.forEachObject === "function") {
+        obj.forEachObject((child: any) => removeFromObject(child));
+        delete obj.__moldaHasPattern;
+      } else {
+        removeFromObject(obj);
+      }
+    }
+
+    try {
+      c.requestRenderAll?.();
+    } catch {
+      try { c.renderAll?.(); } catch {}
+    }
+    historyRef.current?.push("remove-pattern");
+    emitHistory();
   };
 
   const computeSelectionKind = (): "none" | "text" | "other" => {
@@ -2362,6 +2551,8 @@ const Editor2D = forwardRef<Editor2DHandle, Props>(function Editor2D(
     bringSelectionToFront,
     sendSelectionToBack,
     groupSelection,
+    applyPatternToSelection,
+    removePatternFromSelection,
     refresh,
     listUsedFonts,
     waitForIdle,

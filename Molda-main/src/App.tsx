@@ -17,7 +17,6 @@ import Register from "./pages/Register";
 import TopProgressBar from "@/components/TopProgressBar";
 
 const queryClient = new QueryClient();
-const TEMP_BACKGROUND_URL = "/images/istockphoto-1205633216-612x612.jpg";
 
 const App = () => (
   <QueryClientProvider client={queryClient}>
@@ -25,15 +24,9 @@ const App = () => (
       <AuthProvider>
         {/* Canvas do fundo (fixo e atrás de tudo) */}
         {/* <ShaderBackground /> */}
-        {/* Fundo temporário com imagem minimalista preta e vermelha */}
+        {/* Fundo cinza escuro */}
         <div
-          className="fixed inset-0 z-0 pointer-events-none"
-          style={{
-            backgroundImage: `url(${TEMP_BACKGROUND_URL})`,
-            backgroundSize: "cover",
-            backgroundPosition: "center",
-            backgroundRepeat: "no-repeat",
-          }}
+          className="fixed inset-0 z-0 pointer-events-none bg-gray-800"
         />
 
         {/* Conteúdo do app acima do fundo */}

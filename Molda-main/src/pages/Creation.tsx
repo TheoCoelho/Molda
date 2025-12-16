@@ -23,9 +23,14 @@ import {
   ContextMenuContent,
   ContextMenuItem,
   ContextMenuSeparator,
+  ContextMenuSub,
+  ContextMenuSubContent,
+  ContextMenuSubTrigger,
   ContextMenuShortcut,
   ContextMenuTrigger,
 } from "../components/ui/context-menu";
+import { PatternSubmenu } from "../components/PatternSubmenu";
+import type { PatternDefinition } from "../lib/patterns";
 import { useAuth } from "../contexts/AuthContext";
 import type { ExternalDecalData, DecalTransform, DecalStateSnapshot } from "../types/decals";
 
@@ -1401,6 +1406,34 @@ const Creation = () => {
                     >
                       Agrupar
                       <ContextMenuShortcut>Ctrl+G</ContextMenuShortcut>
+                    </ContextMenuItem>
+
+                    <ContextMenuSeparator />
+
+                    <ContextMenuSub>
+                      <ContextMenuSubTrigger disabled={!selectionInfo?.canApplyPattern}>
+                        Padrões
+                      </ContextMenuSubTrigger>
+                      <ContextMenuSubContent className="w-80">
+                        <PatternSubmenu
+                          onSelectPattern={(pattern: PatternDefinition) => {
+                            runWithActiveEditor((inst) =>
+                              inst.applyPatternToSelection?.(
+                                pattern.source,
+                                pattern.repeat,
+                                pattern.defaultScale ?? 0.5
+                              )
+                            );
+                          }}
+                        />
+                      </ContextMenuSubContent>
+                    </ContextMenuSub>
+
+                    <ContextMenuItem
+                      disabled={!selectionInfo?.hasPattern}
+                      onSelect={() => runWithActiveEditor((inst) => inst.removePatternFromSelection?.())}
+                    >
+                      Remover padrão
                     </ContextMenuItem>
                   </ContextMenuContent>
                 </ContextMenu>
