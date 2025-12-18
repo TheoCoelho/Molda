@@ -10,6 +10,7 @@
 ## Fabric editor workflow
 - `components/Editor2D` dynamically injects Fabric from a CDN (`loadFabricRuntime`) and installs eraser support via `lib/fabricEraser`. Never `import fabric` directly or Vite chokes.
 - History is handled through `lib/HistoryManager`; capture a snapshot whenever you mutate the canvas so `canUndo/canRedo` stay true and `saveDraft` picks up the change.
+- Pattern fills now go through a cached image loader that re-applies the texture after `object:modified` so bezier paths don’t clip when you resize, and `Editor2D` exposes `previewPatternStart`/`previewPatternEnd` for the UI submenu to show temporary samples before committing a pattern.
 - All toolbar actions operate through imperative handles stored in `editorRefs`; if you create new controls, call `runWithActiveEditor` or update `selectionInfo` so context menus stay accurate.
  - Note: moving/rotating an `ActiveSelection` or `Group` requires updating child object metas (e.g. `__curveMeta` / `__lineMeta`) so custom gizmos/handles remain in sync. The editor now applies meta updates to selection members when dragging/rotating to avoid disconnected control points.
 - Font flows rely on `FontPicker`, `fonts/library.ts`, and `hooks/use-recent-fonts.ts`. Dispatch `editor2d:fontUsed` when you apply a font so recent lists sync across tabs.
@@ -34,7 +35,7 @@
 ## Patterns & gotchas
 - Path alias `@/*` resolves to `src`. Keep shared utilities in `src/lib` and types in `src/types` so both React and Three code paths can import them.
 - `DecalEngineHost` only updates `externalDecals` when IDs stay stable—use the tab ID as the decal ID or you'll leak meshes inside the engine.
-- `Editor2D` exposes `waitForIdle` and `refresh`; call them before exporting PNGs or persisting JSON to avoid empty snapshots, and throttle expensive `saveDraft` calls by piggybacking on `onHistoryChange` (as Creation already does).
+- `Editor2D` exposes `waitForIdle` and `refresh`; call them before exporting PNGs or persisting JSON to avoid empty snapshots (the 3D preview grabs PNGs via `captureTabImage`, which now waits for idle/refresh before returning), and throttle expensive `saveDraft` calls by piggybacking on `onHistoryChange` (as Creation already does).
 - Upload drag-and-drop sets `text/plain` to the image URL; if you implement new drop targets, read that payload and call the existing `addImage` helper to respect scaling + undo.
 - Straight-line gizmo: `Editor2D` now supports only single-segment lines. Segments live inside `__lineMeta` and `applyLineGeometryFromMeta` keeps the Fabric line aligned to those points. The sidebar simply toggles the tool; creation shows a live preview and Shift snaps to 45°. When customizing interactions, reuse `ensureLineControls` and wrap mutations with `runWithLineTransformGuard` to avoid double transforms or noisy history entries.
 

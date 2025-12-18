@@ -238,9 +238,16 @@ const Creation = () => {
     tabDecalPlacementsRef.current = tabDecalPlacements;
   }, [tabDecalPlacements]);
 
-  const captureTabImage = useCallback((tabId: string) => {
+  const captureTabImage = useCallback(async (tabId: string): Promise<string | null> => {
     const inst = editorRefs.current[tabId];
-    const dataUrl = inst?.exportPNG?.();
+    if (!inst) return null;
+    try {
+      await inst.waitForIdle?.();
+    } catch {}
+    try {
+      inst.refresh?.();
+    } catch {}
+    const dataUrl = inst.exportPNG?.();
     const current = tabDecalPreviewsRef.current;
     if (dataUrl && current[tabId] !== dataUrl) {
       const next = { ...current, [tabId]: dataUrl };
@@ -249,7 +256,7 @@ const Creation = () => {
       return dataUrl;
     }
     return current[tabId] ?? null;
-  }, []);
+  }, [setTabDecalPreviews]);
 
   const decalsFor3D = useMemo<ExternalDecalData[]>(() => {
     return canvasTabs
@@ -567,8 +574,8 @@ const Creation = () => {
   const saveActiveTabSnapshot = useCallback(async (tabId?: string): Promise<Record<string, string>> => {
     const id = tabId || prevTabRef.current;
     if (!id) return tabSnapshotsRef.current;
-    // Captura imagem para preview 3D
-    captureTabImage(id);
+  // Captura imagem para preview 3D
+  void captureTabImage(id);
     // Salva JSON apenas para persistência (draft/export)
     const tabType = canvasTabs.find(t => t.id === id)?.type;
     if (tabType === "2d") {
@@ -714,9 +721,17 @@ const Creation = () => {
     // Removido: resetProject(); - muito agressivo para limpar apenas um canvas
   };
 
-  const exportActive = () => {
+  const exportActive = async () => {
     if (!activeIs2D) return;
-    const dataUrl = editorRefs.current[activeCanvasTab]?.exportPNG();
+    const inst = editorRefs.current[activeCanvasTab];
+    if (!inst) return;
+    try {
+      await inst.waitForIdle?.();
+    } catch {}
+    try {
+      inst.refresh?.();
+    } catch {}
+    const dataUrl = inst.exportPNG?.();
     if (!dataUrl) return;
     const a = document.createElement("a");
     a.href = dataUrl;
@@ -1119,18 +1134,20 @@ const Creation = () => {
                                 e.stopPropagation();
                                 const currentlyVisible = !!tabVisibility[tab.id];
                                 if (!currentlyVisible) {
-                                  const result = captureTabImage(tab.id);
-                                  if (!result) {
-                                    setTabDecalPreviews((prev) => {
-                                      if (prev[tab.id]) return prev;
-                                      const next = {
-                                        ...prev,
-                                        [tab.id]: TRANSPARENT_PNG,
-                                      };
-                                      tabDecalPreviewsRef.current = next;
-                                      return next;
-                                    });
-                                  }
+                                  void (async () => {
+                                    const result = await captureTabImage(tab.id);
+                                    if (!result) {
+                                      setTabDecalPreviews((prev) => {
+                                        if (prev[tab.id]) return prev;
+                                        const next = {
+                                          ...prev,
+                                          [tab.id]: TRANSPARENT_PNG,
+                                        };
+                                        tabDecalPreviewsRef.current = next;
+                                        return next;
+                                      });
+                                    }
+                                  })();
                                 }
                                 setTabVisibility((prev) => {
                                   const next = {
@@ -1175,12 +1192,6 @@ const Creation = () => {
               </div>
 
               {/* opcional: “chip” com part/subtype SEM deslocar o layout */}
-              {(subtype || part) && (
-                <div className="absolute left-4 top-14 z-10 glass rounded-lg border px-2 py-1 text-xs text-foreground/80">
-                  {subtype || part}
-                </div>
-              )}
-
               {/* Canvas ocupa toda a área — manter 3D e 2D sempre montados */}
               <div
                 className="absolute inset-0"
@@ -1299,7 +1310,7 @@ const Creation = () => {
                                   setCanUndo(u);
                                   setCanRedo(r);
                                   if (tabVisibility[tab.id]) {
-                                    captureTabImage(tab.id);
+                                    void captureTabImage(tab.id);
                                   }
                                   // Salva o rascunho automaticamente a cada modificação
                                   scheduleDraftSave({ tabId: tab.id });
@@ -1418,12 +1429,27 @@ const Creation = () => {
                         <PatternSubmenu
                           onSelectPattern={(pattern: PatternDefinition) => {
                             runWithActiveEditor((inst) =>
-                              inst.applyPatternToSelection?.(
+                              {
+                                inst.previewPatternEnd?.();
+                                inst.applyPatternToSelection?.(
+                                  pattern.source,
+                                  pattern.repeat,
+                                  pattern.defaultScale ?? 0.5
+                                );
+                              }
+                            );
+                          }}
+                          onPreviewStart={(pattern: PatternDefinition) => {
+                            runWithActiveEditor((inst) =>
+                              inst.previewPatternStart?.(
                                 pattern.source,
                                 pattern.repeat,
                                 pattern.defaultScale ?? 0.5
                               )
                             );
+                          }}
+                          onPreviewEnd={() => {
+                            runWithActiveEditor((inst) => inst.previewPatternEnd?.());
                           }}
                         />
                       </ContextMenuSubContent>
@@ -1431,7 +1457,12 @@ const Creation = () => {
 
                     <ContextMenuItem
                       disabled={!selectionInfo?.hasPattern}
-                      onSelect={() => runWithActiveEditor((inst) => inst.removePatternFromSelection?.())}
+                      onSelect={() =>
+                        runWithActiveEditor((inst) => {
+                          inst.previewPatternEnd?.();
+                          inst.removePatternFromSelection?.();
+                        })
+                      }
                     >
                       Remover padrão
                     </ContextMenuItem>

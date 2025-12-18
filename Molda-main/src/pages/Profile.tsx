@@ -11,6 +11,7 @@ import { Input } from "@/components/ui/input";
 import { Settings, Pencil } from "lucide-react";
 import { useAuth } from "@/contexts/AuthContext";
 import { supabase } from "@/integrations/supabase/client";
+import { AVATAR_BUCKET } from "@/lib/constants/storage";
 
 type ViewUser = {
   id?: string;
@@ -20,8 +21,6 @@ type ViewUser = {
   avatar?: string;       // URL pronta para exibição
   createdAt?: string;
 };
-
-const BUCKET = "avatars";
 
 const Profile = () => {
   const { user: authUser, session, getProfile } = useAuth();
@@ -84,7 +83,7 @@ const Profile = () => {
         if (prof) {
           let avatarUrl = "";
           if (prof.avatar_path) {
-            const { data } = supabase.storage.from(BUCKET).getPublicUrl(prof.avatar_path);
+            const { data } = supabase.storage.from(AVATAR_BUCKET).getPublicUrl(prof.avatar_path);
             avatarUrl = data.publicUrl;
           }
 
@@ -142,7 +141,7 @@ const Profile = () => {
 
     const path = `${authUser.id}/${Date.now()}_${file.name.replace(/\s+/g, "_")}`;
 
-    const { error: upErr } = await supabase.storage.from(BUCKET).upload(path, file, { upsert: true });
+  const { error: upErr } = await supabase.storage.from(AVATAR_BUCKET).upload(path, file, { upsert: true });
     if (upErr) throw upErr;
 
     const { error: updErr } = await supabase
@@ -151,7 +150,7 @@ const Profile = () => {
       .eq("id", authUser.id);
     if (updErr) throw updErr;
 
-    return supabase.storage.from(BUCKET).getPublicUrl(path).data.publicUrl;
+  return supabase.storage.from(AVATAR_BUCKET).getPublicUrl(path).data.publicUrl;
   };
 
   const handleSaveAvatar = async () => {

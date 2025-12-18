@@ -2,9 +2,9 @@ import React, { useEffect, useRef, useState } from "react";
 // Reutiliza o decal-engine diretamente, sem reimplementar
 // Importa a função de inicialização existente
 // Caminho relativo do projeto Molda-main/src/components -> ../../.. -> decal-engine/src/usage.ts
-import initDecalDemo, { DecalDemoHandle, DecalStateSnapshot } from "../../../decal-engine/src/usage";
+import initDecalDemo, { DecalDemoHandle } from "../../../decal-engine/src/usage";
 import { getModelConfigFromSelection } from "../lib/models";
-import type { ExternalDecalData } from "../types/decals";
+import type { DecalStateSnapshot, ExternalDecalData } from "../types/decals";
 
 type Selection = { part?: string | null; type?: string | null; subtype?: string | null };
 type Props = {
@@ -51,7 +51,7 @@ export default function DecalEngineHost({
     const mountEl = containerRef.current;
     const boot = async () => {
       try {
-  const handle = await initDecalDemo(mountEl, { interactive });
+        const handle = await initDecalDemo(mountEl, { interactive, background: null });
         if (cancelled) return;
         apiRef.current = handle;
         setReady(true);

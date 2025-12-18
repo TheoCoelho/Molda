@@ -1,10 +1,8 @@
 import Header from "../components/Header";
-import { Link, useNavigate } from "react-router-dom";
+import { Link } from "react-router-dom";
 import { Button } from "../components/ui/button";
-import SparkleButton from "../components/SparkleButton";
 
 export default function Index() {
-  const navigate = useNavigate();
   return (
     <main className="relative">
       <Header />
@@ -31,9 +29,11 @@ export default function Index() {
             </p>
 
             <div className="mt-8 flex flex-wrap items-center gap-4">
-              <SparkleButton onClick={() => navigate("/create")}>
-                ✨ Criar agora
-              </SparkleButton>
+              <Link to="/create">
+                <Button variant="cta" size="lg" rounded="full" className="shadow-[0_12px_28px_rgba(48,131,220,0.35)]">
+                  ✨ Criar agora
+                </Button>
+              </Link>
               <Link to="/creation">
                 <Button variant="outline" size="lg" rounded="full">
                   Abrir projeto recente

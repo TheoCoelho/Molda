@@ -125,6 +125,12 @@ export type Editor2DHandle = {
     patternScale?: number
   ) => void;
   removePatternFromSelection: () => void;
+  previewPatternStart: (
+    patternUrl: string,
+    patternRepeat?: "repeat" | "repeat-x" | "repeat-y" | "no-repeat",
+    patternScale?: number
+  ) => Promise<void>;
+  previewPatternEnd: () => void;
   refresh: () => void;
   listUsedFonts: () => string[];
   waitForIdle: () => Promise<void>;
@@ -148,6 +154,11 @@ type Props = {
 };
 
 type FabricCanvas = any;
+
+type PreviewBackup = {
+  fill: any;
+  stroke: any;
+};
 
 function withAlpha(color: string, alpha: number) {
   if (!color) return color;
@@ -351,6 +362,11 @@ const Editor2D = forwardRef<Editor2DHandle, Props>(function Editor2D(
     pointerMoved: false,
     hoverPoint: null as LinePoint | null,
     isPointerDown: false,
+  });
+  const patternImageCacheRef = useRef<Record<string, Promise<HTMLImageElement | null> | undefined>>({});
+  const patternPreviewStateRef = useRef<{ objects: Set<any>; backup: Map<any, PreviewBackup> }>({
+    objects: new Set(),
+    backup: new Map(),
   });
 
   const runSilently = (cb: () => void) => {
@@ -1825,14 +1841,41 @@ const Editor2D = forwardRef<Editor2DHandle, Props>(function Editor2D(
     // meta is LOCAL; convert to world before updating Fabric's path
     const worldMeta = curveMetaLocalToWorld(target, meta);
     const commands = computeBezierFromNodes(worldMeta.nodes, worldMeta.closed);
-    target.path = commands;
+    
+    // The most reliable way to update a Path in Fabric.js is to use initialize()
+    // which fully recalculates all internal dimensions and offsets.
+    // We preserve the pattern/stroke settings that were applied.
+    const preservedStroke = target.stroke;
+    const preservedFill = target.fill;
+    const hasPattern = target.__moldaHasPattern;
+    
+    if (typeof target.initialize === "function") {
+      try {
+        target.initialize(commands, {
+          stroke: meta.stroke,
+          strokeWidth: Math.max(0.1, meta.strokeWidth || 1),
+          strokeUniform: true,
+          fill: hasPattern ? preservedFill : (meta.fill || CURVE_DEFAULT_FILL),
+          opacity: meta.opacity == null ? 1 : meta.opacity,
+          objectCaching: false,
+        });
+      } catch {
+        // Fallback if initialize fails
+        target.path = commands;
+      }
+    } else {
+      target.path = commands;
+    }
+    
     target.dirty = true;
-    target.stroke = meta.stroke;
-    target.strokeWidth = Math.max(0.1, meta.strokeWidth || 1);
-    target.opacity = meta.opacity == null ? 1 : meta.opacity;
-    target.strokeUniform = true;
-    target.fill = meta.fill || CURVE_DEFAULT_FILL;
     target.objectCaching = false;
+    
+    // Restore pattern-related properties if they were set
+    if (hasPattern) {
+      target.stroke = preservedStroke;
+      target.fill = preservedFill;
+    }
+    
     target.setCoords();
 
     if (prevCenter && typeof target.setPositionByOrigin === "function") {
@@ -1850,6 +1893,11 @@ const Editor2D = forwardRef<Editor2DHandle, Props>(function Editor2D(
       syncCurveControls(target, meta);
     } else {
       target.__curveNeedsControlSync = true;
+    }
+
+    // If a pattern is applied, re-apply it so texture stays current after reshape.
+    if (target.__moldaPatternUrl) {
+      void reapplyPatternForObject(target);
     }
   };
 
@@ -2164,89 +2212,248 @@ const Editor2D = forwardRef<Editor2DHandle, Props>(function Editor2D(
     };
   };
 
+  const recordPatternPreviewBackup = (obj: any) => {
+    if (!obj) return;
+    const state = patternPreviewStateRef.current;
+    if (state.backup.has(obj)) return;
+    state.backup.set(obj, { fill: obj.fill, stroke: obj.stroke });
+    state.objects.add(obj);
+  };
+
+  const clearPatternPreview = () => {
+    const state = patternPreviewStateRef.current;
+    if (!state.objects.size) return;
+    const c = canvasRef.current;
+    let needsRender = false;
+    state.objects.forEach((obj) => {
+      const backup = state.backup.get(obj);
+      if (!backup) return;
+      runSilently(() => {
+        obj.set({
+          fill: backup.fill,
+          stroke: backup.stroke,
+        });
+        try { obj.setCoords?.(); } catch {}
+      });
+      state.backup.delete(obj);
+      needsRender = true;
+    });
+  state.objects.clear();
+  state.backup.clear();
+    if (needsRender) {
+      try {
+        c?.requestRenderAll?.();
+      } catch {}
+    }
+  };
+
+  const loadPatternImage = (patternUrl: string): Promise<HTMLImageElement | null> => {
+    if (!patternUrl) return Promise.resolve(null);
+    const cache = patternImageCacheRef.current;
+    if (cache[patternUrl]) return cache[patternUrl];
+    const fabric = fabricRef.current;
+    if (!fabric || !fabric.util || typeof fabric.util.loadImage !== "function") {
+      return Promise.resolve(null);
+    }
+    const promise = new Promise<HTMLImageElement | null>((resolve) => {
+      fabric.util.loadImage(
+        patternUrl,
+        (img: HTMLImageElement | null) => {
+          resolve(img ?? null);
+        },
+        null,
+        { crossOrigin: "anonymous" }
+      );
+    });
+    cache[patternUrl] = promise;
+    return promise;
+  };
+
+  const createPatternInstance = (
+    img: HTMLImageElement,
+    repeat: string,
+    scale: number
+  ) => {
+    const fabric = fabricRef.current;
+    if (!fabric) return null;
+    return new fabric.Pattern({
+      source: img,
+      repeat,
+      patternTransform: [scale, 0, 0, scale, 0, 0],
+    });
+  };
+
+  const visitLeafObjects = (obj: any, cb: (leaf: any) => void) => {
+    if (!obj) return;
+    if (typeof obj.forEachObject === "function") {
+      obj.forEachObject((child: any) => visitLeafObjects(child, cb));
+      return;
+    }
+    if (Array.isArray(obj._objects) && obj._objects.length) {
+      obj._objects.forEach((child: any) => visitLeafObjects(child, cb));
+      return;
+    }
+    cb(obj);
+  };
+
+  const applyPatternToSingleObject = (
+    obj: any,
+    target: "stroke" | "fill",
+    pattern: any,
+    saveMeta: boolean,
+    meta: { url: string; repeat: string; scale: number },
+    options?: { isPreview?: boolean }
+  ) => {
+    if (!obj || !pattern) return;
+    if (options?.isPreview) {
+      recordPatternPreviewBackup(obj);
+    } else {
+      if (obj.__moldaOriginalFill === undefined) obj.__moldaOriginalFill = obj.fill;
+      if (obj.__moldaOriginalStroke === undefined)
+        obj.__moldaOriginalStroke = obj.stroke;
+    }
+    const patch: any = {
+      objectCaching: false,
+    };
+    if (target === "stroke") {
+      Object.assign(patch, {
+        stroke: pattern,
+        strokeUniform: true,
+        strokeLineCap: "round",
+        strokeLineJoin: "round",
+      });
+    } else {
+      patch.fill = pattern;
+    }
+    obj.set(patch);
+    // Explicitly mark the object as dirty and refresh its bounding box so
+    // the pattern renders correctly across the entire new geometry.
+    obj.dirty = true;
+    if (typeof obj._setPositionDimensions === "function") {
+      try { obj._setPositionDimensions({}); } catch {}
+    }
+    if (typeof obj.setCoords === "function") {
+      try { obj.setCoords(); } catch {}
+    }
+    if (saveMeta) {
+      obj.__moldaHasPattern = true;
+      obj.__moldaPatternTarget = target;
+      obj.__moldaPatternUrl = meta.url;
+      obj.__moldaPatternRepeat = meta.repeat;
+      obj.__moldaPatternScale = meta.scale;
+    }
+    try {
+      obj.setCoords?.();
+    } catch {}
+  };
+
+  const runPatternApplication = async (
+    patternUrl: string,
+    patternRepeat: "repeat" | "repeat-x" | "repeat-y" | "no-repeat",
+    patternScale: number,
+    isPreview: boolean
+  ) => {
+    const c = canvasRef.current;
+    if (!c) return;
+    clearPatternPreview();
+    const selectedObjects = c.getActiveObjects?.() ?? [];
+    if (!selectedObjects.length) return;
+    const safeScale = Math.max(0.001, patternScale);
+    const img = await loadPatternImage(patternUrl);
+    if (!img) return;
+    const meta = { url: patternUrl, repeat: patternRepeat, scale: safeScale };
+    const applyTarget = (obj: any) => {
+      visitLeafObjects(obj, (leaf) => {
+        const t = String(leaf?.type || "").toLowerCase();
+        const target: "stroke" | "fill" = t === "path" ? "stroke" : "fill";
+        const pattern = createPatternInstance(img, patternRepeat, safeScale);
+        if (pattern) {
+          applyPatternToSingleObject(leaf, target, pattern, !isPreview, meta, {
+            isPreview,
+          });
+        }
+      });
+      if (!isPreview) {
+        obj.__moldaHasPattern = true;
+      }
+    };
+    if (isPreview) {
+      runSilently(() => {
+        for (const obj of selectedObjects) {
+          applyTarget(obj);
+        }
+      });
+      try {
+        c.requestRenderAll?.();
+      } catch {}
+      return;
+    }
+    for (const obj of selectedObjects) {
+      applyTarget(obj);
+    }
+    try {
+      c.requestRenderAll?.();
+    } catch {
+      try {
+        c.renderAll?.();
+      } catch {}
+    }
+    historyRef.current?.push("apply-pattern");
+    emitHistory();
+  };
+
+  const previewPatternStart = (
+    patternUrl: string,
+    patternRepeat: "repeat" | "repeat-x" | "repeat-y" | "no-repeat" = "repeat",
+    patternScale = 0.5
+  ) => runPatternApplication(patternUrl, patternRepeat, patternScale, true);
+
+  const previewPatternEnd = () => {
+    clearPatternPreview();
+  };
+
   const applyPatternToSelection = (
     patternUrl: string,
     patternRepeat: "repeat" | "repeat-x" | "repeat-y" | "no-repeat" = "repeat",
     patternScale = 0.5
   ) => {
-    const c = canvasRef.current;
-    const fabric = fabricRef.current;
-    if (!c || !fabric) return;
+    void runPatternApplication(patternUrl, patternRepeat, patternScale, false);
+  };
 
-    const selectedObjects = c.getActiveObjects?.() ?? [];
-    if (!selectedObjects.length) return;
+  const reapplyPatternForObject = async (obj: any) => {
+    if (!obj) return;
+    const patternUrl = obj.__moldaPatternUrl;
+    if (!patternUrl) return;
+    const repeat = obj.__moldaPatternRepeat || "repeat";
+    const scale = typeof obj.__moldaPatternScale === "number" ? obj.__moldaPatternScale : 1;
+    const img = await loadPatternImage(patternUrl);
+    if (!img) return;
+    const pattern = createPatternInstance(img, repeat, scale);
+    if (!pattern) return;
+    runSilently(() => {
+      const target = obj.__moldaPatternTarget === "stroke" ? "stroke" : "fill";
+      applyPatternToSingleObject(obj, target, pattern, false, {
+        url: patternUrl,
+        repeat,
+        scale,
+      });
+    });
+    try {
+      obj.canvas?.requestRenderAll?.();
+    } catch {}
+  };
 
-    const applyPatternToObject = (obj: any, pattern: any) => {
-      if (!obj) return;
-
-      const t = String(obj.type || "").toLowerCase();
-      const applyTo: "stroke" | "fill" = t === "path" ? "stroke" : "fill";
-
-      // Save originals once
-      if (obj.__moldaOriginalFill === undefined) obj.__moldaOriginalFill = obj.fill;
-      if (obj.__moldaOriginalStroke === undefined) obj.__moldaOriginalStroke = obj.stroke;
-
-      if (applyTo === "stroke") {
-        obj.set({
-          stroke: pattern,
-          strokeUniform: true,
-          strokeLineCap: "round",
-          strokeLineJoin: "round",
-          objectCaching: false,
-        });
-      } else {
-        obj.set({ fill: pattern });
+  const reapplyPatternForTarget = (target: any) => {
+    if (!target) return;
+    visitLeafObjects(target, (child) => {
+      if (child?.__moldaPatternUrl) {
+        void reapplyPatternForObject(child);
       }
-
-      obj.__moldaHasPattern = true;
-      obj.__moldaPatternTarget = applyTo;
-      obj.__moldaPatternUrl = patternUrl;
-      obj.__moldaPatternRepeat = patternRepeat;
-      obj.__moldaPatternScale = patternScale;
-      try {
-        obj.setCoords?.();
-      } catch {}
-    };
-
-    fabric.util.loadImage(
-      patternUrl,
-      (img: HTMLImageElement | null) => {
-        if (!img) return;
-
-        const pattern = new fabric.Pattern({
-          source: img,
-          repeat: patternRepeat,
-          patternTransform: [patternScale, 0, 0, patternScale, 0, 0],
-        });
-
-        // Apply to each object; if group, apply to its children as well
-        for (const obj of selectedObjects) {
-          const t = String(obj?.type || "").toLowerCase();
-          if (t === "group" && typeof obj.forEachObject === "function") {
-            obj.forEachObject((child: any) => applyPatternToObject(child, pattern));
-            // Mark group too (useful for detection)
-            obj.__moldaHasPattern = true;
-          } else {
-            applyPatternToObject(obj, pattern);
-          }
-        }
-
-        try {
-          c.requestRenderAll?.();
-        } catch {
-          try { c.renderAll?.(); } catch {}
-        }
-
-        // Push history snapshot
-        historyRef.current?.push("apply-pattern");
-        emitHistory();
-      },
-      null,
-      { crossOrigin: "anonymous" }
-    );
+    });
   };
 
   const removePatternFromSelection = () => {
+    clearPatternPreview();
     const c = canvasRef.current;
     if (!c) return;
     const selectedObjects = c.getActiveObjects?.() ?? [];
@@ -2266,14 +2473,14 @@ const Editor2D = forwardRef<Editor2DHandle, Props>(function Editor2D(
       } else if (target === "fill") {
         obj.set({
           fill: originalFill ?? obj.fill ?? "#000000",
+          objectCaching: false,
         });
       } else {
-        // Fallback: clear pattern if present
         if (obj.stroke && typeof obj.stroke === "object" && obj.stroke.source) {
-          obj.set({ stroke: originalStroke ?? "#000000" });
+          obj.set({ stroke: originalStroke ?? "#000000", objectCaching: false });
         }
         if (obj.fill && typeof obj.fill === "object" && obj.fill.source) {
-          obj.set({ fill: originalFill ?? "#000000" });
+          obj.set({ fill: originalFill ?? "#000000", objectCaching: false });
         }
       }
 
@@ -2282,7 +2489,6 @@ const Editor2D = forwardRef<Editor2DHandle, Props>(function Editor2D(
       delete obj.__moldaPatternUrl;
       delete obj.__moldaPatternRepeat;
       delete obj.__moldaPatternScale;
-      // keep originals so undo/redo roundtrips are stable
 
       try {
         obj.setCoords?.();
@@ -2290,13 +2496,8 @@ const Editor2D = forwardRef<Editor2DHandle, Props>(function Editor2D(
     };
 
     for (const obj of selectedObjects) {
-      const t = String(obj?.type || "").toLowerCase();
-      if (t === "group" && typeof obj.forEachObject === "function") {
-        obj.forEachObject((child: any) => removeFromObject(child));
-        delete obj.__moldaHasPattern;
-      } else {
-        removeFromObject(obj);
-      }
+      visitLeafObjects(obj, removeFromObject);
+      delete obj.__moldaHasPattern;
     }
 
     try {
@@ -2307,6 +2508,7 @@ const Editor2D = forwardRef<Editor2DHandle, Props>(function Editor2D(
     historyRef.current?.push("remove-pattern");
     emitHistory();
   };
+
 
   const computeSelectionKind = (): "none" | "text" | "other" => {
     const c = canvasRef.current as any;
@@ -2553,6 +2755,8 @@ const Editor2D = forwardRef<Editor2DHandle, Props>(function Editor2D(
     groupSelection,
     applyPatternToSelection,
     removePatternFromSelection,
+  previewPatternStart,
+  previewPatternEnd,
     refresh,
     listUsedFonts,
     waitForIdle,
@@ -2634,12 +2838,16 @@ const Editor2D = forwardRef<Editor2DHandle, Props>(function Editor2D(
           try { c.requestRenderAll(); } catch {}
           notifySelectionKind();
         };
-        const __onModified = () => {
+        const __onModified = (evt: any) => {
           if (shouldRecordHistory())
             historyRef.current?.push("modify");
           emitHistory();
           try { c.requestRenderAll(); } catch {}
           notifySelectionKind();
+          const target = evt?.target;
+          if (target) {
+            void reapplyPatternForTarget(target);
+          }
         };
 
         const __onModifiedSyncControls = (evt: any) => {

@@ -5,8 +5,7 @@ import DecalEngineHost from "./DecalEngineHost";
 // import Model3D from "./Model3D";
 // import TShirt3D from "./TShirt3D";               // ✅ caminho corrigido (mesma pasta)
 import { getModelConfigFromSelection } from "../lib/models";
-import type { ExternalDecalData } from "../types/decals";
-import type { DecalStateSnapshot } from "../../../decal-engine/src/usage";
+import type { DecalStateSnapshot, ExternalDecalData } from "../types/decals";
 
 type Props = {
   baseColor?: string;

@@ -1,8 +1,11 @@
+import { useEffect, useState } from "react";
 import { Link, useNavigate } from "react-router-dom";
 import { Button } from "../components/ui/button";
 import { User, LogOut } from "lucide-react";
 import { useAuth } from "../contexts/AuthContext";
 import { Avatar, AvatarFallback, AvatarImage } from "../components/ui/avatar";
+import { supabase } from "../integrations/supabase/client";
+import { AVATAR_BUCKET } from "../lib/constants/storage";
 import {
   DropdownMenu,
   DropdownMenuContent,
@@ -10,10 +13,49 @@ import {
   DropdownMenuTrigger,
 } from "../components/ui/dropdown-menu";
 import { toast } from "sonner";
+import SparkleButton from "./SparkleButton";
 
 const Header = () => {
-  const { user, signOut, loading } = useAuth();
+  const { user, signOut, loading, getProfile } = useAuth();
+  const [avatarUrl, setAvatarUrl] = useState<string | null>(null);
   const navigate = useNavigate();
+
+  useEffect(() => {
+    let mounted = true;
+    const fallback = user?.user_metadata?.avatar_url ?? null;
+    setAvatarUrl(fallback);
+
+    if (!user) {
+      return () => {
+        mounted = false;
+      };
+    }
+
+    const loadAvatar = async () => {
+      try {
+        const profile = await getProfile();
+        if (!mounted) return;
+        if (profile?.avatar_path) {
+          const { data } = supabase.storage.from(AVATAR_BUCKET).getPublicUrl(profile.avatar_path);
+          if (data?.publicUrl) {
+            setAvatarUrl(data.publicUrl);
+            return;
+          }
+        }
+      } catch {
+        /* silently ignore */
+      }
+      if (mounted) {
+        setAvatarUrl(fallback);
+      }
+    };
+
+    loadAvatar();
+
+    return () => {
+      mounted = false;
+    };
+  }, [user, getProfile]);
 
   const getUserInitials = () => {
     const parts = (user?.user_metadata?.full_name || "U S").split(" ");
@@ -39,8 +81,9 @@ const Header = () => {
         </Link>
 
         <nav className="hidden md:flex items-center gap-6 text-sm">
-          <Link to="/create" className="nav-link">Criar</Link>
-          <Link to="/profile" className="nav-link">Perfil</Link>
+          <SparkleButton to="/create" ariaLabel="Criar" className="text-sm" >
+            Criar
+          </SparkleButton>
         </nav>
 
         <div className="flex items-center gap-4">
@@ -71,7 +114,7 @@ const Header = () => {
                   className="rounded-full p-0 hover:bg-[hsl(var(--muted))]"
                 >
                   <Avatar className="w-10 h-10">
-                    <AvatarImage src={user.user_metadata?.avatar_url} />
+                    <AvatarImage src={avatarUrl ?? undefined} />
                     <AvatarFallback className="bg-gradient-to-r from-[hsl(var(--primary))] to-[hsl(var(--brand-keppel))] text-white">
                       {getUserInitials()}
                     </AvatarFallback>

@@ -15,9 +15,11 @@ const CATEGORY_LABELS: Record<PatternCategory, string> = {
 
 export interface PatternSubmenuProps {
   onSelectPattern: (pattern: PatternDefinition) => void;
+  onPreviewStart?: (pattern: PatternDefinition) => void;
+  onPreviewEnd?: () => void;
 }
 
-export function PatternSubmenu({ onSelectPattern }: PatternSubmenuProps) {
+export function PatternSubmenu({ onSelectPattern, onPreviewStart, onPreviewEnd }: PatternSubmenuProps) {
   const patternsByCategory = React.useMemo(() => {
     const grouped: Record<PatternCategory, PatternDefinition[]> = {
       animals: [],
@@ -46,6 +48,8 @@ export function PatternSubmenu({ onSelectPattern }: PatternSubmenuProps) {
               label={CATEGORY_LABELS[category]}
               patterns={patterns}
               onSelectPattern={onSelectPattern}
+              onPreviewStart={onPreviewStart}
+              onPreviewEnd={onPreviewEnd}
             />
           );
         })}
@@ -58,10 +62,14 @@ function CategorySection({
   label,
   patterns,
   onSelectPattern,
+  onPreviewStart,
+  onPreviewEnd,
 }: {
   label: string;
   patterns: PatternDefinition[];
   onSelectPattern: (pattern: PatternDefinition) => void;
+  onPreviewStart?: (pattern: PatternDefinition) => void;
+  onPreviewEnd?: () => void;
 }) {
   return (
     <div>
@@ -72,6 +80,10 @@ function CategorySection({
             key={pattern.id}
             type="button"
             onClick={() => onSelectPattern(pattern)}
+            onMouseEnter={() => onPreviewStart?.(pattern)}
+            onMouseLeave={() => onPreviewEnd?.()}
+            onFocus={() => onPreviewStart?.(pattern)}
+            onBlur={() => onPreviewEnd?.()}
             className={cn(
               "relative aspect-square w-full overflow-hidden rounded-md",
               "border-2 border-transparent hover:border-primary",
