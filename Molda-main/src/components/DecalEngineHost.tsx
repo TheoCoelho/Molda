@@ -3,6 +3,7 @@ import React, { useEffect, useRef, useState } from "react";
 // Importa a função de inicialização existente
 // Caminho relativo do projeto Molda-main/src/components -> ../../.. -> decal-engine/src/usage.ts
 import initDecalDemo, { DecalDemoHandle } from "../../../decal-engine/src/usage";
+import { DEFAULT_GIZMO_THEME } from "../../../gizmo-theme";
 import { getModelConfigFromSelection } from "../lib/models";
 import type { DecalStateSnapshot, ExternalDecalData } from "../types/decals";
 
@@ -51,7 +52,11 @@ export default function DecalEngineHost({
     const mountEl = containerRef.current;
     const boot = async () => {
       try {
-        const handle = await initDecalDemo(mountEl, { interactive, background: null });
+        const handle = await initDecalDemo(mountEl, {
+          interactive,
+          background: null,
+          gizmoTheme: DEFAULT_GIZMO_THEME,
+        });
         if (cancelled) return;
         apiRef.current = handle;
         setReady(true);

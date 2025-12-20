@@ -13,6 +13,7 @@ import type { ExternalDecalData, DecalTransform } from "../types/decals";
 import { Canvas, type ThreeEvent } from "@react-three/fiber";
 import { Bounds, Center, Environment, Html, OrbitControls, useGLTF } from "@react-three/drei";
 import * as THREE from "three";
+import { DEFAULT_GIZMO_THEME } from "../../../gizmo-theme";
 
 type BodyPart = "head" | "torso" | "legs";
 
@@ -767,8 +768,8 @@ function SegmentedMannequin({ selected, hovered, onHover, onSelect }: SegmentedM
       uTorsoStart: { value: thresholds.torsoStart },
       uSelected: { value: new THREE.Vector3(0, 0, 0) },
       uHovered: { value: new THREE.Vector3(0, 0, 0) },
-      uSelectedColor: { value: new THREE.Color("#a855f7") },
-      uHoverColor: { value: new THREE.Color("#38bdf8") },
+  uSelectedColor: { value: new THREE.Color(DEFAULT_GIZMO_THEME.primary) },
+  uHoverColor: { value: new THREE.Color(DEFAULT_GIZMO_THEME.secondary) },
     };
   }
 

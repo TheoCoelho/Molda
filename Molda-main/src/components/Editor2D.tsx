@@ -8,6 +8,7 @@ import React, {
 } from "react";
 import HistoryManager from "../lib/HistoryManager";
 import { installFabricEraser } from "../lib/fabricEraser";
+import { DEFAULT_GIZMO_THEME } from "../../../gizmo-theme";
 
 // Tipos alinhados com ExpandableSidebar
 export type Tool = "select" | "brush" | "line" | "curve" | "text";
@@ -159,6 +160,8 @@ type PreviewBackup = {
   fill: any;
   stroke: any;
 };
+
+const GIZMO_THEME = DEFAULT_GIZMO_THEME;
 
 function withAlpha(color: string, alpha: number) {
   if (!color) return color;
@@ -1024,7 +1027,7 @@ const Editor2D = forwardRef<Editor2DHandle, Props>(function Editor2D(
     return target;
   };
 
-  const LINE_HANDLE_RADIUS = 6;
+  const LINE_HANDLE_RADIUS = GIZMO_THEME.handleRadius;
   const LINE_ROTATION_OFFSET = 52;
   const DEFAULT_LINE_CAP = "round" as const;
 
@@ -1087,7 +1090,7 @@ const Editor2D = forwardRef<Editor2DHandle, Props>(function Editor2D(
       ctx.beginPath();
       ctx.arc(left, top, LINE_HANDLE_RADIUS, 0, Math.PI * 2);
       ctx.fillStyle = fill;
-      ctx.strokeStyle = "#0f172a";
+      ctx.strokeStyle = GIZMO_THEME.stroke;
       ctx.lineWidth = 1.25;
       ctx.fill();
       ctx.stroke();
@@ -1138,7 +1141,7 @@ const Editor2D = forwardRef<Editor2DHandle, Props>(function Editor2D(
       ctx: CanvasRenderingContext2D,
       left: number,
       top: number
-    ) => drawHandle(ctx, left, top, "#38bdf8");
+    ) => drawHandle(ctx, left, top, GIZMO_THEME.primary);
 
     const centerPositionHandler = function positionHandler(
       _dim: any,
@@ -1164,7 +1167,7 @@ const Editor2D = forwardRef<Editor2DHandle, Props>(function Editor2D(
       ctx: CanvasRenderingContext2D,
       left: number,
       top: number
-    ) => drawHandle(ctx, left, top, "#0ea5e9");
+    ) => drawHandle(ctx, left, top, GIZMO_THEME.secondary);
 
     const rotationPositionHandler = function positionHandler(
       _dim: any,
@@ -1184,7 +1187,7 @@ const Editor2D = forwardRef<Editor2DHandle, Props>(function Editor2D(
       _styleOverride: any,
       _target: any
     ) => {
-      drawHandle(ctx, left, top, "#0284c7");
+      drawHandle(ctx, left, top, GIZMO_THEME.secondary);
     };
 
     const rotationActionHandler = (
@@ -1283,8 +1286,8 @@ const Editor2D = forwardRef<Editor2DHandle, Props>(function Editor2D(
 
     target.hasBorders = false;
     target.transparentCorners = false;
-    target.cornerColor = "#38bdf8";
-    target.cornerStrokeColor = "#0f172a";
+  target.cornerColor = GIZMO_THEME.primary;
+  target.cornerStrokeColor = GIZMO_THEME.stroke;
     target.lockScalingX = true;
     target.lockScalingY = true;
     target.lockScalingFlip = true;
@@ -1571,7 +1574,14 @@ const Editor2D = forwardRef<Editor2DHandle, Props>(function Editor2D(
         ) => {
           const activeIndex = controlTarget.__curveActiveAnchorIndex;
           const isActive = typeof activeIndex === "number" && activeIndex === index;
-          drawCircle(ctx, left, top, CURVE_ANCHOR_RADIUS, isActive ? "#38bdf8" : "#0ea5e9", "#0f172a");
+          drawCircle(
+            ctx,
+            left,
+            top,
+            CURVE_ANCHOR_RADIUS,
+            isActive ? GIZMO_THEME.primary : GIZMO_THEME.secondary,
+            GIZMO_THEME.stroke
+          );
         },
         actionHandler: (eventData: any, transform: any) => {
           const controlTarget = transform.target as any;
@@ -1642,12 +1652,19 @@ const Editor2D = forwardRef<Editor2DHandle, Props>(function Editor2D(
           ctx.beginPath();
           ctx.moveTo(anchorCanvas.x, anchorCanvas.y);
           ctx.lineTo(left, top);
-          ctx.strokeStyle = role === "handleIn" ? "#facc15" : "#f97316";
+          ctx.strokeStyle = GIZMO_THEME.secondary;
           ctx.lineWidth = 1;
           ctx.setLineDash([4, 2]);
           ctx.stroke();
           ctx.restore();
-          drawCircle(ctx, left, top, CURVE_HANDLE_RADIUS, role === "handleIn" ? "#facc15" : "#f97316", "#0f172a");
+          drawCircle(
+            ctx,
+            left,
+            top,
+            CURVE_HANDLE_RADIUS,
+            GIZMO_THEME.secondary,
+            GIZMO_THEME.stroke
+          );
         },
         actionHandler: (eventData: any, transform: any) => {
           const controlTarget = transform.target as any;
@@ -1709,8 +1726,8 @@ const Editor2D = forwardRef<Editor2DHandle, Props>(function Editor2D(
     target.hasBorders = false;
     target.transparentCorners = true;
     target.cornerStyle = "circle";
-    target.cornerColor = "#38bdf8";
-    target.cornerStrokeColor = "#0f172a";
+  target.cornerColor = GIZMO_THEME.primary;
+  target.cornerStrokeColor = GIZMO_THEME.stroke;
     target.lockScalingX = true;
     target.lockScalingY = true;
     target.lockScalingFlip = true;
@@ -1835,24 +1852,26 @@ const Editor2D = forwardRef<Editor2DHandle, Props>(function Editor2D(
     if (!target || !meta) return;
     const fabric = fabricRef.current;
     if (!fabric) return;
-    // Preserve current visual position. Updating `path` changes `pathOffset` and can make
-    // Fabric shift the object unless we restore its center afterwards.
-    const prevCenter = typeof target.getCenterPoint === "function" ? target.getCenterPoint() : null;
+    
     // meta is LOCAL; convert to world before updating Fabric's path
     const worldMeta = curveMetaLocalToWorld(target, meta);
     const commands = computeBezierFromNodes(worldMeta.nodes, worldMeta.closed);
     
-    // The most reliable way to update a Path in Fabric.js is to use initialize()
-    // which fully recalculates all internal dimensions and offsets.
-    // We preserve the pattern/stroke settings that were applied.
+    // Preserve pattern settings
     const preservedStroke = target.stroke;
     const preservedFill = target.fill;
     const hasPattern = target.__moldaHasPattern;
     
+    // Save the current center point of the meta in world coordinates
+    // We'll use this to position the object correctly after initialize()
+    const worldMetaCenter = computeCurveMetaCenter(worldMeta);
+    
+    // Use initialize() to properly recalculate all path dimensions.
+    // This prevents clipping when the path extends beyond original bounds.
     if (typeof target.initialize === "function") {
       try {
         target.initialize(commands, {
-          stroke: meta.stroke,
+          stroke: hasPattern ? preservedStroke : meta.stroke,
           strokeWidth: Math.max(0.1, meta.strokeWidth || 1),
           strokeUniform: true,
           fill: hasPattern ? preservedFill : (meta.fill || CURVE_DEFAULT_FILL),
@@ -1860,7 +1879,6 @@ const Editor2D = forwardRef<Editor2DHandle, Props>(function Editor2D(
           objectCaching: false,
         });
       } catch {
-        // Fallback if initialize fails
         target.path = commands;
       }
     } else {
@@ -1869,28 +1887,24 @@ const Editor2D = forwardRef<Editor2DHandle, Props>(function Editor2D(
     
     target.dirty = true;
     target.objectCaching = false;
-    
-    // Restore pattern-related properties if they were set
-    if (hasPattern) {
-      target.stroke = preservedStroke;
-      target.fill = preservedFill;
-    }
-    
     target.setCoords();
-
-    if (prevCenter && typeof target.setPositionByOrigin === "function") {
-      try {
-        target.setPositionByOrigin(prevCenter, "center", "center");
-        target.setCoords();
-      } catch {}
-    }
-    // NOTE: do not overwrite drag baselines here. During object:moving, Fabric updates
-    // left/top continuously; if we reset "last center" every tick, our delta math can
-    // drift and handles appear to move at a different speed.
-    target.__curveMetaCenter = computeCurveMetaCenter(meta);
+    
+    // After initialize(), the object's transform matrix has changed.
+    // We need to update __curveMeta to LOCAL coordinates relative to the NEW transform.
+    // This keeps the controls aligned with the path.
+    const newLocalMeta = curveMetaWorldToLocal(target, worldMeta);
+    newLocalMeta.stroke = meta.stroke;
+    newLocalMeta.strokeWidth = meta.strokeWidth;
+    newLocalMeta.fill = meta.fill;
+    newLocalMeta.opacity = meta.opacity;
+    newLocalMeta.closed = meta.closed;
+    target.__curveMeta = newLocalMeta;
+    
+    target.__curveMetaCenter = computeCurveMetaCenter(newLocalMeta);
+    
     if (curveTransformGuardRef.current === 0) {
       target.__curveNeedsControlSync = false;
-      syncCurveControls(target, meta);
+      syncCurveControls(target, newLocalMeta);
     } else {
       target.__curveNeedsControlSync = true;
     }
