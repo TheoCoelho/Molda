@@ -29,7 +29,7 @@ import {
   ContextMenuShortcut,
   ContextMenuTrigger,
 } from "../components/ui/context-menu";
-import { PatternSubmenu } from "../components/PatternSubmenu";
+import { PatternSubmenu } from "../components/PatternSubmenuEnhanced";
 import type { PatternDefinition } from "../lib/patterns";
 import { useAuth } from "../contexts/AuthContext";
 import type { ExternalDecalData, DecalTransform, DecalStateSnapshot } from "../types/decals";

@@ -5,6 +5,7 @@ import { USDLoader } from "three/examples/jsm/loaders/USDLoader.js";
 import { OrbitControls } from "three/examples/jsm/controls/OrbitControls.js";
 import MeshDecalAdapter from "./engine/three/MeshDecalAdapter";
 import { prepareMeshForDecals } from "./engine/three/MeshPreparation";
+import { resolveGizmoTheme, type GizmoTheme } from "../../gizmo-theme";
 
 export type ExternalDecalPayload = {
   id: string;
@@ -22,10 +23,20 @@ export type DecalDemoHandle = {
   subscribe: (listener: (state: any) => void) => () => void;
 };
 
-export async function initDecalDemo(container: HTMLElement, opts?: { interactive?: boolean }): Promise<DecalDemoHandle> {
+export type InitDecalDemoOptions = {
+  interactive?: boolean;
+  background?: THREE.ColorRepresentation | null;
+  gizmoTheme?: Partial<GizmoTheme>;
+};
+
+const DEFAULT_BACKGROUND_COLOR: THREE.ColorRepresentation = 0x111111;
+
+export async function initDecalDemo(container: HTMLElement, opts?: InitDecalDemoOptions): Promise<DecalDemoHandle> {
   // ---------------- MENU ----------------
   const params0 = new URLSearchParams(window.location.search);
   const hideMenu = params0.get("hideMenu") === "1" || params0.get("hideMenu") === "true";
+  const showGallery = !hideMenu;
+  const theme = resolveGizmoTheme(opts?.gizmoTheme);
   if (!hideMenu) {
   const models = [
     { label: "Manga Longa", value: "long_sleeve_t-_shirt/scene.gltf" },
@@ -91,7 +102,9 @@ export async function initDecalDemo(container: HTMLElement, opts?: { interactive
     gap: "8px",
     boxShadow: "0 6px 16px rgba(0,0,0,0.35)",
   } as CSSStyleDeclaration);
-  container.appendChild(galleryPanel);
+  if (showGallery) {
+    container.appendChild(galleryPanel);
+  }
 
   const galleryTitle = document.createElement("div");
   galleryTitle.textContent = "Galeria";
@@ -668,14 +681,24 @@ export async function initDecalDemo(container: HTMLElement, opts?: { interactive
   // Removido: não adicionar logo padrão automaticamente
 
   // ---------------- Renderer / cena / câmera ----------------
-  const renderer = new THREE.WebGLRenderer({ antialias: true });
+  const backgroundValue = opts?.background;
+  const backgroundColor = backgroundValue === undefined ? DEFAULT_BACKGROUND_COLOR : backgroundValue;
+  const renderer = new THREE.WebGLRenderer({ antialias: true, alpha: backgroundColor === null });
   renderer.setPixelRatio(Math.min(window.devicePixelRatio, 2));
   renderer.setSize(container.clientWidth, container.clientHeight);
   renderer.domElement.style.display = "block";
   container.appendChild(renderer.domElement);
 
   const scene = new THREE.Scene();
-  scene.background = new THREE.Color(0x111111);
+  if (backgroundColor === null) {
+    scene.background = null;
+    renderer.setClearColor(0x000000, 0);
+    renderer.domElement.style.backgroundColor = "transparent";
+  } else {
+    scene.background = new THREE.Color(backgroundColor);
+    renderer.setClearColor(backgroundColor);
+    renderer.domElement.style.backgroundColor = "";
+  }
 
   const camera = new THREE.PerspectiveCamera(
     50,
@@ -845,45 +868,188 @@ export async function initDecalDemo(container: HTMLElement, opts?: { interactive
   } as CSSStyleDeclaration);
   container.appendChild(overlay);
 
-  function makeHandle(r = 6) {
-    const h = document.createElementNS(svgNS, "rect");
-    h.setAttribute("width", String(r * 2));
-    h.setAttribute("height", String(r * 2));
-    h.setAttribute("fill", "#fff");
-    h.setAttribute("stroke", "#7c3aed");
+  const cutMenu = document.createElement("div");
+  cutMenu.setAttribute("data-cut-menu", "");
+  Object.assign(cutMenu.style, {
+    position: "absolute",
+    minWidth: "220px",
+    padding: "8px",
+    borderRadius: "12px",
+    background: "rgba(15,15,15,0.95)",
+    color: "#f8fafc",
+    boxShadow: "0 14px 30px rgba(15,15,25,0.65)",
+    border: "1px solid rgba(255,255,255,0.1)",
+    display: "none",
+    flexDirection: "column",
+    gap: "6px",
+    zIndex: "2000",
+    fontFamily: "Inter, system-ui, -apple-system, Segoe UI, sans-serif",
+    fontSize: "13px",
+  } as CSSStyleDeclaration);
+  container.appendChild(cutMenu);
+
+  const cutButton = document.createElement("button");
+  cutButton.type = "button";
+  cutButton.textContent = "Ferramenta de corte";
+  Object.assign(cutButton.style, {
+    width: "100%",
+    display: "flex",
+    alignItems: "center",
+    justifyContent: "space-between",
+    gap: "6px",
+    background: "transparent",
+    border: "1px solid rgba(255,255,255,0.3)",
+    borderRadius: "9px",
+    padding: "8px 12px",
+    color: "inherit",
+    cursor: "pointer",
+    transition: "background 0.2s ease",
+  } as CSSStyleDeclaration);
+  cutButton.addEventListener("mouseenter", () => {
+    cutButton.style.background = "rgba(255,255,255,0.05)";
+  });
+  cutButton.addEventListener("mouseleave", () => {
+    cutButton.style.background = "transparent";
+  });
+  cutMenu.appendChild(cutButton);
+
+  const cutCaret = document.createElement("span");
+  cutCaret.textContent = "▸";
+  cutCaret.style.transition = "transform 0.2s ease";
+  cutButton.appendChild(cutCaret);
+
+  const cutSubmenu = document.createElement("div");
+  Object.assign(cutSubmenu.style, {
+    display: "none",
+    flexDirection: "column",
+    gap: "4px",
+    paddingLeft: "2px",
+  } as CSSStyleDeclaration);
+  cutMenu.appendChild(cutSubmenu);
+
+  const cutTools = ["Redimensionar", "Tesoura", "Rastro"];
+  cutTools.forEach((label) => {
+    const item = document.createElement("button");
+    item.type = "button";
+    item.textContent = label;
+    Object.assign(item.style, {
+      background: "#0f172a",
+      border: "1px solid rgba(255,255,255,0.08)",
+      borderRadius: "8px",
+      padding: "6px 10px",
+      color: "#e2e8f0",
+      textAlign: "left",
+      cursor: "pointer",
+      transition: "border 0.2s ease",
+    } as CSSStyleDeclaration);
+    item.addEventListener("mouseenter", () => {
+      item.style.borderColor = "rgba(255,255,255,0.4)";
+    });
+    item.addEventListener("mouseleave", () => {
+      item.style.borderColor = "rgba(255,255,255,0.08)";
+    });
+    item.addEventListener("click", (event) => {
+      event.preventDefault();
+      event.stopPropagation();
+      console.info(`Ferramenta de corte → ${label} ativada (sem implementação).`);
+      closeCutMenu();
+    });
+    cutSubmenu.appendChild(item);
+  });
+
+  let cutMenuOpen = false;
+  let cutSubmenuOpen = false;
+
+  const closeCutMenu = () => {
+    if (!cutMenuOpen) return;
+    cutMenu.style.display = "none";
+    cutSubmenu.style.display = "none";
+    cutCaret.style.transform = "rotate(0deg)";
+    cutSubmenuOpen = false;
+    cutMenuOpen = false;
+  };
+
+  const toggleCutSubmenu = () => {
+    cutSubmenuOpen = !cutSubmenuOpen;
+    cutSubmenu.style.display = cutSubmenuOpen ? "flex" : "none";
+    cutCaret.style.transform = cutSubmenuOpen ? "rotate(90deg)" : "rotate(0deg)";
+  };
+
+  const showCutMenu = (clientX: number, clientY: number) => {
+    const rect = container.getBoundingClientRect();
+    cutMenu.style.display = "flex";
+    cutSubmenu.style.display = "none";
+    cutCaret.style.transform = "rotate(0deg)";
+    cutSubmenuOpen = false;
+    cutMenuOpen = true;
+    const menuRect = cutMenu.getBoundingClientRect();
+  let left = clientX - rect.left;
+  let top = clientY - rect.top;
+  const maxLeft = Math.max(rect.width - menuRect.width - 8, 8);
+  const maxTop = Math.max(rect.height - menuRect.height - 8, 8);
+  left = Math.min(Math.max(8, left), maxLeft);
+  top = Math.min(Math.max(8, top), maxTop);
+    cutMenu.style.left = `${left}px`;
+    cutMenu.style.top = `${top}px`;
+  };
+
+  cutButton.addEventListener("click", (event) => {
+    event.preventDefault();
+    event.stopPropagation();
+    toggleCutSubmenu();
+  });
+
+  cutMenu.addEventListener("pointerdown", (event) => {
+    event.stopPropagation();
+  });
+
+  window.addEventListener("pointerdown", (event) => {
+    if (cutMenuOpen && !cutMenu.contains(event.target as Node)) {
+      closeCutMenu();
+    }
+  });
+
+  window.addEventListener("keydown", (event) => {
+    if (event.key === "Escape") {
+      closeCutMenu();
+    }
+  });
+
+  function makeHandle(r = theme.handleRadius, fill = theme.primary) {
+    const h = document.createElementNS(svgNS, "circle");
+    h.setAttribute("r", String(r));
+    h.setAttribute("fill", fill);
+    h.setAttribute("stroke", theme.stroke);
     h.setAttribute("stroke-width", "2");
-    h.setAttribute("rx", "4");
-    h.setAttribute("ry", "4");
     h.style.pointerEvents = "auto";
     h.style.cursor = "pointer";
     return h;
   }
 
   const boxPoly = document.createElementNS(svgNS, "polyline");
-  boxPoly.setAttribute("fill", "rgba(124,58,237,0.06)");
-  boxPoly.setAttribute("stroke", "#7c3aed");
+  boxPoly.setAttribute("fill", theme.areaFill);
+  boxPoly.setAttribute("stroke", theme.primary);
   boxPoly.setAttribute("stroke-width", "2");
   boxPoly.style.pointerEvents = "auto"; // permitir mover clicando no retângulo
   boxPoly.style.cursor = "move";
   overlay.appendChild(boxPoly);
 
-  const handles = {
+  const handles: Record<string, SVGCircleElement> = {
     tl: makeHandle(), tm: makeHandle(), tr: makeHandle(),
     ml: makeHandle(), mr: makeHandle(),
     bl: makeHandle(), bm: makeHandle(), br: makeHandle(),
-    rot: makeHandle(),
+    rot: makeHandle(theme.handleRadius, theme.secondary),
   };
   Object.values(handles).forEach((h) => overlay.appendChild(h));
 
   const rotLine = document.createElementNS(svgNS, "line");
-  rotLine.setAttribute("stroke", "#7c3aed");
+  rotLine.setAttribute("stroke", theme.primary);
   rotLine.setAttribute("stroke-width", "2");
   overlay.appendChild(rotLine);
 
-  function setHandlePos(h: SVGRectElement, x: number, y: number) {
-    const s = Number(h.getAttribute("width")) / 2;
-    h.setAttribute("x", String(x - s));
-    h.setAttribute("y", String(y - s));
+  function setHandlePos(h: SVGCircleElement, x: number, y: number) {
+    h.setAttribute("cx", String(x));
+    h.setAttribute("cy", String(y));
   }
 
   function toScreen(p: THREE.Vector3) {
@@ -1177,7 +1343,7 @@ export async function initDecalDemo(container: HTMLElement, opts?: { interactive
     updateOverlay();
   }
 
-  function bindHandle(h: SVGRectElement, mode: DragMode) {
+  function bindHandle(h: SVGCircleElement, mode: DragMode) {
     h.addEventListener("pointerdown", (ev) => startDrag(mode, ev));
     window.addEventListener("pointermove", onPointerMoveOverlay);
     window.addEventListener("pointerup", endDrag);
@@ -1239,6 +1405,24 @@ export async function initDecalDemo(container: HTMLElement, opts?: { interactive
       }
     }
   }, { capture: true });
+
+  renderer.domElement.addEventListener(
+    "contextmenu",
+    (event) => {
+      const picked = pickDecalAt(event.clientX, event.clientY);
+      if (!picked) {
+        closeCutMenu();
+        return;
+      }
+      event.preventDefault();
+      event.stopPropagation();
+      galleryState.selectedIds.add(picked.id);
+      setActiveDecal(picked.id);
+      renderGallery();
+      showCutMenu(event.clientX, event.clientY);
+    },
+    { capture: true }
+  );
 
   renderer.domElement.addEventListener("pointermove", (ev) => {
     if (!downState.active) return;

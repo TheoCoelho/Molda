@@ -8,7 +8,7 @@ import React, {
 } from "react";
 import HistoryManager from "../lib/HistoryManager";
 import { installFabricEraser } from "../lib/fabricEraser";
-import { DEFAULT_GIZMO_THEME } from "../../../gizmo-theme";
+import { applyGizmoThemeToFabric, DEFAULT_GIZMO_THEME } from "../../../gizmo-theme";
 
 // Tipos alinhados com ExpandableSidebar
 export type Tool = "select" | "brush" | "line" | "curve" | "text";
@@ -162,6 +162,28 @@ type PreviewBackup = {
 };
 
 const GIZMO_THEME = DEFAULT_GIZMO_THEME;
+
+const CANVAS_SELECTION_OPTIONS = {
+  selectionColor: GIZMO_THEME.areaFill,
+  selectionBorderColor: GIZMO_THEME.primary,
+  selectionLineWidth: 2,
+  selectionDashArray: [4, 2],
+  borderColor: GIZMO_THEME.primary,
+  borderDashArray: [4, 2],
+  cornerColor: GIZMO_THEME.primary,
+  cornerStrokeColor: GIZMO_THEME.stroke,
+  cornerStyle: "circle",
+  cornerSize: GIZMO_THEME.handleRadius * 2,
+  cornerDashArray: [0, 0],
+  transparentCorners: false,
+  rotatingPointOffset: GIZMO_THEME.handleRadius * 2,
+};
+
+const getCanvasOptions = () => ({
+  selection: true,
+  preserveObjectStacking: true,
+  ...CANVAS_SELECTION_OPTIONS,
+});
 
 function withAlpha(color: string, alpha: number) {
   if (!color) return color;
@@ -753,7 +775,7 @@ const Editor2D = forwardRef<Editor2DHandle, Props>(function Editor2D(
     el.height = host.clientHeight || 1;
     host.appendChild(el);
     try {
-      const nc = new fabric.Canvas(el, { selection: true, preserveObjectStacking: true });
+    const nc = new fabric.Canvas(el, getCanvasOptions());
       nc.renderOnAddRemove = true;
       nc.setBackgroundColor("transparent", () => nc.renderAll());
       canvasRef.current = nc;
@@ -2783,8 +2805,9 @@ const Editor2D = forwardRef<Editor2DHandle, Props>(function Editor2D(
     const init = async () => {
       try {
         console.log("[Editor2D] Init started");
-        const fabric = await loadFabricRuntime();
-        console.log("[Editor2D] Fabric loaded:", !!fabric, !!fabric?.Canvas);
+  const fabric = await loadFabricRuntime();
+  console.log("[Editor2D] Fabric loaded:", !!fabric, !!fabric?.Canvas);
+  applyGizmoThemeToFabric(fabric);
         
         if (disposed || !hostRef.current) {
           console.log("[Editor2D] Disposed or no host, aborting");
@@ -2808,10 +2831,7 @@ const Editor2D = forwardRef<Editor2DHandle, Props>(function Editor2D(
         el.height = hostRef.current.clientHeight;
         hostRef.current.appendChild(el);
 
-        const c = new fabric.Canvas(el, {
-          selection: true,
-          preserveObjectStacking: true,
-        });
+        const c = new fabric.Canvas(el, getCanvasOptions());
         // Garante re-render imediato ao adicionar/remover
         c.renderOnAddRemove = true;
         c.setBackgroundColor("transparent", () => c.renderAll());
