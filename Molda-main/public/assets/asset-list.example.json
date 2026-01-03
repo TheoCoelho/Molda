@@ -1,0 +1,25 @@
+// src/agents/asset-list.example.json
+// Exemplo de lista de assets para atualização automática
+[
+  {
+    "type": "model",
+    "name": "T-Shirt_Low_Poly",
+    "version": "1.0.1",
+    "url": "/models/T-Shirt_Low_Poly.usdz",
+    "localPath": "/models/T-Shirt_Low_Poly.usdz"
+  },
+  {
+    "type": "texture",
+    "name": "abstract_01",
+    "version": "2.0.0",
+    "url": "/textures/abstract/abstract_01.png",
+    "localPath": "/textures/abstract/abstract_01.png"
+  },
+  {
+    "type": "font",
+    "name": "Inter",
+    "version": "4.0.0",
+    "url": "https://fonts.googleapis.com/css2?family=Inter:wght@400;700&display=swap",
+    "localPath": "fonts/Inter.css"
+  }
+]

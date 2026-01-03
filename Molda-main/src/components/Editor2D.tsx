@@ -673,6 +673,20 @@ const Editor2D = forwardRef<Editor2DHandle, Props>(function Editor2D(
     };
   };
 
+  const emitTextStyleEvent = (type: "editor2d:activeTextStyle" | "editor2d:selectionStyle", style: TextStyle | null) => {
+    try {
+      window.dispatchEvent(new CustomEvent(type, { detail: style || {} }));
+    } catch {}
+  };
+
+  const emitFontUsed = (fontFamily?: string) => {
+    const family = typeof fontFamily === "string" ? fontFamily.trim() : "";
+    if (!family) return;
+    try {
+      window.dispatchEvent(new CustomEvent("editor2d:fontUsed", { detail: { fontFamily: family } }));
+    } catch {}
+  };
+
   const setActiveTextStyle = async (patch: TextStyle & { from?: "font-picker" | "inspector" }) => {
     const c: any = canvasRef.current as any;
     if (!c) return;
@@ -729,6 +743,10 @@ const Editor2D = forwardRef<Editor2DHandle, Props>(function Editor2D(
       historyRef.current?.push("modify");
       emitHistory();
     }
+
+    emitTextStyleEvent("editor2d:activeTextStyle", getActiveTextStyle());
+    emitTextStyleEvent("editor2d:selectionStyle", getActiveTextStyle());
+    emitFontUsed(nextPatch.fontFamily);
   };
 
   const applyTextStyle = (patch: TextStyle) => {
@@ -987,14 +1005,16 @@ const Editor2D = forwardRef<Editor2DHandle, Props>(function Editor2D(
   const prepareBaseBrush = (brush: any) => {
     if (brush) {
       brush.shadow = null;
-      brush.strokeUniform = true;
+      // When scaling drawn objects we want the stroke width to scale too.
+      // Using strokeUniform keeps stroke width constant and can "snap back" on mouse up.
+      brush.strokeUniform = false;
     }
     return brush;
   };
 
   const applyStrokeMeta = (target: any, width: number) => {
     if (!target || typeof target.set !== "function") return;
-    const patch: Record<string, any> = { strokeUniform: true };
+    const patch: Record<string, any> = { strokeUniform: false };
     if (width > 0 && typeof target.strokeWidth === "number") {
       patch.strokeWidth = width;
     }
@@ -1284,7 +1304,7 @@ const Editor2D = forwardRef<Editor2DHandle, Props>(function Editor2D(
       strokeWidth: meta.strokeWidth,
       opacity: meta.opacity,
       strokeLineCap: DEFAULT_LINE_CAP,
-      strokeUniform: true,
+      strokeUniform: false,
       x1: -length / 2,
       y1: 0,
       x2: length / 2,
@@ -1395,7 +1415,7 @@ const Editor2D = forwardRef<Editor2DHandle, Props>(function Editor2D(
         strokeWidth: safeWidth,
         opacity: options.opacity,
         strokeLineCap: DEFAULT_LINE_CAP,
-        strokeUniform: true,
+        strokeUniform: false,
         fill: "transparent",
         selectable: true,
         evented: true,
@@ -1895,7 +1915,7 @@ const Editor2D = forwardRef<Editor2DHandle, Props>(function Editor2D(
         target.initialize(commands, {
           stroke: hasPattern ? preservedStroke : meta.stroke,
           strokeWidth: Math.max(0.1, meta.strokeWidth || 1),
-          strokeUniform: true,
+          strokeUniform: false,
           fill: hasPattern ? preservedFill : (meta.fill || CURVE_DEFAULT_FILL),
           opacity: meta.opacity == null ? 1 : meta.opacity,
           objectCaching: false,
@@ -1944,7 +1964,7 @@ const Editor2D = forwardRef<Editor2DHandle, Props>(function Editor2D(
     const tempPath = new fabric.Path(computeBezierFromNodes(meta.nodes, meta.closed), {
       stroke: meta.stroke,
       strokeWidth: Math.max(0.1, meta.strokeWidth || 1),
-      strokeUniform: true,
+      strokeUniform: false,
       fill: meta.fill || CURVE_DEFAULT_FILL,
       opacity: meta.opacity == null ? 1 : meta.opacity,
       objectCaching: false,
@@ -2319,6 +2339,40 @@ const Editor2D = forwardRef<Editor2DHandle, Props>(function Editor2D(
     });
   };
 
+  /**
+   * Patterns were being clipped to the original object bounds because Fabric
+   * kept using the cached bitmap generated before the resize.
+   * Clearing every cache hook here guarantees a full redraw after scaling.
+   */
+  const invalidatePatternRendering = (obj: any) => {
+    if (!obj) return;
+    // Disable cached bitmaps so the pattern repaints using the new bounds
+    obj.objectCaching = false;
+    obj.statefullCache = false;
+    // Allow Fabric to rebuild caches when scaling; keeping stale caches is a
+    // common cause of clipped patterns after resize.
+    obj.noScaleCache = false;
+    obj.cacheTranslationX = 0;
+    obj.cacheTranslationY = 0;
+    obj.dirty = true;
+    if (typeof obj._removeCache === "function") {
+      try { obj._removeCache(); } catch {}
+    }
+    if (obj._cacheCanvas) obj._cacheCanvas = undefined;
+    if (obj._cacheContext) obj._cacheContext = undefined;
+    if (obj._cacheData) obj._cacheData = undefined;
+    if (obj._boundingRect) obj._boundingRect = null;
+    if (typeof obj.setCoords === "function") {
+      try {
+        obj.setCoords();
+      } catch {}
+    }
+    // If the object belongs to a group, drop parent caches as well
+    if (obj.group) {
+      invalidatePatternRendering(obj.group);
+    }
+  };
+
   const visitLeafObjects = (obj: any, cb: (leaf: any) => void) => {
     if (!obj) return;
     if (typeof obj.forEachObject === "function") {
@@ -2354,7 +2408,9 @@ const Editor2D = forwardRef<Editor2DHandle, Props>(function Editor2D(
     if (target === "stroke") {
       Object.assign(patch, {
         stroke: pattern,
-        strokeUniform: true,
+        // Pattern strokes + strokeUniform tend to produce clipped/incorrect
+        // cached bounds during scaling. Let the stroke scale with the object.
+        strokeUniform: false,
         strokeLineCap: "round",
         strokeLineJoin: "round",
       });
@@ -2362,15 +2418,9 @@ const Editor2D = forwardRef<Editor2DHandle, Props>(function Editor2D(
       patch.fill = pattern;
     }
     obj.set(patch);
-    // Explicitly mark the object as dirty and refresh its bounding box so
-    // the pattern renders correctly across the entire new geometry.
-    obj.dirty = true;
-    if (typeof obj._setPositionDimensions === "function") {
-      try { obj._setPositionDimensions({}); } catch {}
-    }
-    if (typeof obj.setCoords === "function") {
-      try { obj.setCoords(); } catch {}
-    }
+    // Centraliza a invalidação de cache/bounds em um único lugar
+    // para evitar tentativas redundantes e chamadas a APIs privadas.
+    invalidatePatternRendering(obj);
     if (saveMeta) {
       obj.__moldaHasPattern = true;
       obj.__moldaPatternTarget = target;
@@ -2378,9 +2428,6 @@ const Editor2D = forwardRef<Editor2DHandle, Props>(function Editor2D(
       obj.__moldaPatternRepeat = meta.repeat;
       obj.__moldaPatternScale = meta.scale;
     }
-    try {
-      obj.setCoords?.();
-    } catch {}
   };
 
   const runPatternApplication = async (
@@ -2562,9 +2609,72 @@ const Editor2D = forwardRef<Editor2DHandle, Props>(function Editor2D(
     selectionListenersRef.current.forEach((cb) => {
       try { cb(kind); } catch {}
     });
+    const style = kind === "text" ? getActiveTextStyle() : null;
+    try {
+      window.dispatchEvent(new CustomEvent("editor2d:selectionChange", { detail: { kind, ...((style && style.fontFamily) ? { fontFamily: style.fontFamily } : {}) } }));
+    } catch {}
+    if (style) {
+      emitTextStyleEvent("editor2d:activeTextStyle", style);
+      emitTextStyleEvent("editor2d:selectionStyle", style);
+    }
   };
 
   const clipboardRef = useRef<any>(null);
+
+  // Integrações com UI externa via eventos globais
+  useEffect(() => {
+    const emitCurrentTextStyle = () => {
+      const kind = computeSelectionKind();
+      const style = getActiveTextStyle();
+      emitTextStyleEvent("editor2d:activeTextStyle", style);
+      emitTextStyleEvent("editor2d:selectionStyle", style);
+      try {
+        window.dispatchEvent(
+          new CustomEvent("editor2d:selectionChange", {
+            detail: { kind, ...((style && style.fontFamily) ? { fontFamily: style.fontFamily } : {}) },
+          })
+        );
+      } catch {}
+    };
+
+    const handleRequestStyle = () => {
+      emitCurrentTextStyle();
+    };
+
+    const handleAddCenteredText = (ev: Event) => {
+      const detail = (ev as CustomEvent)?.detail || {};
+      const value = typeof detail?.value === "string" ? detail.value : "Digite aqui";
+      addText(value);
+    };
+
+    const handleFontPicked = (ev: Event) => {
+      const family = (ev as CustomEvent)?.detail?.fontFamily;
+      if (typeof family === "string" && family.trim()) {
+        applyTextStyle({ fontFamily: family });
+        emitFontUsed(family);
+      }
+    };
+
+    window.addEventListener("editor2d:requestActiveTextStyle", handleRequestStyle as EventListener);
+    window.addEventListener("editor2d:addCenteredText", handleAddCenteredText as EventListener);
+    window.addEventListener("editor2d:fontPickedFromSidebar", handleFontPicked as EventListener);
+
+    return () => {
+      window.removeEventListener("editor2d:requestActiveTextStyle", handleRequestStyle as EventListener);
+      window.removeEventListener("editor2d:addCenteredText", handleAddCenteredText as EventListener);
+      window.removeEventListener("editor2d:fontPickedFromSidebar", handleFontPicked as EventListener);
+    };
+  }, [applyTextStyle, addText]);
+
+  // Fornece hook global usado pelo Sidebar/FontPicker
+  useEffect(() => {
+    (window as any).__editor2d_getActiveTextStyle = getActiveTextStyle;
+    return () => {
+      if ((window as any).__editor2d_getActiveTextStyle === getActiveTextStyle) {
+        delete (window as any).__editor2d_getActiveTextStyle;
+      }
+    };
+  }, []);
 
   const copySelection = () => {
     const c = canvasRef.current;
@@ -2820,9 +2930,121 @@ const Editor2D = forwardRef<Editor2DHandle, Props>(function Editor2D(
           return;
         }
 
-        installFabricEraser(fabric);
+          installFabricEraser(fabric);
 
-        fabricRef.current = fabric;
+          // CORREÇÃO CRÍTICA: Intercepta o prototype do Pattern para garantir renderização sem limitações
+          // O problema é que o canvas do pattern é criado com tamanho baseado no objeto original
+          // e não é atualizado quando o objeto é redimensionado
+          try {
+            if (fabric.Pattern && fabric.Pattern.prototype) {
+              const PatternProto = fabric.Pattern.prototype as any;
+              
+              // Intercepta o método toLive que cria o canvas do pattern
+              // Este método é chamado toda vez que o pattern é renderizado
+              // CRÍTICO: O problema pode estar no canvas sendo criado com tamanho baseado na imagem original
+              if (PatternProto.toLive && typeof PatternProto.toLive === "function" && !PatternProto.__moldaToLivePatched) {
+                PatternProto.__moldaToLivePatched = true;
+                const originalToLive = PatternProto.toLive;
+                PatternProto.toLive = function(ctx: CanvasRenderingContext2D) {
+                  try {
+                    // CRÍTICO: Remove sourceRect ANTES de renderizar
+                    // O sourceRect limita a área de renderização do pattern baseado no tamanho da imagem
+                    if (this.sourceRect) {
+                      delete this.sourceRect;
+                    }
+                    // CRÍTICO: Remove canvas cacheado para forçar recriação
+                    // O canvas pode ter sido criado com tamanho baseado na imagem original (img.width, img.height)
+                    // e não no tamanho atual do objeto
+                    if (this._patternCanvas) {
+                      const oldCanvas = this._patternCanvas;
+                      delete this._patternCanvas;
+                      // Se o canvas tinha tamanho limitado pela imagem, força recriação sem limitações
+                    }
+                    // CRÍTICO: Intercepta a criação do canvas para garantir que não use o tamanho da imagem como limite
+                    // O método original pode estar criando um canvas com width/height baseados em this.source.width/height
+                    // Precisamos garantir que o canvas seja criado sem essas limitações
+                    const originalSource = this.source;
+                    // Se source é uma imagem, não devemos usar suas dimensões para limitar o canvas
+                    // O pattern deve ser renderizado em toda a extensão do objeto, não limitado pela imagem
+                    
+                    // Chama o método original
+                    const result = originalToLive.call(this, ctx);
+                    
+                    // CRÍTICO: Após criar o canvas, garante que ele não tenha limitações de tamanho
+                    if (this._patternCanvas) {
+                      // O canvas pode ter sido criado com tamanho baseado na imagem
+                      // Não podemos mudar o tamanho do canvas diretamente, mas podemos garantir
+                      // que o sourceRect não limite a renderização
+                      if (this.sourceRect) {
+                        delete this.sourceRect;
+                      }
+                    }
+                    
+                    // Garante que sourceRect não seja recriado após renderização
+                    if (this.sourceRect) {
+                      delete this.sourceRect;
+                    }
+                    return result;
+                  } catch (err) {
+                    console.warn("[Editor2D] Error in toLive patch:", err);
+                    return originalToLive.call(this, ctx);
+                  }
+                };
+              }
+              
+              // Intercepta o método que cria o canvas do pattern se existir
+              // Este método pode estar criando o canvas com tamanho baseado na imagem
+              // CRÍTICO: O problema está aqui - o canvas é criado com tamanho baseado na imagem (img.width, img.height)
+              // e não no tamanho do objeto, causando o corte quando o objeto é redimensionado
+              if (PatternProto._getPatternCanvas && typeof PatternProto._getPatternCanvas === "function" && !PatternProto.__moldaGetPatternCanvasPatched) {
+                PatternProto.__moldaGetPatternCanvasPatched = true;
+                const originalGetPatternCanvas = PatternProto._getPatternCanvas;
+                PatternProto._getPatternCanvas = function() {
+                  try {
+                    // Remove sourceRect antes de criar o canvas
+                    // O sourceRect pode estar sendo definido com base no tamanho da imagem
+                    if (this.sourceRect) {
+                      delete this.sourceRect;
+                    }
+                    // CRÍTICO: Se source é uma imagem, não devemos usar suas dimensões para limitar o canvas
+                    // O canvas deve ser criado sem limitações de tamanho baseadas na imagem
+                    const originalSource = this.source;
+                    // Temporariamente remove informações de tamanho da imagem para evitar limitações
+                    let savedWidth, savedHeight;
+                    if (originalSource && typeof originalSource === "object" && "width" in originalSource && "height" in originalSource) {
+                      // Não podemos modificar a imagem diretamente, mas podemos garantir
+                      // que o sourceRect não seja criado com base nela
+                    }
+                    
+                    // Chama o método original
+                    const canvas = originalGetPatternCanvas.call(this);
+                    
+                    // CRÍTICO: Após criar o canvas, verifica se ele foi criado com tamanho limitado pela imagem
+                    // Se o canvas tem width/height iguais à imagem, isso pode estar limitando a renderização
+                    if (canvas && originalSource) {
+                      const imgWidth = originalSource.width || 0;
+                      const imgHeight = originalSource.height || 0;
+                      // Se o canvas foi criado com tamanho igual à imagem, isso pode estar causando o problema
+                      // Mas não podemos simplesmente mudar o tamanho do canvas, pois isso quebraria o pattern
+                      // Em vez disso, garantimos que o sourceRect não limite a renderização
+                      if (this.sourceRect) {
+                        delete this.sourceRect;
+                      }
+                    }
+                    
+                    return canvas;
+                  } catch (err) {
+                    console.warn("[Editor2D] Error in _getPatternCanvas patch:", err);
+                    return originalGetPatternCanvas.call(this);
+                  }
+                };
+              }
+            }
+          } catch (err) {
+            console.warn("[Editor2D] Failed to patch Pattern.prototype.toLive:", err);
+          }
+
+          fabricRef.current = fabric;
 
         const el = document.createElement("canvas");
         el.style.width = "100%";
@@ -3000,6 +3222,49 @@ const Editor2D = forwardRef<Editor2DHandle, Props>(function Editor2D(
           }
         };
 
+        const __onScaling = (evt: any) => {
+          const target = evt?.target;
+          if (!target) return;
+          // CRÍTICO: Quando um objeto é redimensionado, o canvas do pattern precisa ser recriado
+          // O canvas pode ter sido criado com tamanho baseado no objeto original
+          visitLeafObjects(target, (obj: any) => {
+            if (!obj || !obj.__moldaHasPattern) return;
+           // Remove canvas do pattern para forçar recriação
+            const fill = obj.fill;
+            const stroke = obj.stroke;
+           if (fill && typeof fill === "object" && fill._patternCanvas) {
+             delete fill._patternCanvas;
+            }
+            if (fill && typeof fill === "object" && fill.sourceRect) {
+              delete fill.sourceRect;
+            }
+            if (stroke && typeof stroke === "object" && stroke._patternCanvas) {
+              delete stroke._patternCanvas;
+            }
+            if (stroke && typeof stroke === "object" && stroke.sourceRect) {
+              delete stroke.sourceRect;
+            }
+            invalidatePatternRendering(obj);
+            // CRÍTICO: Atualiza o bounding box para garantir que corresponda ao tamanho real
+            // O problema pode estar no bounding box não correspondendo ao tamanho real do objeto
+            if (typeof obj.setCoords === "function") {
+              try {
+                obj.setCoords();
+                // Força recálculo do bounding box
+                if (typeof obj.calcCoords === "function") {
+                  obj.calcCoords();
+                }
+              } catch {}
+            }
+            // Invalida cache do bounding box
+            if (obj._boundingRect) {
+              obj._boundingRect = null;
+            }
+            // Marca o objeto como dirty para forçar re-renderização
+            obj.dirty = true;
+          });
+        };
+
     c.on("object:added", __onAdded);
     c.on("object:removed", __onRemoved);
     c.on("object:modified", __onModified);
@@ -3013,6 +3278,7 @@ const Editor2D = forwardRef<Editor2DHandle, Props>(function Editor2D(
         c.on("erasing:end", __onErasingEnd);
         c.on("object:moving", __onMoving);
         c.on("object:rotating", __onRotating);
+        c.on("object:scaling", __onScaling);
 
         setCanvasReady(true);
         console.log("[Editor2D] Canvas ready set to true");
@@ -3037,6 +3303,7 @@ const Editor2D = forwardRef<Editor2DHandle, Props>(function Editor2D(
       }
       const c = canvasRef.current;
       if (c) {
+        detachLineListeners(c);
         c.off("object:added");
         c.off("object:removed");
         c.off("object:modified");
@@ -3045,6 +3312,7 @@ const Editor2D = forwardRef<Editor2DHandle, Props>(function Editor2D(
         c.off("erasing:end");
         c.off("object:moving");
         c.off("object:rotating");
+        c.off("object:scaling");
         c.dispose?.();
       }
       roRef.current?.disconnect();
@@ -3167,7 +3435,7 @@ const Editor2D = forwardRef<Editor2DHandle, Props>(function Editor2D(
         const previewPath = new fabric.Path("M 0 0", {
           stroke: strokeColor,
           strokeWidth: Math.max(0.1, strokeWidth || 1),
-          strokeUniform: true,
+          strokeUniform: false,
           fill: CURVE_DEFAULT_FILL,
           opacity,
           selectable: false,
@@ -3458,7 +3726,7 @@ const Editor2D = forwardRef<Editor2DHandle, Props>(function Editor2D(
           strokeWidth: Math.max(1, strokeWidth || 1),
           opacity,
           strokeLineCap: DEFAULT_LINE_CAP,
-          strokeUniform: true,
+          strokeUniform: false,
           selectable: false,
           evented: false,
           objectCaching: false,
