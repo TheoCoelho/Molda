@@ -107,7 +107,7 @@ export type Editor2DHandle = {
   getActiveTextStyle: () => TextStyle | null;
   setActiveTextStyle: (patch: TextStyle & { from?: "font-picker" | "inspector" }) => Promise<void>;
   applyTextStyle: (patch: TextStyle) => void;
-  onSelectionChange?: (cb: (k: "none" | "text" | "other") => void) => void;
+  onSelectionChange?: (cb: (k: "none" | "text" | "image" | "other") => void) => void;
 
   // ==== Context Menu Functions ====
   getSelectionInfo: () => SelectionInfo | null;
@@ -366,7 +366,7 @@ const Editor2D = forwardRef<Editor2DHandle, Props>(function Editor2D(
     opacity,
   });
   const toolRef = useRef(tool);
-  const selectionListenersRef = useRef(new Set<(k: "none" | "text" | "other") => void>());
+  const selectionListenersRef = useRef(new Set<(k: "none" | "text" | "image" | "other") => void>());
   const erasingCountRef = useRef(0);
   const idleResolversRef = useRef<Set<() => void>>(new Set());
   const historyGuardRef = useRef(0);
@@ -2593,14 +2593,46 @@ const Editor2D = forwardRef<Editor2DHandle, Props>(function Editor2D(
   };
 
 
-  const computeSelectionKind = (): "none" | "text" | "other" => {
+  const computeSelectionKind = (): "none" | "text" | "image" | "other" => {
     const c = canvasRef.current as any;
     if (!c) return "none";
     const active: any = c.getActiveObject && c.getActiveObject();
     const activeObjects: any[] = c.getActiveObjects ? c.getActiveObjects() : [];
     if (!active || activeObjects.length === 0) return "none";
-    const t = String(active.type || "").toLowerCase();
-    if (t.includes("text")) return "text";
+
+    const isTextObject = (obj: any): boolean => {
+      const t = String(obj?.type || "").toLowerCase();
+      return t.includes("text");
+    };
+
+    const isImageObject = (obj: any): boolean => {
+      const t = String(obj?.type || "").toLowerCase();
+      if (t.includes("image")) return true;
+      // fallback: fabric.Image costuma ter _element
+      if (obj && obj._element) return true;
+      return false;
+    };
+
+    const allLeavesAreImages = (obj: any): boolean => {
+      if (!obj) return false;
+      if (isTextObject(obj)) return false;
+      if (isImageObject(obj)) return true;
+      const children: any[] = Array.isArray(obj._objects) ? obj._objects : [];
+      if (children.length === 0) return false;
+      return children.every((c) => allLeavesAreImages(c));
+    };
+
+    // Texto tem prioridade
+    const hasText = activeObjects.some((o) => {
+      if (isTextObject(o)) return true;
+      const children: any[] = Array.isArray(o?._objects) ? o._objects : [];
+      return children.some((c) => isTextObject(c));
+    });
+    if (hasText) return "text";
+
+    const isImageSelection = activeObjects.every((o) => allLeavesAreImages(o));
+    if (isImageSelection) return "image";
+
     return "other";
   };
 

@@ -280,13 +280,13 @@ export default function FloatingEditorToolbar({
   }, []);
 
   return (
-    <div className="absolute left-1/2 -translate-x-1/2 top-3 z-20 select-none">
+    <div className="relative z-20 inline-block select-none">
       <div className="group relative">
         {/* ====== TOOLBAR ====== */}
         <div
           ref={barRef}
           className={
-            `rounded-2xl px-3 py-2 border border-black/5 dark:border-white/10 flex items-center gap-2 ` +
+            `rounded-2xl p-2 border border-black/5 dark:border-white/10 flex items-center gap-2 ` +
             (reduceFx ? `bg-white/90 dark:bg-neutral-800/90` : `backdrop-blur-md bg-white/70 dark:bg-neutral-900/60`)
           }
         >
@@ -313,10 +313,10 @@ export default function FloatingEditorToolbar({
                 type="button"
                 title="Seleção de cores"
                 aria-label="Abrir seleção de cores"
-                className="h-10 w-10 grid place-items-center rounded-xl border border-black/5 dark:border-white/10 bg-white/80 dark:bg-neutral-900/70 hover:bg-white hover:shadow transition"
+                className="h-9 w-9 grid place-items-center rounded-xl border border-black/5 dark:border-white/10 bg-white/80 dark:bg-neutral-900/70 hover:bg-white hover:shadow transition"
                 onClick={() => { setIsColorPanelOpen((v) => !v); setShowSwatchBar(false); }}
               >
-                <Droplet className="h-5 w-5" />
+                <Droplet className="h-4 w-4" />
               </button>
 
               {/* ===== FAIXA DE CORES RECOMENDADAS (ACIMA) ===== */}
@@ -403,10 +403,10 @@ export default function FloatingEditorToolbar({
                     <div className="flex-1" />
                     <button
                       type="button"
-                      className="h-10 w-10 rounded-xl border bg-white/70 dark:bg-neutral-800/70 border-black/10 dark:border-white/10 grid place-items-center"
+                      className="h-9 w-9 rounded-xl border bg-white/70 dark:bg-neutral-800/70 border-black/10 dark:border-white/10 grid place-items-center"
                       title="Conta-gotas do sistema (visual)"
                     >
-                      <Pipette className="h-5 w-5" />
+                      <Pipette className="h-4 w-4" />
                     </button>
                   </div>
                 </div>
@@ -418,7 +418,7 @@ export default function FloatingEditorToolbar({
           <button
             type="button"
             aria-label={isTrashMode ? "Desativar modo lixeira" : "Excluir objeto selecionado ou ativar modo lixeira"}
-            className={`h-10 w-10 grid place-items-center rounded-xl border border-black/5 dark:border-white/10 ${isTrashMode ? "bg-red-50 dark:bg-red-900/30" : "bg-white/80 dark:bg-neutral-900/70"} hover:bg-white hover:shadow transition`}
+            className={`h-9 w-9 grid place-items-center rounded-xl border border-black/5 dark:border-white/10 ${isTrashMode ? "bg-red-50 dark:bg-red-900/30" : "bg-white/80 dark:bg-neutral-900/70"} hover:bg-white hover:shadow transition`}
             onClick={() => {
               if (editor2DRef && typeof editor2DRef.deleteSelection === "function") {
                 editor2DRef.deleteSelection();
@@ -429,7 +429,7 @@ export default function FloatingEditorToolbar({
             }}
             title="Excluir seleção (clique) ou ativar lixeira"
           >
-            <Trash2 className={`h-5 w-5 ${isTrashMode ? "text-red-500" : ""}`} />
+            <Trash2 className={`h-4 w-4 ${isTrashMode ? "text-red-500" : ""}`} />
           </button>
 
           {/* Separador */}
@@ -437,8 +437,8 @@ export default function FloatingEditorToolbar({
 
           {/* 3) Largura */}
           <div className="flex items-center">
-            <div className="h-10 grid place-items-center">
-              <SlidersHorizontal className="h-5 w-5 opacity-90" />
+            <div className="h-9 grid place-items-center">
+              <SlidersHorizontal className="h-4 w-4 opacity-90" />
             </div>
             <input
               type="range"
@@ -478,22 +478,22 @@ export default function FloatingEditorToolbar({
           <button
             type="button"
             aria-label="Desfazer"
-            className="h-10 w-10 grid place-items-center rounded-xl border border-black/5 dark:border-white/10 bg-white/80 dark:bg-neutral-900/70 hover:bg-white hover:shadow transition"
+            className="h-9 w-9 grid place-items-center rounded-xl border border-black/5 dark:border-white/10 bg-white/80 dark:bg-neutral-900/70 hover:bg-white hover:shadow transition"
             onClick={onUndo}
             disabled={canUndo === false}
             title="Desfazer (Ctrl/Cmd+Z)"
           >
-            <Undo2 className="h-5 w-5" />
+            <Undo2 className="h-4 w-4" />
           </button>
           <button
             type="button"
             aria-label="Refazer"
-            className="h-10 w-10 grid place-items-center rounded-xl border border-black/5 dark:border-white/10 bg-white/80 dark:bg-neutral-900/70 hover:bg-white hover:shadow transition"
+            className="h-9 w-9 grid place-items-center rounded-xl border border-black/5 dark:border-white/10 bg-white/80 dark:bg-neutral-900/70 hover:bg-white hover:shadow transition"
             onClick={onRedo}
             disabled={canRedo === false}
             title="Refazer (Ctrl+Y ou Ctrl+Shift+Z)"
           >
-            <Redo2 className="h-5 w-5" />
+            <Redo2 className="h-4 w-4" />
           </button>
 
           {/* Separador */}
@@ -503,18 +503,15 @@ export default function FloatingEditorToolbar({
           <button
             type="button"
             aria-label="Ferramenta de seleção"
-            className="h-10 w-10 grid place-items-center rounded-xl border border-black/5 dark:border-white/10 bg-white/80 dark:bg-neutral-900/70 hover:bg-white hover:shadow transition"
+            className="h-9 w-9 grid place-items-center rounded-xl border border-black/5 dark:border-white/10 bg-white/80 dark:bg-neutral-900/70 hover:bg-white hover:shadow transition"
             onClick={() => setTool("select")}
             title="Selecionar (V)"
           >
-            <MousePointer2 className="h-5 w-5" />
+            <MousePointer2 className="h-4 w-4" />
           </button>
         </div>
 
-        {/* Badge modo (visual) */}
-        <div className="absolute -bottom-5 left-1/2 -translate-x-1/2 text-xs text-black/60 dark:text-white/60">
-          {mode} canvas
-        </div>
+        {/* Badge modo removido */}
       </div>
     </div>
   );

@@ -8,6 +8,7 @@ import { Button } from "../components/ui/button";
 import { Eye, EyeOff, Plus, X } from "lucide-react";
 import FloatingEditorToolbar from "../components/FloatingEditorToolbar";
 import TextToolbar from "../components/TextToolbar";
+import ImageToolbar from "../components/ImageToolbar";
 import { useRecentFonts } from "../hooks/use-recent-fonts";
 
 import Editor2D, {
@@ -35,7 +36,7 @@ import { useAuth } from "../contexts/AuthContext";
 import type { ExternalDecalData, DecalTransform, DecalStateSnapshot } from "../types/decals";
 
 type CanvasTab = { id: string; name: string; type: "2d" | "3d" };
-type SelectionKind = "none" | "text" | "other";
+type SelectionKind = "none" | "text" | "image" | "other";
 type DraftPayload = {
   projectName: string;
   baseColor: string;
@@ -1210,7 +1211,7 @@ const Creation = () => {
                   Arraste para rotacionar · Scroll para zoom
                 </div>
 
-                <div className="absolute left-1/2 z-10" style={{ bottom: "80px", maxWidth: "95%", transform: "translateX(-50%)" }}>
+                <div className="absolute left-1/2 bottom-6 z-10 max-w-[95%] -translate-x-1/2">
                   <FloatingEditorToolbar
                     strokeColor={strokeColor}
                     setStrokeColor={setStrokeColor}
@@ -1321,15 +1322,23 @@ const Creation = () => {
                         ))}
 
                       {selectionKind === "text" && (
-                        <TextToolbar
-                          editor={{ current: editorRefs.current[activeCanvasTab] as Editor2DHandle }}
-                          visible={activeIs2D && selectionKind === "text"}
-                          position="bottom"
-                        />
+                        <div className="absolute left-1/2 bottom-6 z-10 max-w-[95%] -translate-x-1/2">
+                          <TextToolbar
+                            editor={{ current: editorRefs.current[activeCanvasTab] as Editor2DHandle }}
+                            visible={activeIs2D && selectionKind === "text"}
+                            position="inline"
+                          />
+                        </div>
                       )}
 
-                      {selectionKind !== "text" && (
-                        <div className="absolute left-1/2 z-10" style={{ bottom: "80px", maxWidth: "95%", transform: "translateX(-50%)" }}>
+                      {selectionKind === "image" && (
+                        <div className="absolute left-1/2 bottom-6 z-10 max-w-[95%] -translate-x-1/2">
+                          <ImageToolbar visible={activeIs2D && selectionKind === "image"} position="inline" />
+                        </div>
+                      )}
+
+                      {selectionKind !== "text" && selectionKind !== "image" && (
+                        <div className="absolute left-1/2 bottom-6 z-10 max-w-[95%] -translate-x-1/2">
                           <FloatingEditorToolbar
                             strokeColor={strokeColor}
                             setStrokeColor={setStrokeColor}
