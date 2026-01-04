@@ -224,9 +224,27 @@ export default function ImageToolbar({ visible, editor, position = "bottom" }: P
     // Importante: não aplicar níveis quando o menu está fechado,
     // senão ao re-selecionar a imagem o componente remonta e resetaria para o original.
     if (!levelsOpen) return;
-    // Evita re-encode desnecessário quando tudo está no default.
-    if (levelsIsDefault) return;
     if (!editor?.current?.applyActiveImageAdjustments) return;
+
+    // Evita trabalho desnecessário: só aplica o default se a imagem
+    // realmente está com ajustes diferentes (reset intencional).
+    if (levelsIsDefault) {
+      const current = editor?.current?.getActiveImageAdjustments?.();
+      const currentIsDefault =
+        !current ||
+        (
+          (current.brightness ?? 100) === 100 &&
+          (current.contrast ?? 100) === 100 &&
+          (current.saturation ?? 100) === 100 &&
+          (current.sepia ?? 0) === 0 &&
+          (current.grayscale ?? 0) === 0 &&
+          (current.hue ?? 0) === 0 &&
+          !(current.shadowOn ?? false) &&
+          (current.shadowBlur ?? 0) === 0 &&
+          (current.shadowOpacity ?? 0) === 0
+        );
+      if (currentIsDefault) return;
+    }
     if (applyTimerRef.current) window.clearTimeout(applyTimerRef.current);
     const next = getAdj();
     applyTimerRef.current = window.setTimeout(() => {

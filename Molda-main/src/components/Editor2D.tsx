@@ -155,6 +155,8 @@ export type Editor2DHandle = {
 };
 
 type Props = {
+  /** Apenas o editor ativo deve responder a atalhos globais (Ctrl+Z/Y, Enter etc.). */
+  isActive?: boolean;
   tool: Tool;
   brushVariant: BrushVariant;
   continuousLineMode: boolean;
@@ -346,6 +348,7 @@ function loadFabricRuntime(): Promise<any> {
 
 const Editor2D = forwardRef<Editor2DHandle, Props>(function Editor2D(
   {
+    isActive = true,
     tool,
     brushVariant,
     continuousLineMode,
@@ -410,6 +413,14 @@ const Editor2D = forwardRef<Editor2DHandle, Props>(function Editor2D(
     objects: new Set(),
     backup: new Map(),
   });
+
+  const isActiveRef = useRef<boolean>(isActive);
+  useEffect(() => {
+    isActiveRef.current = !!isActive;
+  }, [isActive]);
+
+  const imageAdjCommitTimerRef = useRef<number | null>(null);
+  const imageAdjOpIdRef = useRef(0);
 
   const runSilently = (cb: () => void) => {
     historyGuardRef.current += 1;
@@ -516,6 +527,7 @@ const Editor2D = forwardRef<Editor2DHandle, Props>(function Editor2D(
   // Do not auto-switch tools here; selection stays until user selects something else
   // or changes tool.
   React.useEffect(() => {
+    if (!isActive) return;
     const onGlobalKeyDown = (evt: KeyboardEvent) => {
       if (evt.key !== "Enter") return;
 
@@ -557,18 +569,20 @@ const Editor2D = forwardRef<Editor2DHandle, Props>(function Editor2D(
 
     window.addEventListener("keydown", onGlobalKeyDown);
     return () => window.removeEventListener("keydown", onGlobalKeyDown);
-  }, []);
+  }, [isActive]);
 
   const toJSON = () => {
     const c = canvasRef.current;
     if (c) {
-  const data = c.toJSON([
+      const data = c.toJSON([
         "selectable",
         "evented",
         "erasable",
         "eraser",
         "__lineMeta",
         "__curveMeta",
+        "__moldaImageAdjustments",
+        "__moldaOriginalSrc",
         "__moldaHasPattern",
         "__moldaPatternTarget",
         "__moldaPatternUrl",
@@ -862,7 +876,7 @@ const Editor2D = forwardRef<Editor2DHandle, Props>(function Editor2D(
     if (move) c.on("mouse:move", move);
     if (up) c.on("mouse:up", up);
     if (dbl) c.on("mouse:dblclick", dbl);
-    if (keydown) window.addEventListener("keydown", keydown);
+    if (keydown && isActiveRef.current) window.addEventListener("keydown", keydown);
     listenersRef.current = handlers;
   };
   
@@ -2302,8 +2316,34 @@ const Editor2D = forwardRef<Editor2DHandle, Props>(function Editor2D(
     const c = canvasRef.current as any;
     if (!c) return;
 
+    // Identifica esta execução para consolidar commits do histórico.
+    const opId = ++imageAdjOpIdRef.current;
+
     const imgs = getSelectedImageObjects();
     if (imgs.length === 0) return;
+
+    const scheduleHistoryCommit = () => {
+      if (isRestoringRef.current || isLoadingRef.current) return;
+      if (imageAdjCommitTimerRef.current) {
+        window.clearTimeout(imageAdjCommitTimerRef.current);
+      }
+      imageAdjCommitTimerRef.current = window.setTimeout(() => {
+        if (imageAdjOpIdRef.current !== opId) return;
+        imageAdjCommitTimerRef.current = null;
+        if (shouldRecordHistory()) {
+          historyRef.current?.push("image-adjust");
+          emitHistory();
+        }
+      }, 250);
+    };
+
+    const isDefaultLevels = (next: ImageAdjustments) =>
+      (next.brightness ?? 100) === 100 &&
+      (next.contrast ?? 100) === 100 &&
+      (next.saturation ?? 100) === 100 &&
+      (next.sepia ?? 0) === 0 &&
+      (next.grayscale ?? 0) === 0 &&
+      (next.hue ?? 0) === 0;
 
     const clamp01 = (n: number) => Math.max(0, Math.min(1, n));
     const applyFabricShadow = (img: any, next: ImageAdjustments) => {
@@ -2365,12 +2405,38 @@ const Editor2D = forwardRef<Editor2DHandle, Props>(function Editor2D(
       applyFabricShadow(img, adj);
       try { c.requestRenderAll?.(); } catch {}
 
+      // Reset para o default: volta para a imagem original (se disponível) sem re-encode.
+      if (isDefaultLevels(adj)) {
+        const originalSrc: string | undefined =
+          (img as any).__moldaOriginalSrc || img?._originalElement?.src || img?._element?.src;
+        if (originalSrc && typeof img?.setSrc === "function") {
+          await new Promise<void>((resolve) => {
+            img.setSrc(
+              originalSrc,
+              () => {
+                try { c.requestRenderAll?.(); } catch {}
+                resolve();
+              },
+              { crossOrigin: "anonymous" }
+            );
+          });
+        }
+        scheduleHistoryCommit();
+        continue;
+      }
+
       // Se só a sombra mudou, não precisa re-encode da imagem.
-      if (!needsReencode(prev, adj)) continue;
+      if (!needsReencode(prev, adj)) {
+        scheduleHistoryCommit();
+        continue;
+      }
 
       const originalSrc: string | undefined =
         (img as any).__moldaOriginalSrc || img?._originalElement?.src || img?._element?.src;
-      if (!originalSrc) continue;
+      if (!originalSrc) {
+        scheduleHistoryCommit();
+        continue;
+      }
 
       try {
         const dataUrl = await exportImageWithAdjustmentsToDataUrl(originalSrc, adj);
@@ -2396,6 +2462,8 @@ const Editor2D = forwardRef<Editor2DHandle, Props>(function Editor2D(
       } catch {
         // ignora falhas (CORS etc.)
       }
+
+      scheduleHistoryCommit();
     }
   };
 
@@ -3322,9 +3390,15 @@ const Editor2D = forwardRef<Editor2DHandle, Props>(function Editor2D(
         emitHistory();
 
         // Eventos simples do histórico
-        const __onAdded = () => {
-          if (shouldRecordHistory())
+        const __onAdded = (evt?: any) => {
+          // IMPORTANTE: strokes (lápis/spray/eraser) disparam object:added + path:created.
+          // Se gravarmos histórico aqui e também em path:created, o usuário precisa de 2 undos.
+          const target = evt?.target;
+          const isPath = !!target && String(target.type || "").toLowerCase() === "path";
+
+          if (shouldRecordHistory() && !isPath) {
             historyRef.current?.push("add");
+          }
           emitHistory();
           try { c.requestRenderAll(); } catch {}
           notifySelectionKind();
@@ -3534,6 +3608,10 @@ const Editor2D = forwardRef<Editor2DHandle, Props>(function Editor2D(
 
     return () => {
       disposed = true;
+      if (imageAdjCommitTimerRef.current) {
+        window.clearTimeout(imageAdjCommitTimerRef.current);
+        imageAdjCommitTimerRef.current = null;
+      }
       if (idleResolversRef.current.size) {
         const pending = Array.from(idleResolversRef.current);
         idleResolversRef.current.clear();
@@ -4106,10 +4184,11 @@ const Editor2D = forwardRef<Editor2DHandle, Props>(function Editor2D(
       return;
     }
 
-  }, [tool, brushVariant, strokeColor, strokeWidth, opacity, canvasReady, continuousLineMode]);
+  }, [tool, brushVariant, strokeColor, strokeWidth, opacity, canvasReady, continuousLineMode, isActive]);
 
   // Atalhos de teclado para undo/redo
   useEffect(() => {
+    if (!isActive) return;
     const onKey = (e: KeyboardEvent) => {
       const target = e.target as HTMLElement | null;
       if (
@@ -4134,7 +4213,7 @@ const Editor2D = forwardRef<Editor2DHandle, Props>(function Editor2D(
     };
     window.addEventListener("keydown", onKey);
     return () => window.removeEventListener("keydown", onKey);
-  }, []);
+  }, [isActive]);
 
   return (
     <div

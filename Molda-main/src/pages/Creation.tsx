@@ -1289,6 +1289,7 @@ const Creation = () => {
                                   }
                                 }
                               }}
+                              isActive={activeIs2D && tab.id === activeCanvasTab}
                               tool={tool}
                               brushVariant={brushVariant}
                               continuousLineMode={continuousLineMode}
