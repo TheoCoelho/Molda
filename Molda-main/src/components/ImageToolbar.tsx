@@ -2,10 +2,10 @@
 import React, { useEffect, useRef, useState } from "react";
 import {
   Crop,
+  Scissors,
   Lasso,
   SlidersHorizontal,
   Sparkles,
-  Square,
   Move,
   Pipette,
   Wand2,
@@ -371,8 +371,8 @@ export default function ImageToolbar({ visible, editor, position = "bottom" }: P
     CropTool,
     { label: string; Icon: React.ComponentType<{ className?: string }> }
   > = {
-    default: { label: "Corte", Icon: Crop },
-    square: { label: "Corte quadrado", Icon: Square },
+    default: { label: "Corte", Icon: Scissors },
+    square: { label: "Corte quadrado", Icon: Crop },
     lasso: { label: "Laço", Icon: Lasso },
     magic: { label: "Varinha mágica", Icon: Wand2 },
     color: { label: "Por cor", Icon: Pipette },
@@ -382,6 +382,17 @@ export default function ImageToolbar({ visible, editor, position = "bottom" }: P
     setCropTool(next);
     setCropPinned(false);
     setCropOpen(false);
+
+    // Corte quadrado: entra em modo de preview no Fabric.
+    if (next === "square") {
+      try {
+        editor?.current?.startSquareCrop?.();
+      } catch {}
+    } else {
+      try {
+        editor?.current?.cancelSquareCrop?.();
+      } catch {}
+    }
   };
 
   const cancelCropClose = () => {
@@ -923,7 +934,7 @@ export default function ImageToolbar({ visible, editor, position = "bottom" }: P
                   className="h-9 w-9 grid place-items-center rounded-xl border border-black/5 dark:border-white/10 bg-white/80 dark:bg-neutral-900/70 hover:bg-white hover:shadow transition"
                   onClick={() => selectCropTool("square")}
                 >
-                  <Square className="h-4 w-4" />
+                  <Crop className="h-4 w-4" />
                 </button>
 
                 <button

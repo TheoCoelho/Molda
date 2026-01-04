@@ -122,6 +122,13 @@ export type Editor2DHandle = {
   getActiveImageAdjustments?: () => ImageAdjustments | null;
   applyActiveImageAdjustments?: (adj: ImageAdjustments) => Promise<void>;
 
+  // ==== Corte (crop) ====
+  startSquareCrop?: () => void;
+  cancelSquareCrop?: () => void;
+  confirmCrop?: () => void;
+  isCropActive?: () => boolean;
+  onCropModeChange?: (cb: (active: boolean) => void) => void;
+
   toJSON: () => string;
   loadFromJSON: (json: string) => Promise<void>;
   deleteSelection: () => void;
@@ -405,6 +412,31 @@ const Editor2D = forwardRef<Editor2DHandle, Props>(function Editor2D(
   const onRequestToolChangeRef = useRef(onRequestToolChange);
   // Used to implement: only when user presses Enter the last created object should be selected.
   const lastCreatedObjectRef = useRef<any>(null);
+
+  // ----------------------- corte quadrado (preview) -----------------------
+  type SquareCropSession = {
+    active: boolean;
+    img: any;
+    imgOriginalCenter: { x: number; y: number };
+    imgOriginalAngle: number;
+    cropBox: any;
+    handles: { tl: any; tr: any; bl: any; br: any };
+    overlays: { top: any; bottom: any; left: any; right: any };
+    highlight: any;
+    size: number;
+    overhang: number;
+    imageRect: { left: number; top: number; width: number; height: number };
+  };
+  const squareCropRef = useRef<SquareCropSession | null>(null);
+  const cropModeListenersRef = useRef(new Set<(active: boolean) => void>());
+
+  const emitCropMode = (active: boolean) => {
+    try {
+      cropModeListenersRef.current.forEach((cb) => {
+        try { cb(active); } catch {}
+      });
+    } catch {}
+  };
   const curveStateRef = useRef({
     isDrawing: false,
     meta: null as CurveMeta | null,
@@ -538,8 +570,6 @@ const Editor2D = forwardRef<Editor2DHandle, Props>(function Editor2D(
   React.useEffect(() => {
     if (!isActive) return;
     const onGlobalKeyDown = (evt: KeyboardEvent) => {
-      if (evt.key !== "Enter") return;
-
       const c: any = canvasRef.current;
       if (!c) return;
 
@@ -550,6 +580,23 @@ const Editor2D = forwardRef<Editor2DHandle, Props>(function Editor2D(
         (active.isEditing === true ||
           (typeof active.enterEditing === "function" && active.hiddenTextarea));
       if (isTextEditing) return;
+
+      // Se estiver em modo de corte, Enter confirma e Esc/Delete cancela.
+      const cropSession = squareCropRef.current;
+      if (cropSession?.active) {
+        if (evt.key === "Enter") {
+          evt.preventDefault();
+          try { commitSquareCrop(); } catch {}
+          return;
+        }
+        if (evt.key === "Escape" || evt.key === "Delete" || evt.key === "Backspace") {
+          evt.preventDefault();
+          try { cancelSquareCrop(); } catch {}
+          return;
+        }
+      }
+
+      if (evt.key !== "Enter") return;
 
       const last = lastCreatedObjectRef.current;
       if (!last) return;
@@ -579,6 +626,459 @@ const Editor2D = forwardRef<Editor2DHandle, Props>(function Editor2D(
     window.addEventListener("keydown", onGlobalKeyDown);
     return () => window.removeEventListener("keydown", onGlobalKeyDown);
   }, [isActive]);
+
+  const clamp = (n: number, min: number, max: number) => Math.max(min, Math.min(max, n));
+
+  const getActiveSingleImageForCrop = (): any | null => {
+    const imgs = getSelectedImageObjects();
+    if (imgs.length !== 1) return null;
+    const img = imgs[0];
+    // Evita cortar imagem dentro de grupo (primeira versão)
+    if ((img as any).group) return null;
+    const angle = Number((img as any).angle ?? 0);
+    // Primeira versão: corte quadrado apenas sem rotação.
+    if (Math.abs(angle) > 0.001) return null;
+    return img;
+  };
+
+  const cleanupSquareCropPreview = (opts?: { restoreImage?: boolean }) => {
+    const c: any = canvasRef.current;
+    const fabric: any = fabricRef.current;
+    const s = squareCropRef.current;
+    if (!c || !fabric || !s) return;
+
+    runSilently(() => {
+      try { c.remove(s.cropBox); } catch {}
+      try { c.remove(s.handles.tl); } catch {}
+      try { c.remove(s.handles.tr); } catch {}
+      try { c.remove(s.handles.bl); } catch {}
+      try { c.remove(s.handles.br); } catch {}
+      try { c.remove(s.overlays.top); } catch {}
+      try { c.remove(s.overlays.bottom); } catch {}
+      try { c.remove(s.overlays.left); } catch {}
+      try { c.remove(s.overlays.right); } catch {}
+      try { c.remove(s.highlight); } catch {}
+
+      if (opts?.restoreImage !== false) {
+        try {
+          const p = new fabric.Point(s.imgOriginalCenter.x, s.imgOriginalCenter.y);
+          s.img.setPositionByOrigin?.(p, "center", "center");
+          s.img.set({ angle: s.imgOriginalAngle });
+          s.img.setCoords?.();
+        } catch {}
+      }
+    });
+
+    squareCropRef.current = null;
+    emitCropMode(false);
+    try { c.requestRenderAll?.(); } catch {}
+  };
+
+  const updateSquareCropPreview = () => {
+    const c: any = canvasRef.current;
+    const fabric: any = fabricRef.current;
+    const s = squareCropRef.current;
+    if (!c || !fabric || !s?.active) return;
+
+    const imgR = s.imageRect;
+    const boxLeft = Number(s.cropBox.left ?? 0);
+    const boxTop = Number(s.cropBox.top ?? 0);
+    const nextW = Number(s.cropBox.width ?? s.size) || s.size;
+    const nextH = Number(s.cropBox.height ?? s.size) || s.size;
+
+    const w = Math.max(10, nextW);
+    const h = Math.max(10, nextH);
+    const minLeft = imgR.left;
+    const maxLeft = imgR.left + imgR.width - w;
+    const minTop = imgR.top;
+    const maxTop = imgR.top + imgR.height - h;
+
+    const cl = clamp(boxLeft, minLeft, maxLeft);
+    const ct = clamp(boxTop, minTop, maxTop);
+
+    const setHandlePos = (h: any, x: number, y: number) => {
+      try {
+        h.set({ left: x, top: y });
+        h.setCoords?.();
+      } catch {}
+    };
+
+    runSilently(() => {
+      // cropBox retangular (handles independentes)
+      try { s.cropBox.set({ left: cl, top: ct, width: w, height: h }); } catch {}
+      try { s.cropBox.setCoords?.(); } catch {}
+      s.size = Math.max(w, h);
+
+      // handles nos vértices
+      setHandlePos(s.handles.tl, cl, ct);
+      setHandlePos(s.handles.tr, cl + w, ct);
+      setHandlePos(s.handles.bl, cl, ct + h);
+      setHandlePos(s.handles.br, cl + w, ct + h);
+
+      const canvasW = Number(c.getWidth?.() ?? 0) || 0;
+      const canvasH = Number(c.getHeight?.() ?? 0) || 0;
+
+      const topH = Math.max(0, ct);
+      const bottomH = Math.max(0, canvasH - (ct + h));
+      const leftW = Math.max(0, cl);
+      const rightW = Math.max(0, canvasW - (cl + w));
+
+      // overlay global: escurece todo o canvas fora do recorte
+      try { s.overlays.top.set({ left: 0, top: 0, width: canvasW, height: topH }); } catch {}
+      try { s.overlays.bottom.set({ left: 0, top: ct + h, width: canvasW, height: bottomH }); } catch {}
+      try { s.overlays.left.set({ left: 0, top: ct, width: leftW, height: h }); } catch {}
+      try { s.overlays.right.set({ left: cl + w, top: ct, width: rightW, height: h }); } catch {}
+      try { s.overlays.top.setCoords?.(); } catch {}
+      try { s.overlays.bottom.setCoords?.(); } catch {}
+      try { s.overlays.left.setCoords?.(); } catch {}
+      try { s.overlays.right.setCoords?.(); } catch {}
+    });
+
+    try {
+      // garante z-order
+      s.cropBox.bringToFront?.();
+      s.handles.tl.bringToFront?.();
+      s.handles.tr.bringToFront?.();
+      s.handles.bl.bringToFront?.();
+      s.handles.br.bringToFront?.();
+    } catch {}
+
+    try { c.requestRenderAll?.(); } catch {}
+  };
+
+  const startSquareCrop = () => {
+    const c: any = canvasRef.current;
+    const fabric: any = fabricRef.current;
+    if (!c || !fabric) return;
+
+    // Se já houver um preview ativo, limpa antes.
+    cleanupSquareCropPreview({ restoreImage: true });
+
+    const img = getActiveSingleImageForCrop();
+    if (!img) return;
+
+    const originalCenter = (() => {
+      try {
+        const p = img.getCenterPoint?.();
+        if (p && typeof p.x === "number" && typeof p.y === "number") return { x: p.x, y: p.y };
+      } catch {}
+      return { x: (c.getWidth?.() ?? 0) / 2, y: (c.getHeight?.() ?? 0) / 2 };
+    })();
+    const originalAngle = Number(img.angle ?? 0);
+
+    // Centraliza temporariamente a imagem no canvas.
+    runSilently(() => {
+      try {
+        const p = new fabric.Point(c.getWidth() / 2, c.getHeight() / 2);
+        img.setPositionByOrigin?.(p, "center", "center");
+        img.setCoords?.();
+      } catch {}
+    });
+
+    const imageRect = (() => {
+      try {
+        const r = img.getBoundingRect?.(true, true);
+        if (r && typeof r.left === "number") return { left: r.left, top: r.top, width: r.width, height: r.height };
+      } catch {}
+      // fallback simples
+      const left = Number(img.left ?? 0);
+      const top = Number(img.top ?? 0);
+      const w = Number(img.width ?? 0) * Number(img.scaleX ?? 1);
+      const h = Number(img.height ?? 0) * Number(img.scaleY ?? 1);
+      return { left, top, width: w, height: h };
+    })();
+
+    const size = Math.max(10, Math.min(imageRect.width, imageRect.height));
+    const startW = size;
+    const startH = size;
+    const startLeft = imageRect.left + (imageRect.width - startW) / 2;
+    const startTop = imageRect.top + (imageRect.height - startH) / 2;
+    const overhang = 14;
+
+    const overlayFill = "rgba(0,0,0,0.55)";
+
+    const canvasW = Number(c.getWidth?.() ?? 0) || 0;
+    const canvasH = Number(c.getHeight?.() ?? 0) || 0;
+
+    const overlays = {
+      top: new fabric.Rect({ left: 0, top: 0, width: canvasW, height: Math.max(0, startTop), fill: overlayFill, selectable: false, evented: false, excludeFromExport: true }),
+      bottom: new fabric.Rect({ left: 0, top: startTop + startH, width: canvasW, height: Math.max(0, canvasH - (startTop + startH)), fill: overlayFill, selectable: false, evented: false, excludeFromExport: true }),
+      left: new fabric.Rect({ left: 0, top: startTop, width: Math.max(0, startLeft), height: startH, fill: overlayFill, selectable: false, evented: false, excludeFromExport: true }),
+      right: new fabric.Rect({ left: startLeft + startW, top: startTop, width: Math.max(0, canvasW - (startLeft + startW)), height: startH, fill: overlayFill, selectable: false, evented: false, excludeFromExport: true }),
+    };
+
+    const highlight = new fabric.Rect({
+      left: imageRect.left,
+      top: imageRect.top,
+      width: imageRect.width,
+      height: imageRect.height,
+      fill: "rgba(0,0,0,0)",
+      stroke: withAlpha(GIZMO_THEME.primary, 0.8),
+      strokeWidth: 2,
+      strokeDashArray: [6, 4],
+      selectable: false,
+      evented: false,
+      excludeFromExport: true,
+    });
+
+    // Caixa arrastável (invisível) que controla o quadrado
+    const cropBox = new fabric.Rect({
+      left: startLeft,
+      top: startTop,
+      width: startW,
+      height: startH,
+      fill: "rgba(0,0,0,0)",
+      stroke: withAlpha(GIZMO_THEME.primary, 0.55),
+      strokeWidth: 2,
+      strokeDashArray: [6, 4],
+      selectable: true,
+      evented: true,
+      hasControls: false,
+      hasBorders: false,
+      lockRotation: true,
+      lockScalingX: true,
+      lockScalingY: true,
+      hoverCursor: "move",
+      excludeFromExport: true,
+    });
+
+    const handleRadius = 7;
+    const handleStroke = withAlpha(GIZMO_THEME.stroke, 0.9);
+    const handleFill = GIZMO_THEME.primary;
+    const makeHandle = (corner: "tl" | "tr" | "bl" | "br", x: number, y: number) => {
+      const h = new fabric.Circle({
+        left: x,
+        top: y,
+        radius: handleRadius,
+        originX: "center",
+        originY: "center",
+        fill: handleFill,
+        stroke: handleStroke,
+        strokeWidth: 2,
+        selectable: true,
+        evented: true,
+        hasControls: false,
+        hasBorders: false,
+        lockRotation: true,
+        lockScalingX: true,
+        lockScalingY: true,
+        hoverCursor: "nwse-resize",
+        excludeFromExport: true,
+      });
+      try { (h as any).__moldaSquareCropCorner = corner; } catch {}
+      return h;
+    };
+
+    const handles = {
+      tl: makeHandle("tl", startLeft, startTop),
+      tr: makeHandle("tr", startLeft + startW, startTop),
+      bl: makeHandle("bl", startLeft, startTop + startH),
+      br: makeHandle("br", startLeft + startW, startTop + startH),
+    };
+
+    // Adiciona ao canvas sem capturar histórico.
+    runSilently(() => {
+      try { c.add(overlays.top, overlays.bottom, overlays.left, overlays.right); } catch {}
+      try { c.add(highlight); } catch {}
+      try { c.add(cropBox); } catch {}
+      try { c.add(handles.tl, handles.tr, handles.bl, handles.br); } catch {}
+      try {
+        // garante que o crop UI fique acima
+        cropBox.bringToFront?.();
+        handles.tl.bringToFront?.();
+        handles.tr.bringToFront?.();
+        handles.bl.bringToFront?.();
+        handles.br.bringToFront?.();
+      } catch {}
+      try { c.setActiveObject?.(cropBox); } catch {}
+    });
+
+    squareCropRef.current = {
+      active: true,
+      img,
+      imgOriginalCenter: originalCenter,
+      imgOriginalAngle: originalAngle,
+      cropBox,
+      handles,
+      overlays,
+      highlight,
+      size,
+      overhang,
+      imageRect,
+    };
+
+    emitCropMode(true);
+
+    const onAnyDrag = () => updateSquareCropPreview();
+
+    // Move o recorte inteiro
+    cropBox.on?.("moving", onAnyDrag);
+    cropBox.on?.("modified", onAnyDrag);
+
+    const onHandleMoving = (h: any) => {
+      const session = squareCropRef.current;
+      if (!session?.active) return;
+      const imgR = session.imageRect;
+      const corner = String((h as any).__moldaSquareCropCorner || "");
+
+      // Centro do handle
+      const p = h.getCenterPoint?.() ?? { x: Number(h.left ?? 0), y: Number(h.top ?? 0) };
+      const x = Number(p.x ?? 0);
+      const y = Number(p.y ?? 0);
+
+      const left = Number(session.cropBox.left ?? 0);
+      const top = Number(session.cropBox.top ?? 0);
+      const w0 = Number(session.cropBox.width ?? session.size) || session.size;
+      const h0 = Number(session.cropBox.height ?? session.size) || session.size;
+      const w = Math.max(10, w0);
+      const hgt = Math.max(10, h0);
+
+      const tl = { x: left, y: top };
+      const tr = { x: left + w, y: top };
+      const bl = { x: left, y: top + hgt };
+      const br = { x: left + w, y: top + hgt };
+
+      const minSize = 20;
+
+      const clampX = (vx: number) => clamp(vx, imgR.left, imgR.left + imgR.width);
+      const clampY = (vy: number) => clamp(vy, imgR.top, imgR.top + imgR.height);
+
+      let nextLeft = left;
+      let nextTop = top;
+      let nextW = w;
+      let nextH = hgt;
+
+      if (corner === "tl") {
+        const ax = br.x;
+        const ay = br.y;
+        const cx = clampX(x);
+        const cy = clampY(y);
+        nextLeft = cx;
+        nextTop = cy;
+        nextW = Math.max(minSize, ax - cx);
+        nextH = Math.max(minSize, ay - cy);
+      } else if (corner === "tr") {
+        const ax = bl.x;
+        const ay = bl.y;
+        const cx = clampX(x);
+        const cy = clampY(y);
+        nextLeft = ax;
+        nextTop = cy;
+        nextW = Math.max(minSize, cx - ax);
+        nextH = Math.max(minSize, ay - cy);
+      } else if (corner === "bl") {
+        const ax = tr.x;
+        const ay = tr.y;
+        const cx = clampX(x);
+        const cy = clampY(y);
+        nextLeft = cx;
+        nextTop = ay;
+        nextW = Math.max(minSize, ax - cx);
+        nextH = Math.max(minSize, cy - ay);
+      } else if (corner === "br") {
+        const ax = tl.x;
+        const ay = tl.y;
+        const cx = clampX(x);
+        const cy = clampY(y);
+        nextLeft = ax;
+        nextTop = ay;
+        nextW = Math.max(minSize, cx - ax);
+        nextH = Math.max(minSize, cy - ay);
+      }
+
+      // Aplica e clampa no retângulo da imagem
+      runSilently(() => {
+        try { session.cropBox.set({ left: nextLeft, top: nextTop, width: nextW, height: nextH }); } catch {}
+        try { session.cropBox.setCoords?.(); } catch {}
+      });
+      updateSquareCropPreview();
+    };
+
+    handles.tl.on?.("moving", () => onHandleMoving(handles.tl));
+    handles.tr.on?.("moving", () => onHandleMoving(handles.tr));
+    handles.bl.on?.("moving", () => onHandleMoving(handles.bl));
+    handles.br.on?.("moving", () => onHandleMoving(handles.br));
+
+    handles.tl.on?.("modified", onAnyDrag);
+    handles.tr.on?.("modified", onAnyDrag);
+    handles.bl.on?.("modified", onAnyDrag);
+    handles.br.on?.("modified", onAnyDrag);
+
+    updateSquareCropPreview();
+  };
+
+  const cancelSquareCrop = () => {
+    cleanupSquareCropPreview({ restoreImage: true });
+  };
+
+  const confirmCrop = () => {
+    // Hoje o único modo implementado é o corte via preview (startSquareCrop).
+    commitSquareCrop();
+  };
+
+  const isCropActive = () => {
+    return !!squareCropRef.current?.active;
+  };
+
+  const commitSquareCrop = () => {
+    const c: any = canvasRef.current;
+    const s = squareCropRef.current;
+    if (!c || !s?.active) return;
+
+    const img = s.img;
+    const cropBox = s.cropBox;
+
+    // Recalcula retângulo da imagem (após centralização), para mapear coordenadas.
+    const imgRect = (() => {
+      try {
+        const r = img.getBoundingRect?.(true, true);
+        if (r && typeof r.left === "number") return { left: r.left, top: r.top, width: r.width, height: r.height };
+      } catch {}
+      return s.imageRect;
+    })();
+
+    const scaleX = Number(img.scaleX ?? 1) || 1;
+    const scaleY = Number(img.scaleY ?? 1) || 1;
+    const existingCropX = Number(img.cropX ?? 0) || 0;
+    const existingCropY = Number(img.cropY ?? 0) || 0;
+
+    const relX = Number(cropBox.left ?? 0) - imgRect.left;
+    const relY = Number(cropBox.top ?? 0) - imgRect.top;
+
+    const wNow = Number(s.cropBox.width ?? s.size) || s.size;
+    const hNow = Number(s.cropBox.height ?? s.size) || s.size;
+    const wPx = Math.max(1, Math.round(wNow / scaleX));
+    const hPx = Math.max(1, Math.round(hNow / scaleY));
+    const newCropX = Math.round(existingCropX + relX / scaleX);
+    const newCropY = Math.round(existingCropY + relY / scaleY);
+
+    // Aplica o crop e restaura a imagem para o centro original (era temporário).
+    try {
+      img.set({ cropX: newCropX, cropY: newCropY, width: wPx, height: hPx });
+      img.setCoords?.();
+    } catch {}
+
+    try {
+      const fabric: any = fabricRef.current;
+      if (fabric?.Point) {
+        const p = new fabric.Point(s.imgOriginalCenter.x, s.imgOriginalCenter.y);
+        img.setPositionByOrigin?.(p, "center", "center");
+      }
+      img.setCoords?.();
+    } catch {}
+
+    cleanupSquareCropPreview({ restoreImage: false });
+    try { c.setActiveObject?.(img); } catch {}
+    try { c.requestRenderAll?.(); } catch {}
+
+    // captura histórico ao finalizar
+    try {
+      if (!isRestoringRef.current && !isLoadingRef.current) {
+        historyRef.current?.push("crop-square");
+        emitHistory();
+      }
+    } catch {}
+  };
 
   const toJSON = () => {
     const c = canvasRef.current;
@@ -3396,6 +3896,13 @@ const Editor2D = forwardRef<Editor2DHandle, Props>(function Editor2D(
     applyTextStyle,
     getActiveImageAdjustments,
     applyActiveImageAdjustments,
+    startSquareCrop,
+    cancelSquareCrop,
+    confirmCrop,
+    isCropActive,
+    onCropModeChange: (cb) => {
+      cropModeListenersRef.current.add(cb);
+    },
     onSelectionChange: (cb) => {
       selectionListenersRef.current.add(cb);
     },

@@ -5,7 +5,7 @@ import Header from "../components/Header";
 import Canvas3DViewer from "../components/Canvas3DViewer";
 import ExpandableSidebar from "../components/ExpandableSidebar";
 import { Button } from "../components/ui/button";
-import { Eye, EyeOff, Plus, X } from "lucide-react";
+import { Eye, EyeOff, Plus, X, Check } from "lucide-react";
 import FloatingEditorToolbar from "../components/FloatingEditorToolbar";
 import TextToolbar from "../components/TextToolbar";
 import ImageToolbar from "../components/ImageToolbar";
@@ -212,6 +212,14 @@ const Creation = () => {
           }
         });
         selectionListenerGuard.current.add(inst);
+      }
+
+      if (!cropListenerGuard.current.has(inst)) {
+        inst.onCropModeChange?.((active) => {
+          // Só atualiza o estado se este editor estiver na tab ativa
+          if (currentTabId === activeCanvasTab) setCropModeActive(active);
+        });
+        cropListenerGuard.current.add(inst);
       }
 
       try {
@@ -511,6 +519,8 @@ const Creation = () => {
 
   const [selectionKind, setSelectionKind] = useState<SelectionKind>("none");
   const [selectionInfo, setSelectionInfo] = useState<SelectionInfo | null>(null);
+  const [cropModeActive, setCropModeActive] = useState(false);
+  const cropListenerGuard = useRef<WeakSet<Editor2DHandle>>(new WeakSet());
 
   const updateSelectionInfo = useCallback(() => {
     const inst = editorRefs.current[activeCanvasTab];
@@ -556,10 +566,20 @@ const Creation = () => {
       setCanRedo(false);
       setSelectionKind("none");
       setSelectionInfo(null);
+      setCropModeActive(false);
       return;
     }
     updateSelectionInfo();
   }, [activeIs2D, updateSelectionInfo]);
+
+  useEffect(() => {
+    if (!activeIs2D) {
+      setCropModeActive(false);
+      return;
+    }
+    const inst = editorRefs.current[activeCanvasTab];
+    setCropModeActive(!!inst?.isCropActive?.());
+  }, [activeIs2D, activeCanvasTab]);
 
   const [tabSnapshots, setTabSnapshots] = useState<Record<string, string>>({});
   const tabSnapshotsRef = useRef<Record<string, string>>(tabSnapshots);
@@ -1272,21 +1292,35 @@ const Creation = () => {
                           >
                             <Editor2D
                               ref={(inst) => {
-                                if (inst && !editorRefs.current[tab.id]) {
-                                  editorRefs.current[tab.id] = inst;
-                                  if (!selectionListenerGuard.current.has(inst)) {
-                                    inst.onSelectionChange?.((kind) => {
-                                      if (tab.id === activeCanvasTab) {
-                                        setSelectionKind(kind);
-                                        if (kind === "none") {
-                                          setSelectionInfo(null);
-                                        } else {
-                                          setSelectionInfo(inst.getSelectionInfo?.() ?? null);
-                                        }
+                                if (!inst) return;
+
+                                // mantém a ref atualizada (mesmo que já exista)
+                                editorRefs.current[tab.id] = inst;
+
+                                if (!selectionListenerGuard.current.has(inst)) {
+                                  inst.onSelectionChange?.((kind) => {
+                                    if (tab.id === activeCanvasTab) {
+                                      setSelectionKind(kind);
+                                      if (kind === "none") {
+                                        setSelectionInfo(null);
+                                      } else {
+                                        setSelectionInfo(inst.getSelectionInfo?.() ?? null);
                                       }
-                                    });
-                                    selectionListenerGuard.current.add(inst);
-                                  }
+                                    }
+                                  });
+                                  selectionListenerGuard.current.add(inst);
+                                }
+
+                                if (!cropListenerGuard.current.has(inst)) {
+                                  inst.onCropModeChange?.((active) => {
+                                    if (tab.id === activeCanvasTab) setCropModeActive(active);
+                                  });
+                                  cropListenerGuard.current.add(inst);
+                                }
+
+                                // sincroniza o estado imediatamente ao montar/reativar
+                                if (tab.id === activeCanvasTab) {
+                                  setCropModeActive(!!inst.isCropActive?.());
                                 }
                               }}
                               isActive={activeIs2D && tab.id === activeCanvasTab}
@@ -1322,7 +1356,39 @@ const Creation = () => {
                           </div>
                         ))}
 
-                      {selectionKind === "text" && (
+                      {cropModeActive && (
+                        <div className="absolute left-1/2 bottom-6 z-10 max-w-[95%] -translate-x-1/2">
+                          <div
+                            className={[
+                              "relative",
+                              "flex items-center gap-2 p-2 rounded-2xl border shadow-lg bg-background",
+                              "backdrop-blur supports-[backdrop-filter]:bg-background/90",
+                            ].join(" ")}
+                            role="toolbar"
+                            aria-label="Corte"
+                          >
+                            <Button
+                              type="button"
+                              size="icon"
+                              onClick={() => editorRefs.current[activeCanvasTab]?.confirmCrop?.()}
+                              title="Confirmar (Enter)"
+                            >
+                              <Check className="w-4 h-4" />
+                            </Button>
+                            <Button
+                              type="button"
+                              size="icon"
+                              variant="outline"
+                              onClick={() => editorRefs.current[activeCanvasTab]?.cancelSquareCrop?.()}
+                              title="Cancelar (Esc ou Delete)"
+                            >
+                              <X className="w-4 h-4" />
+                            </Button>
+                          </div>
+                        </div>
+                      )}
+
+                      {!cropModeActive && selectionKind === "text" && (
                         <div className="absolute left-1/2 bottom-6 z-10 max-w-[95%] -translate-x-1/2">
                           <TextToolbar
                             editor={{ current: editorRefs.current[activeCanvasTab] as Editor2DHandle }}
@@ -1332,7 +1398,7 @@ const Creation = () => {
                         </div>
                       )}
 
-                      {selectionKind === "image" && (
+                      {!cropModeActive && selectionKind === "image" && (
                         <div className="absolute left-1/2 bottom-6 z-10 max-w-[95%] -translate-x-1/2">
                           <ImageToolbar
                             editor={{ current: editorRefs.current[activeCanvasTab] as Editor2DHandle }}
@@ -1342,7 +1408,7 @@ const Creation = () => {
                         </div>
                       )}
 
-                      {selectionKind !== "text" && selectionKind !== "image" && (
+                      {!cropModeActive && selectionKind !== "text" && selectionKind !== "image" && (
                         <div className="absolute left-1/2 bottom-6 z-10 max-w-[95%] -translate-x-1/2">
                           <FloatingEditorToolbar
                             strokeColor={strokeColor}
