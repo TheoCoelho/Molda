@@ -60,6 +60,19 @@ export type TextStyle = Partial<{
   shadow: { color: string; blur: number; offsetX: number; offsetY: number } | null;
 }>;
 
+/** Ajustes de imagem (equivalente ao menu de controle do UploadGallery) */
+export type ImageAdjustments = {
+  brightness: number;
+  contrast: number;
+  saturation: number;
+  sepia: number;
+  grayscale: number;
+  hue: number;
+  shadowOn: boolean;
+  shadowBlur: number;
+  shadowOpacity: number;
+};
+
 /** Informações sobre a seleção atual para context menu */
 export type SelectionInfo = {
   hasSelection: boolean;
@@ -97,6 +110,10 @@ export type Editor2DHandle = {
     src: string,
     opts?: { x?: number; y?: number; scale?: number }
   ) => void;
+
+  // ==== Imagem (níveis) ====
+  getActiveImageAdjustments?: () => ImageAdjustments | null;
+  applyActiveImageAdjustments?: (adj: ImageAdjustments) => Promise<void>;
 
   toJSON: () => string;
   loadFromJSON: (json: string) => Promise<void>;
@@ -2182,12 +2199,203 @@ const Editor2D = forwardRef<Editor2DHandle, Props>(function Editor2D(
             scaleY: scale,
             erasable: true,
           });
+
+          // guarda a origem para permitir re-aplicar filtros sem degradar (dataURL em cascata)
+          try {
+            (img as any).__moldaOriginalSrc = src;
+          } catch {}
           c.add(img);
           c.setActiveObject(img);
           try { c.requestRenderAll?.(); } catch {}
         },
         { crossOrigin: "anonymous" }
       );
+    }
+  };
+
+  const DEFAULT_IMAGE_ADJ: ImageAdjustments = {
+    brightness: 100,
+    contrast: 100,
+    saturation: 100,
+    sepia: 0,
+    grayscale: 0,
+    hue: 0,
+    shadowOn: false,
+    shadowBlur: 12,
+    shadowOpacity: 0.35,
+  };
+
+  const getSelectedImageObjects = (): any[] => {
+    const c = canvasRef.current as any;
+    if (!c) return [];
+    const activeObjects: any[] = c.getActiveObjects ? c.getActiveObjects() : [];
+    const isTextObject = (obj: any): boolean => {
+      const t = String(obj?.type || "").toLowerCase();
+      return t.includes("text");
+    };
+    const isImageObject = (obj: any): boolean => {
+      const t = String(obj?.type || "").toLowerCase();
+      if (t.includes("image")) return true;
+      if (obj && obj._element) return true;
+      return false;
+    };
+    const collectImageLeaves = (obj: any): any[] => {
+      if (!obj) return [];
+      if (isTextObject(obj)) return [];
+      if (isImageObject(obj)) return [obj];
+      const children: any[] = Array.isArray(obj._objects) ? obj._objects : [];
+      if (children.length === 0) return [];
+      return children.flatMap((c2) => collectImageLeaves(c2));
+    };
+    const out: any[] = [];
+    const seen = new Set<any>();
+    for (const o of activeObjects) {
+      for (const leaf of collectImageLeaves(o)) {
+        if (!seen.has(leaf)) {
+          seen.add(leaf);
+          out.push(leaf);
+        }
+      }
+    }
+    return out;
+  };
+
+  const getActiveImageAdjustments = (): ImageAdjustments | null => {
+    const imgs = getSelectedImageObjects();
+    if (imgs.length !== 1) return null;
+    const img = imgs[0];
+    const saved = (img as any).__moldaImageAdjustments as ImageAdjustments | undefined;
+    return saved ? { ...DEFAULT_IMAGE_ADJ, ...saved } : { ...DEFAULT_IMAGE_ADJ };
+  };
+
+  const exportImageWithAdjustmentsToDataUrl = async (src: string, adj: ImageAdjustments): Promise<string> =>
+    new Promise((resolve, reject) => {
+      const imgEl = new Image();
+      imgEl.crossOrigin = "anonymous";
+      imgEl.onload = () => {
+        try {
+          const canvas = document.createElement("canvas");
+          canvas.width = imgEl.naturalWidth;
+          canvas.height = imgEl.naturalHeight;
+          const ctx = canvas.getContext("2d");
+          if (!ctx) return reject(new Error("Canvas 2D não disponível"));
+
+          const filterCss =
+            `brightness(${adj.brightness}%) contrast(${adj.contrast}%) saturate(${adj.saturation}%) ` +
+            `sepia(${adj.sepia}%) grayscale(${adj.grayscale}%) hue-rotate(${adj.hue}deg)`;
+
+          try {
+            (ctx as any).filter = filterCss;
+          } catch {}
+
+          ctx.drawImage(imgEl, 0, 0);
+          resolve(canvas.toDataURL("image/png"));
+        } catch (err) {
+          reject(err);
+        }
+      };
+      imgEl.onerror = () => reject(new Error("Falha ao carregar a imagem"));
+      imgEl.src = src;
+    });
+
+  const applyActiveImageAdjustments = async (adj: ImageAdjustments) => {
+    const c = canvasRef.current as any;
+    if (!c) return;
+
+    const imgs = getSelectedImageObjects();
+    if (imgs.length === 0) return;
+
+    const clamp01 = (n: number) => Math.max(0, Math.min(1, n));
+    const applyFabricShadow = (img: any, next: ImageAdjustments) => {
+      const fabric = fabricRef.current as any;
+      if (!fabric) return;
+
+      const blur = Math.max(0, Number(next.shadowBlur) || 0);
+      const opacity = clamp01(Number(next.shadowOpacity) || 0);
+      const enabled = !!next.shadowOn && blur > 0 && opacity > 0;
+
+      try {
+        if (!enabled) {
+          img.set?.("shadow", null);
+          return;
+        }
+        const offset = Math.round(Math.max(2, blur / 3));
+        const ShadowCtor = fabric.Shadow;
+        if (typeof ShadowCtor === "function") {
+          img.set?.(
+            "shadow",
+            new ShadowCtor({
+              color: `rgba(0,0,0,${opacity})`,
+              blur,
+              offsetX: offset,
+              offsetY: offset,
+            })
+          );
+        } else {
+          // fallback: objeto simples (algumas builds aceitam)
+          img.set?.("shadow", {
+            color: `rgba(0,0,0,${opacity})`,
+            blur,
+            offsetX: offset,
+            offsetY: offset,
+          });
+        }
+      } catch {}
+    };
+
+    const needsReencode = (prev: ImageAdjustments | undefined, next: ImageAdjustments) => {
+      if (!prev) return true;
+      return (
+        prev.brightness !== next.brightness ||
+        prev.contrast !== next.contrast ||
+        prev.saturation !== next.saturation ||
+        prev.sepia !== next.sepia ||
+        prev.grayscale !== next.grayscale ||
+        prev.hue !== next.hue
+      );
+    };
+
+    for (const img of imgs) {
+      const prev = (img as any).__moldaImageAdjustments as ImageAdjustments | undefined;
+      try {
+        (img as any).__moldaImageAdjustments = { ...adj };
+      } catch {}
+
+      // Shadow é aplicado via Fabric para não recortar (clipping) e responder corretamente.
+      applyFabricShadow(img, adj);
+      try { c.requestRenderAll?.(); } catch {}
+
+      // Se só a sombra mudou, não precisa re-encode da imagem.
+      if (!needsReencode(prev, adj)) continue;
+
+      const originalSrc: string | undefined =
+        (img as any).__moldaOriginalSrc || img?._originalElement?.src || img?._element?.src;
+      if (!originalSrc) continue;
+
+      try {
+        const dataUrl = await exportImageWithAdjustmentsToDataUrl(originalSrc, adj);
+        await new Promise<void>((resolve) => {
+          if (typeof img?.setSrc === "function") {
+            img.setSrc(
+              dataUrl,
+              () => {
+                try { c.requestRenderAll?.(); } catch {}
+                resolve();
+              },
+              { crossOrigin: "anonymous" }
+            );
+            return;
+          }
+
+          // fallback: troca o elemento e força render
+          try {
+            img._element = null;
+          } catch {}
+          resolve();
+        });
+      } catch {
+        // ignora falhas (CORS etc.)
+      }
     }
   };
 
@@ -2916,6 +3124,8 @@ const Editor2D = forwardRef<Editor2DHandle, Props>(function Editor2D(
     getActiveTextStyle,
     setActiveTextStyle,
     applyTextStyle,
+    getActiveImageAdjustments,
+    applyActiveImageAdjustments,
     onSelectionChange: (cb) => {
       selectionListenersRef.current.add(cb);
     },

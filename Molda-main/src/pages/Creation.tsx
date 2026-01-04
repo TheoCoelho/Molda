@@ -1333,7 +1333,11 @@ const Creation = () => {
 
                       {selectionKind === "image" && (
                         <div className="absolute left-1/2 bottom-6 z-10 max-w-[95%] -translate-x-1/2">
-                          <ImageToolbar visible={activeIs2D && selectionKind === "image"} position="inline" />
+                          <ImageToolbar
+                            editor={{ current: editorRefs.current[activeCanvasTab] as Editor2DHandle }}
+                            visible={activeIs2D && selectionKind === "image"}
+                            position="inline"
+                          />
                         </div>
                       )}
 
