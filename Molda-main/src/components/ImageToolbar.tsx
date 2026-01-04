@@ -113,9 +113,29 @@ export default function ImageToolbar({ visible, editor, position = "bottom" }: P
   const [sepia, setSepia] = useState(0);
   const [grayscale, setGrayscale] = useState(0);
   const [hue, setHue] = useState(0);
+  const [sharpness, setSharpness] = useState(0);
+  const [definition, setDefinition] = useState(0);
+  const [highlights, setHighlights] = useState(0);
+  const [shadows, setShadows] = useState(0);
+  const [blackPoint, setBlackPoint] = useState(0);
+  const [warmth, setWarmth] = useState(0);
+  const [tint, setTint] = useState(0);
 
   const [activeSliderTip, setActiveSliderTip] = useState<
-    null | "brightness" | "contrast" | "saturation" | "sepia" | "grayscale" | "hue"
+    | null
+    | "brightness"
+    | "contrast"
+    | "saturation"
+    | "sepia"
+    | "grayscale"
+    | "hue"
+    | "sharpness"
+    | "definition"
+    | "highlights"
+    | "shadows"
+    | "blackPoint"
+    | "warmth"
+    | "tint"
   >(null);
 
   useEffect(() => {
@@ -179,6 +199,13 @@ export default function ImageToolbar({ visible, editor, position = "bottom" }: P
     sepia,
     grayscale,
     hue,
+    sharpness,
+    definition,
+    highlights,
+    shadows,
+    blackPoint,
+    warmth,
+    tint,
     shadowOn: false,
     shadowBlur: 0,
     shadowOpacity: 0,
@@ -190,7 +217,14 @@ export default function ImageToolbar({ visible, editor, position = "bottom" }: P
     saturation === 100 &&
     sepia === 0 &&
     grayscale === 0 &&
-    hue === 0;
+    hue === 0 &&
+    sharpness === 0 &&
+    definition === 0 &&
+    highlights === 0 &&
+    shadows === 0 &&
+    blackPoint === 0 &&
+    warmth === 0 &&
+    tint === 0;
 
 
   // Sincroniza sliders com a imagem selecionada (se houver valor salvo no objeto)
@@ -205,6 +239,13 @@ export default function ImageToolbar({ visible, editor, position = "bottom" }: P
     setSepia(current.sepia ?? 0);
     setGrayscale(current.grayscale ?? 0);
     setHue(current.hue ?? 0);
+    setSharpness(current.sharpness ?? 0);
+    setDefinition(current.definition ?? 0);
+    setHighlights(current.highlights ?? 0);
+    setShadows(current.shadows ?? 0);
+    setBlackPoint(current.blackPoint ?? 0);
+    setWarmth(current.warmth ?? 0);
+    setTint(current.tint ?? 0);
 
     // ao abrir, recalcula overflow e posição
     requestAnimationFrame(() => updateLevelsScrollState());
@@ -218,7 +259,9 @@ export default function ImageToolbar({ visible, editor, position = "bottom" }: P
   }, [levelsOpen]);
 
   // Aplica com debounce (para não re-renderizar a cada pixel de slider)
+  // Aplica com throttle (para atualizar durante o arraste sem travar)
   const applyTimerRef = useRef<number | null>(null);
+  const applyPendingRef = useRef<ImageAdjustments | null>(null);
   useEffect(() => {
     if (!visible) return;
     // Importante: não aplicar níveis quando o menu está fechado,
@@ -239,26 +282,61 @@ export default function ImageToolbar({ visible, editor, position = "bottom" }: P
           (current.sepia ?? 0) === 0 &&
           (current.grayscale ?? 0) === 0 &&
           (current.hue ?? 0) === 0 &&
+          (current.sharpness ?? 0) === 0 &&
+          (current.definition ?? 0) === 0 &&
+          (current.highlights ?? 0) === 0 &&
+          (current.shadows ?? 0) === 0 &&
+          (current.blackPoint ?? 0) === 0 &&
+          (current.warmth ?? 0) === 0 &&
+          (current.tint ?? 0) === 0 &&
           !(current.shadowOn ?? false) &&
           (current.shadowBlur ?? 0) === 0 &&
           (current.shadowOpacity ?? 0) === 0
         );
       if (currentIsDefault) return;
     }
-    if (applyTimerRef.current) window.clearTimeout(applyTimerRef.current);
-    const next = getAdj();
+
+    applyPendingRef.current = getAdj();
+
+    // Se já existe um timer rodando, ele vai aplicar o último valor pendente.
+    if (applyTimerRef.current) return;
+
+    // Intervalo curto o suficiente para parecer “ao vivo”, mas sem disparar encode a cada evento.
     applyTimerRef.current = window.setTimeout(() => {
       applyTimerRef.current = null;
+      const next = applyPendingRef.current;
+      applyPendingRef.current = null;
+      if (!next) return;
       void editor.current?.applyActiveImageAdjustments?.(next);
-    }, 80);
-    return () => {
-      if (applyTimerRef.current) {
-        window.clearTimeout(applyTimerRef.current);
-        applyTimerRef.current = null;
-      }
-    };
+    }, 60);
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [brightness, contrast, saturation, sepia, grayscale, hue, visible, levelsOpen, levelsIsDefault]);
+  }, [
+    brightness,
+    contrast,
+    saturation,
+    sepia,
+    grayscale,
+    hue,
+    sharpness,
+    definition,
+    highlights,
+    shadows,
+    blackPoint,
+    warmth,
+    tint,
+    visible,
+    levelsOpen,
+    levelsIsDefault,
+  ]);
+
+  useEffect(() => {
+    if (visible && levelsOpen) return;
+    if (applyTimerRef.current) {
+      window.clearTimeout(applyTimerRef.current);
+      applyTimerRef.current = null;
+    }
+    applyPendingRef.current = null;
+  }, [visible, levelsOpen]);
 
   useEffect(() => {
     if (!levelsPinned) return;
@@ -416,6 +494,7 @@ export default function ImageToolbar({ visible, editor, position = "bottom" }: P
                   ].join(" ")}
                   onScroll={updateLevelsScrollState}
                 >
+                {/* Luz / Tons (mais usados) */}
                 <div className="shrink-0 w-[180px] rounded-xl border border-black/10 dark:border-white/10 bg-white/70 dark:bg-neutral-900/70 px-3 py-2">
                   <div className="flex flex-col items-center gap-2">
                     <Sun className="h-7 w-7" />
@@ -468,6 +547,82 @@ export default function ImageToolbar({ visible, editor, position = "bottom" }: P
 
                 <div className="shrink-0 w-[180px] rounded-xl border border-black/10 dark:border-white/10 bg-white/70 dark:bg-neutral-900/70 px-3 py-2">
                   <div className="flex flex-col items-center gap-2">
+                    <Sun className="h-7 w-7" />
+                    <div className="text-xs opacity-80">Altas-luzes</div>
+                    <div className="w-full relative">
+                      <Tip
+                        show={activeSliderTip === "highlights"}
+                        leftPercent={tipLeftPercent(highlights, -100, 100)}
+                        text={`${highlights > 0 ? "+" : ""}${highlights}`}
+                      />
+                      <Slider
+                        value={[highlights]}
+                        min={-100}
+                        max={100}
+                        step={1}
+                        onValueChange={(v) => setHighlights(v[0] ?? 0)}
+                        onPointerDownCapture={(ev) => {
+                          const t = ev.target as HTMLElement | null;
+                          if (t?.getAttribute("role") === "slider") setActiveSliderTip("highlights");
+                        }}
+                      />
+                    </div>
+                  </div>
+                </div>
+
+                <div className="shrink-0 w-[180px] rounded-xl border border-black/10 dark:border-white/10 bg-white/70 dark:bg-neutral-900/70 px-3 py-2">
+                  <div className="flex flex-col items-center gap-2">
+                    <CircleDot className="h-7 w-7" />
+                    <div className="text-xs opacity-80">Sombras</div>
+                    <div className="w-full relative">
+                      <Tip
+                        show={activeSliderTip === "shadows"}
+                        leftPercent={tipLeftPercent(shadows, -100, 100)}
+                        text={`${shadows > 0 ? "+" : ""}${shadows}`}
+                      />
+                      <Slider
+                        value={[shadows]}
+                        min={-100}
+                        max={100}
+                        step={1}
+                        onValueChange={(v) => setShadows(v[0] ?? 0)}
+                        onPointerDownCapture={(ev) => {
+                          const t = ev.target as HTMLElement | null;
+                          if (t?.getAttribute("role") === "slider") setActiveSliderTip("shadows");
+                        }}
+                      />
+                    </div>
+                  </div>
+                </div>
+
+                <div className="shrink-0 w-[180px] rounded-xl border border-black/10 dark:border-white/10 bg-white/70 dark:bg-neutral-900/70 px-3 py-2">
+                  <div className="flex flex-col items-center gap-2">
+                    <CircleDot className="h-7 w-7" />
+                    <div className="text-xs opacity-80">Ponto preto</div>
+                    <div className="w-full relative">
+                      <Tip
+                        show={activeSliderTip === "blackPoint"}
+                        leftPercent={tipLeftPercent(blackPoint, -100, 100)}
+                        text={`${blackPoint > 0 ? "+" : ""}${blackPoint}`}
+                      />
+                      <Slider
+                        value={[blackPoint]}
+                        min={-100}
+                        max={100}
+                        step={1}
+                        onValueChange={(v) => setBlackPoint(v[0] ?? 0)}
+                        onPointerDownCapture={(ev) => {
+                          const t = ev.target as HTMLElement | null;
+                          if (t?.getAttribute("role") === "slider") setActiveSliderTip("blackPoint");
+                        }}
+                      />
+                    </div>
+                  </div>
+                </div>
+
+                {/* Cor */}
+                <div className="shrink-0 w-[180px] rounded-xl border border-black/10 dark:border-white/10 bg-white/70 dark:bg-neutral-900/70 px-3 py-2">
+                  <div className="flex flex-col items-center gap-2">
                     <Droplets className="h-7 w-7" />
                     <div className="text-xs opacity-80">Saturação</div>
                     <div className="w-full relative">
@@ -494,28 +649,130 @@ export default function ImageToolbar({ visible, editor, position = "bottom" }: P
                 <div className="shrink-0 w-[180px] rounded-xl border border-black/10 dark:border-white/10 bg-white/70 dark:bg-neutral-900/70 px-3 py-2">
                   <div className="flex flex-col items-center gap-2">
                     <Palette className="h-7 w-7" />
-                    <div className="text-xs opacity-80">Sépia</div>
+                    <div className="text-xs opacity-80">Calidez</div>
                     <div className="w-full relative">
                       <Tip
-                        show={activeSliderTip === "sepia"}
-                        leftPercent={tipLeftPercent(sepia, 0, 100)}
-                        text={`${sepia}%`}
+                        show={activeSliderTip === "warmth"}
+                        leftPercent={tipLeftPercent(warmth, -100, 100)}
+                        text={`${warmth > 0 ? "+" : ""}${warmth}`}
                       />
                       <Slider
-                        value={[sepia]}
-                        min={0}
+                        value={[warmth]}
+                        min={-100}
                         max={100}
                         step={1}
-                        onValueChange={(v) => setSepia(v[0] ?? 0)}
+                        onValueChange={(v) => setWarmth(v[0] ?? 0)}
                         onPointerDownCapture={(ev) => {
                           const t = ev.target as HTMLElement | null;
-                          if (t?.getAttribute("role") === "slider") setActiveSliderTip("sepia");
+                          if (t?.getAttribute("role") === "slider") setActiveSliderTip("warmth");
                         }}
                       />
                     </div>
                   </div>
                 </div>
 
+                <div className="shrink-0 w-[180px] rounded-xl border border-black/10 dark:border-white/10 bg-white/70 dark:bg-neutral-900/70 px-3 py-2">
+                  <div className="flex flex-col items-center gap-2">
+                    <Palette className="h-7 w-7" />
+                    <div className="text-xs opacity-80">Tonalidade</div>
+                    <div className="w-full relative">
+                      <Tip
+                        show={activeSliderTip === "tint"}
+                        leftPercent={tipLeftPercent(tint, -100, 100)}
+                        text={`${tint > 0 ? "+" : ""}${tint}`}
+                      />
+                      <Slider
+                        value={[tint]}
+                        min={-100}
+                        max={100}
+                        step={1}
+                        onValueChange={(v) => setTint(v[0] ?? 0)}
+                        onPointerDownCapture={(ev) => {
+                          const t = ev.target as HTMLElement | null;
+                          if (t?.getAttribute("role") === "slider") setActiveSliderTip("tint");
+                        }}
+                      />
+                    </div>
+                  </div>
+                </div>
+
+                <div className="shrink-0 w-[180px] rounded-xl border border-black/10 dark:border-white/10 bg-white/70 dark:bg-neutral-900/70 px-3 py-2">
+                  <div className="flex flex-col items-center gap-2">
+                    <Wand2 className="h-7 w-7" />
+                    <div className="text-xs opacity-80">Matiz</div>
+                    <div className="w-full relative">
+                      <Tip
+                        show={activeSliderTip === "hue"}
+                        leftPercent={tipLeftPercent(hue, 0, 360)}
+                        text={`${hue}°`}
+                      />
+                      <Slider
+                        value={[hue]}
+                        min={0}
+                        max={360}
+                        step={1}
+                        onValueChange={(v) => setHue(v[0] ?? 0)}
+                        onPointerDownCapture={(ev) => {
+                          const t = ev.target as HTMLElement | null;
+                          if (t?.getAttribute("role") === "slider") setActiveSliderTip("hue");
+                        }}
+                      />
+                    </div>
+                  </div>
+                </div>
+
+                {/* Detalhe */}
+                <div className="shrink-0 w-[180px] rounded-xl border border-black/10 dark:border-white/10 bg-white/70 dark:bg-neutral-900/70 px-3 py-2">
+                  <div className="flex flex-col items-center gap-2">
+                    <Contrast className="h-7 w-7" />
+                    <div className="text-xs opacity-80">Definição</div>
+                    <div className="w-full relative">
+                      <Tip
+                        show={activeSliderTip === "definition"}
+                        leftPercent={tipLeftPercent(definition, -100, 100)}
+                        text={`${definition > 0 ? "+" : ""}${definition}`}
+                      />
+                      <Slider
+                        value={[definition]}
+                        min={-100}
+                        max={100}
+                        step={1}
+                        onValueChange={(v) => setDefinition(v[0] ?? 0)}
+                        onPointerDownCapture={(ev) => {
+                          const t = ev.target as HTMLElement | null;
+                          if (t?.getAttribute("role") === "slider") setActiveSliderTip("definition");
+                        }}
+                      />
+                    </div>
+                  </div>
+                </div>
+
+                <div className="shrink-0 w-[180px] rounded-xl border border-black/10 dark:border-white/10 bg-white/70 dark:bg-neutral-900/70 px-3 py-2">
+                  <div className="flex flex-col items-center gap-2">
+                    <Sparkles className="h-7 w-7" />
+                    <div className="text-xs opacity-80">Nitidez</div>
+                    <div className="w-full relative">
+                      <Tip
+                        show={activeSliderTip === "sharpness"}
+                        leftPercent={tipLeftPercent(sharpness, 0, 100)}
+                        text={`${sharpness}`}
+                      />
+                      <Slider
+                        value={[sharpness]}
+                        min={0}
+                        max={100}
+                        step={1}
+                        onValueChange={(v) => setSharpness(v[0] ?? 0)}
+                        onPointerDownCapture={(ev) => {
+                          const t = ev.target as HTMLElement | null;
+                          if (t?.getAttribute("role") === "slider") setActiveSliderTip("sharpness");
+                        }}
+                      />
+                    </div>
+                  </div>
+                </div>
+
+                {/* Estilização */}
                 <div className="shrink-0 w-[180px] rounded-xl border border-black/10 dark:border-white/10 bg-white/70 dark:bg-neutral-900/70 px-3 py-2">
                   <div className="flex flex-col items-center gap-2">
                     <CircleDot className="h-7 w-7" />
@@ -543,23 +800,23 @@ export default function ImageToolbar({ visible, editor, position = "bottom" }: P
 
                 <div className="shrink-0 w-[180px] rounded-xl border border-black/10 dark:border-white/10 bg-white/70 dark:bg-neutral-900/70 px-3 py-2">
                   <div className="flex flex-col items-center gap-2">
-                    <Wand2 className="h-7 w-7" />
-                    <div className="text-xs opacity-80">Matiz</div>
+                    <Palette className="h-7 w-7" />
+                    <div className="text-xs opacity-80">Sépia</div>
                     <div className="w-full relative">
                       <Tip
-                        show={activeSliderTip === "hue"}
-                        leftPercent={tipLeftPercent(hue, 0, 360)}
-                        text={`${hue}°`}
+                        show={activeSliderTip === "sepia"}
+                        leftPercent={tipLeftPercent(sepia, 0, 100)}
+                        text={`${sepia}%`}
                       />
                       <Slider
-                        value={[hue]}
+                        value={[sepia]}
                         min={0}
-                        max={360}
+                        max={100}
                         step={1}
-                        onValueChange={(v) => setHue(v[0] ?? 0)}
+                        onValueChange={(v) => setSepia(v[0] ?? 0)}
                         onPointerDownCapture={(ev) => {
                           const t = ev.target as HTMLElement | null;
-                          if (t?.getAttribute("role") === "slider") setActiveSliderTip("hue");
+                          if (t?.getAttribute("role") === "slider") setActiveSliderTip("sepia");
                         }}
                       />
                     </div>

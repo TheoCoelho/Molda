@@ -68,6 +68,13 @@ export type ImageAdjustments = {
   sepia: number;
   grayscale: number;
   hue: number;
+  sharpness: number;
+  definition: number;
+  highlights: number;
+  shadows: number;
+  blackPoint: number;
+  warmth: number;
+  tint: number;
   shadowOn: boolean;
   shadowBlur: number;
   shadowOpacity: number;
@@ -421,6 +428,8 @@ const Editor2D = forwardRef<Editor2DHandle, Props>(function Editor2D(
 
   const imageAdjCommitTimerRef = useRef<number | null>(null);
   const imageAdjOpIdRef = useRef(0);
+  const imageAdjRunningRef = useRef(false);
+  const imageAdjPendingRef = useRef<ImageAdjustments | null>(null);
 
   const runSilently = (cb: () => void) => {
     historyGuardRef.current += 1;
@@ -2234,6 +2243,13 @@ const Editor2D = forwardRef<Editor2DHandle, Props>(function Editor2D(
     sepia: 0,
     grayscale: 0,
     hue: 0,
+    sharpness: 0,
+    definition: 0,
+    highlights: 0,
+    shadows: 0,
+    blackPoint: 0,
+    warmth: 0,
+    tint: 0,
     shadowOn: false,
     shadowBlur: 12,
     shadowOpacity: 0.35,
@@ -2303,6 +2319,161 @@ const Editor2D = forwardRef<Editor2DHandle, Props>(function Editor2D(
           } catch {}
 
           ctx.drawImage(imgEl, 0, 0);
+
+          const hasPixelStage =
+            (adj.highlights ?? 0) !== 0 ||
+            (adj.shadows ?? 0) !== 0 ||
+            (adj.blackPoint ?? 0) !== 0 ||
+            (adj.warmth ?? 0) !== 0 ||
+            (adj.tint ?? 0) !== 0 ||
+            (adj.definition ?? 0) !== 0 ||
+            (adj.sharpness ?? 0) !== 0;
+
+          if (!hasPixelStage) {
+            resolve(canvas.toDataURL("image/png"));
+            return;
+          }
+
+          const clamp01 = (n: number) => Math.max(0, Math.min(1, n));
+          const clamp255 = (n: number) => Math.max(0, Math.min(255, n));
+          const smoothstep = (a: number, b: number, x: number) => {
+            if (a === b) return x < a ? 0 : 1;
+            const t = clamp01((x - a) / (b - a));
+            return t * t * (3 - 2 * t);
+          };
+
+          const applyPixelStage = () => {
+            const w = canvas.width;
+            const h = canvas.height;
+            const imageData = ctx.getImageData(0, 0, w, h);
+            const data = imageData.data;
+
+            // --- Black point remap (pre-tone) ---
+            const bpNorm = (Number(adj.blackPoint) || 0) / 100;
+            // Limita para evitar extremos agressivos
+            const inputMin = bpNorm * 0.25 * 255;
+            const denom = 255 - inputMin;
+            const remap = (v: number) => {
+              if (denom === 0) return v;
+              return ((v - inputMin) / denom) * 255;
+            };
+
+            const shadows = (Number(adj.shadows) || 0) / 100;
+            const highlights = (Number(adj.highlights) || 0) / 100;
+            const definition = (Number(adj.definition) || 0) / 100;
+            const warmth = (Number(adj.warmth) || 0) / 100;
+            const tint = (Number(adj.tint) || 0) / 100;
+
+            for (let i = 0; i < data.length; i += 4) {
+              let r = data[i] as number;
+              let g = data[i + 1] as number;
+              let b = data[i + 2] as number;
+
+              // black point (range remap)
+              if (bpNorm !== 0) {
+                r = remap(r);
+                g = remap(g);
+                b = remap(b);
+              }
+
+              // luminance in [0..1]
+              const rn = r / 255;
+              const gn = g / 255;
+              const bn = b / 255;
+              let L = 0.2126 * rn + 0.7152 * gn + 0.0722 * bn;
+
+              // shadows/highlights tone with soft weights
+              if (shadows !== 0 || highlights !== 0 || definition !== 0) {
+                const wSh = 1 - smoothstep(0.0, 0.55, L);
+                const wHi = smoothstep(0.45, 1.0, L);
+
+                let L2 = L;
+                if (shadows !== 0) L2 = clamp01(L2 + shadows * 0.35 * wSh);
+                if (highlights !== 0) L2 = clamp01(L2 + highlights * 0.35 * wHi);
+
+                // "definição" = contraste principalmente nos médios
+                if (definition !== 0) {
+                  const wMid = 1 - Math.min(1, Math.abs(L2 - 0.5) * 2);
+                  // pequena curva S ponderada nos médios
+                  const contrast = 1 + definition * 0.8 * wMid;
+                  L2 = clamp01(0.5 + (L2 - 0.5) * contrast);
+                }
+
+                const scale = L > 1e-6 ? L2 / L : 1;
+                r = r * scale;
+                g = g * scale;
+                b = b * scale;
+              }
+
+              // warmth (temperature): +warm => more red/yellow, less blue
+              if (warmth !== 0) {
+                const k = warmth * 24; // ~[-24..24]
+                r += k;
+                g += k * 0.4;
+                b -= k;
+              }
+
+              // tint: + => magenta, - => green
+              if (tint !== 0) {
+                const k = tint * 18; // ~[-18..18]
+                r += k;
+                b += k;
+                g -= k;
+              }
+
+              data[i] = clamp255(r);
+              data[i + 1] = clamp255(g);
+              data[i + 2] = clamp255(b);
+            }
+
+            // --- Sharpness (unsharp mask) ---
+            const sharpness = Number(adj.sharpness) || 0;
+            if (sharpness > 0) {
+              // box blur 3x3
+              const srcData = new Uint8ClampedArray(data);
+              const amount = Math.min(2, sharpness / 100 * 1.6);
+              const idx = (x: number, y: number) => (y * w + x) * 4;
+
+              for (let y = 0; y < h; y++) {
+                for (let x = 0; x < w; x++) {
+                  let rSum = 0, gSum = 0, bSum = 0, aSum = 0, count = 0;
+                  for (let dy = -1; dy <= 1; dy++) {
+                    const yy = y + dy;
+                    if (yy < 0 || yy >= h) continue;
+                    for (let dx = -1; dx <= 1; dx++) {
+                      const xx = x + dx;
+                      if (xx < 0 || xx >= w) continue;
+                      const j = idx(xx, yy);
+                      rSum += srcData[j];
+                      gSum += srcData[j + 1];
+                      bSum += srcData[j + 2];
+                      aSum += srcData[j + 3];
+                      count++;
+                    }
+                  }
+                  const j0 = idx(x, y);
+                  const br = rSum / count;
+                  const bg = gSum / count;
+                  const bb = bSum / count;
+                  const ba = aSum / count;
+
+                  const or = srcData[j0];
+                  const og = srcData[j0 + 1];
+                  const ob = srcData[j0 + 2];
+                  const oa = srcData[j0 + 3];
+
+                  data[j0] = clamp255(or + (or - br) * amount);
+                  data[j0 + 1] = clamp255(og + (og - bg) * amount);
+                  data[j0 + 2] = clamp255(ob + (ob - bb) * amount);
+                  data[j0 + 3] = clamp255(oa + (oa - ba) * (amount * 0.25));
+                }
+              }
+            }
+
+            ctx.putImageData(imageData, 0, 0);
+          };
+
+          applyPixelStage();
           resolve(canvas.toDataURL("image/png"));
         } catch (err) {
           reject(err);
@@ -2312,7 +2483,7 @@ const Editor2D = forwardRef<Editor2DHandle, Props>(function Editor2D(
       imgEl.src = src;
     });
 
-  const applyActiveImageAdjustments = async (adj: ImageAdjustments) => {
+  const processActiveImageAdjustments = async (adj: ImageAdjustments) => {
     const c = canvasRef.current as any;
     if (!c) return;
 
@@ -2343,7 +2514,14 @@ const Editor2D = forwardRef<Editor2DHandle, Props>(function Editor2D(
       (next.saturation ?? 100) === 100 &&
       (next.sepia ?? 0) === 0 &&
       (next.grayscale ?? 0) === 0 &&
-      (next.hue ?? 0) === 0;
+      (next.hue ?? 0) === 0 &&
+      (next.sharpness ?? 0) === 0 &&
+      (next.definition ?? 0) === 0 &&
+      (next.highlights ?? 0) === 0 &&
+      (next.shadows ?? 0) === 0 &&
+      (next.blackPoint ?? 0) === 0 &&
+      (next.warmth ?? 0) === 0 &&
+      (next.tint ?? 0) === 0;
 
     const clamp01 = (n: number) => Math.max(0, Math.min(1, n));
     const applyFabricShadow = (img: any, next: ImageAdjustments) => {
@@ -2391,7 +2569,14 @@ const Editor2D = forwardRef<Editor2DHandle, Props>(function Editor2D(
         prev.saturation !== next.saturation ||
         prev.sepia !== next.sepia ||
         prev.grayscale !== next.grayscale ||
-        prev.hue !== next.hue
+        prev.hue !== next.hue ||
+        prev.sharpness !== next.sharpness ||
+        prev.definition !== next.definition ||
+        prev.highlights !== next.highlights ||
+        prev.shadows !== next.shadows ||
+        prev.blackPoint !== next.blackPoint ||
+        prev.warmth !== next.warmth ||
+        prev.tint !== next.tint
       );
     };
 
@@ -2464,6 +2649,23 @@ const Editor2D = forwardRef<Editor2DHandle, Props>(function Editor2D(
       }
 
       scheduleHistoryCommit();
+    }
+  };
+
+  const applyActiveImageAdjustments = async (adj: ImageAdjustments) => {
+    // Colapsa chamadas frequentes (drag do slider) para sempre aplicar o último valor.
+    imageAdjPendingRef.current = { ...adj };
+    if (imageAdjRunningRef.current) return;
+
+    imageAdjRunningRef.current = true;
+    try {
+      while (imageAdjPendingRef.current) {
+        const next = imageAdjPendingRef.current;
+        imageAdjPendingRef.current = null;
+        await processActiveImageAdjustments(next);
+      }
+    } finally {
+      imageAdjRunningRef.current = false;
     }
   };
 
