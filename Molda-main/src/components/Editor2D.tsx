@@ -625,6 +625,17 @@ const Editor2D = forwardRef<Editor2DHandle, Props>(function Editor2D(
       const c: any = canvasRef.current;
       if (!c) return;
 
+      // Don't steal keys from form fields.
+      const target = evt.target as HTMLElement | null;
+      if (
+        target &&
+        (target.tagName === "INPUT" ||
+          target.tagName === "TEXTAREA" ||
+          (target as any).isContentEditable)
+      ) {
+        return;
+      }
+
       // If user is currently editing text, Enter should behave normally.
       const active: any = c.getActiveObject?.();
       const isTextEditing =
@@ -681,6 +692,62 @@ const Editor2D = forwardRef<Editor2DHandle, Props>(function Editor2D(
             return;
           }
         }
+      }
+
+      // Delete behavior:
+      // - If on select/text tools: delete current selection
+      // - If any other tool is active: cancel tool usage and return to select
+      if (evt.key === "Delete" || evt.key === "Backspace") {
+        const activeTool = toolRef.current;
+
+        // Curve tool: Delete/Backspace should cancel the in-progress drawing and return to select.
+        // We cancel the curve state first so the tool-switch effect won't auto-finalize an open curve.
+        if (activeTool === "curve") {
+          evt.preventDefault();
+          evt.stopPropagation();
+          (evt as any).stopImmediatePropagation?.();
+          try {
+            clearCurvePreview(c);
+          } catch {}
+          try {
+            resetCurveState(null);
+          } catch {}
+          try {
+            c.requestRenderAll?.();
+          } catch {}
+          try {
+            onRequestToolChangeRef.current?.("select");
+          } catch {}
+          return;
+        }
+
+        // Line tool cancellation is handled by its own keydown listener (so previews get cleaned up).
+        if (activeTool === "line") {
+          return;
+        }
+
+        // Brush and other drawing tools: switch back to select.
+        if (activeTool !== "select" && activeTool !== "text") {
+          evt.preventDefault();
+          evt.stopPropagation();
+          (evt as any).stopImmediatePropagation?.();
+          try {
+            onContinuousLineCancelRef.current?.();
+          } catch {}
+          try {
+            onRequestToolChangeRef.current?.("select");
+          } catch {}
+          return;
+        }
+
+        // Select/text tools: delete selection.
+        evt.preventDefault();
+        evt.stopPropagation();
+        (evt as any).stopImmediatePropagation?.();
+        try {
+          deleteSelection();
+        } catch {}
+        return;
       }
 
       if (evt.key !== "Enter") return;
@@ -849,6 +916,8 @@ const Editor2D = forwardRef<Editor2DHandle, Props>(function Editor2D(
     return img;
   };
 
+  // Pontos do laço são armazenados NORMALIZADOS (0..1) relativos ao retângulo atual da imagem (imageRect).
+  // Isso garante que, ao ampliar/reduzir/mover a imagem durante o modo laço, os pontos acompanhem a imagem.
   type LassoPoint = { x: number; y: number; kind: "click" | "drag" };
 
   // Snapshot do estado dos pontos do laço para undo/redo durante o corte
@@ -924,6 +993,28 @@ const Editor2D = forwardRef<Editor2DHandle, Props>(function Editor2D(
     x: clamp(p.x, r.left, r.left + r.width),
     y: clamp(p.y, r.top, r.top + r.height),
   });
+
+  const lassoPointToCanvas = (s: any, p: { x: number; y: number }) => {
+    const r = s?.imageRect ?? { left: 0, top: 0, width: 1, height: 1 };
+    const w = Math.max(1e-6, Number(r.width ?? 1) || 1);
+    const h = Math.max(1e-6, Number(r.height ?? 1) || 1);
+    return {
+      x: Number(r.left ?? 0) + Number(p.x ?? 0) * w,
+      y: Number(r.top ?? 0) + Number(p.y ?? 0) * h,
+    };
+  };
+
+  const canvasPointToLasso = (s: any, p: { x: number; y: number }) => {
+    const r = s?.imageRect ?? { left: 0, top: 0, width: 1, height: 1 };
+    const w = Math.max(1e-6, Number(r.width ?? 1) || 1);
+    const h = Math.max(1e-6, Number(r.height ?? 1) || 1);
+    const u = (Number(p.x ?? 0) - Number(r.left ?? 0)) / w;
+    const v = (Number(p.y ?? 0) - Number(r.top ?? 0)) / h;
+    return {
+      x: clamp(u, 0, 1),
+      y: clamp(v, 0, 1),
+    };
+  };
 
   const centerImageInCanvas = (img: any) => {
     const c: any = canvasRef.current;
@@ -1253,14 +1344,14 @@ const Editor2D = forwardRef<Editor2DHandle, Props>(function Editor2D(
 
     const pts = s.points;
 
-    const basePts = pts.map((p) => ({ x: p.x, y: p.y }));
+    const basePts = pts.map((p) => lassoPointToCanvas(s, p));
     const strokePts: Array<{ x: number; y: number }> = (() => {
       // Durante arrasto, mostra um preview até o cursor.
       if (s.isPointerDown && s.isDragging && s.dragPoint) {
         const base = basePts.slice();
-        if (base.length === 0 && s.downPoint) base.push({ x: s.downPoint.x, y: s.downPoint.y });
+        if (base.length === 0 && s.downPoint) base.push(lassoPointToCanvas(s, s.downPoint));
         const last = base[base.length - 1];
-        const d = s.dragPoint;
+        const d = lassoPointToCanvas(s, s.dragPoint);
         if (!last || Math.abs(last.x - d.x) > 0.001 || Math.abs(last.y - d.y) > 0.001) base.push({ x: d.x, y: d.y });
         // Fechamento visual do traço
         if (s.closed && base.length >= 3) {
@@ -1306,6 +1397,7 @@ const Editor2D = forwardRef<Editor2DHandle, Props>(function Editor2D(
 
         for (let i = 0; i < pts.length; i++) {
           const p = pts[i];
+          const pc = lassoPointToCanvas(s, p);
           const isFirst = i === 0;
           const isLast = i === pts.length - 1;
 
@@ -1317,8 +1409,8 @@ const Editor2D = forwardRef<Editor2DHandle, Props>(function Editor2D(
           else if (p.kind === "click") show = true;
           else if (!lastShown) show = true;
           else {
-            const dx = p.x - lastShown.x;
-            const dy = p.y - lastShown.y;
+            const dx = pc.x - lastShown.x;
+            const dy = pc.y - lastShown.y;
             if (dx * dx + dy * dy >= DISPLAY_DIST2) show = true;
           }
 
@@ -1326,8 +1418,8 @@ const Editor2D = forwardRef<Editor2DHandle, Props>(function Editor2D(
 
           const radius = isFirst ? 9 : 6;
           const m = new fabric.Circle({
-            left: p.x,
-            top: p.y,
+            left: pc.x,
+            top: pc.y,
             radius,
             originX: "center",
             originY: "center",
@@ -1392,7 +1484,10 @@ const Editor2D = forwardRef<Editor2DHandle, Props>(function Editor2D(
             try { m.set({ left: cl.x, top: cl.y }); } catch {}
             try { m.setCoords?.(); } catch {}
             const cur = ss.points[i];
-            if (cur) ss.points[i] = { ...cur, x: cl.x, y: cl.y };
+            if (cur) {
+              const norm = canvasPointToLasso(ss, cl);
+              ss.points[i] = { ...cur, x: norm.x, y: norm.y };
+            }
             updateLassoGraphics();
           });
 
@@ -1406,7 +1501,7 @@ const Editor2D = forwardRef<Editor2DHandle, Props>(function Editor2D(
 
           s.pointMarkers.push(m);
           try { c.add(m); } catch {}
-          lastShown = { x: p.x, y: p.y };
+          lastShown = { x: pc.x, y: pc.y };
         }
       });
     }
@@ -1773,8 +1868,8 @@ const Editor2D = forwardRef<Editor2DHandle, Props>(function Editor2D(
     const refreshFromImage = () => {
       const s = lassoCropRef.current;
       if (!s?.active) return;
-      centerImageInCanvas(s.img);
       s.imageRect = getImageRect(s.img);
+      (s as any).__syncingImgHandles = true;
       runSilently(() => {
         try {
           s.highlight.set({ left: s.imageRect.left, top: s.imageRect.top, width: s.imageRect.width, height: s.imageRect.height });
@@ -1795,6 +1890,7 @@ const Editor2D = forwardRef<Editor2DHandle, Props>(function Editor2D(
           s.imgHandles.br.setCoords?.();
         } catch {}
       });
+      (s as any).__syncingImgHandles = false;
       updateLassoGraphics();
       try { c.requestRenderAll?.(); } catch {}
     };
@@ -1802,20 +1898,22 @@ const Editor2D = forwardRef<Editor2DHandle, Props>(function Editor2D(
     const onImgHandleMoving = (h: any) => {
       const s = lassoCropRef.current;
       if (!s?.active) return;
+      if ((s as any).__syncingImgHandles) return;
       const p = h.getCenterPoint?.() ?? { x: Number(h.left ?? 0), y: Number(h.top ?? 0) };
-      const center = getObjectCenter(s.img);
-      const dx = Math.abs(Number(p.x ?? 0) - center.x);
-      const dy = Math.abs(Number(p.y ?? 0) - center.y);
-      const halfW0 = (Number(s.img.width ?? 0) * Number(s.img.scaleX ?? 1)) / 2;
-      const halfH0 = (Number(s.img.height ?? 0) * Number(s.img.scaleY ?? 1)) / 2;
+      const canvasCenter = { x: c.getWidth() / 2, y: c.getHeight() / 2 };
+      const dx = Math.abs(Number(p.x ?? 0) - canvasCenter.x);
+      const dy = Math.abs(Number(p.y ?? 0) - canvasCenter.y);
       const desiredHalfW = Math.max(16, dx);
       const desiredHalfH = Math.max(16, dy);
-      const sx = halfW0 > 0 ? desiredHalfW / halfW0 : 1;
-      const sy = halfH0 > 0 ? desiredHalfH / halfH0 : 1;
-      const factor = Math.max(0.1, Math.min(10, Math.max(sx, sy)));
+      const baseW = Math.max(1, Number(s.img.width ?? 0) || 1);
+      const baseH = Math.max(1, Number(s.img.height ?? 0) || 1);
+      const sx = (2 * desiredHalfW) / baseW;
+      const sy = (2 * desiredHalfH) / baseH;
+      const nextScale = clamp(Math.max(sx, sy), 0.05, 20);
       runSilently(() => {
         try {
-          s.img.set({ scaleX: Number(s.img.scaleX ?? 1) * factor, scaleY: Number(s.img.scaleY ?? 1) * factor });
+          s.img.set({ scaleX: nextScale, scaleY: nextScale });
+          centerImageInCanvas(s.img);
           s.img.setCoords?.();
         } catch {}
       });
@@ -1854,7 +1952,8 @@ const Editor2D = forwardRef<Editor2DHandle, Props>(function Editor2D(
       s.isPointerDown = true;
       s.isFreehand = false;
       s.isDragging = false;
-      const p0 = clampPointToRect(getPointer(opt), s.imageRect);
+      const p0c = clampPointToRect(getPointer(opt), s.imageRect);
+      const p0 = canvasPointToLasso(s, p0c);
       s.downPoint = p0;
       s.lastSample = p0;
       s.dragPoint = p0;
@@ -1869,7 +1968,8 @@ const Editor2D = forwardRef<Editor2DHandle, Props>(function Editor2D(
       if (s.closed) return;
       try { opt?.e?.preventDefault?.(); } catch {}
       try { opt?.e?.stopPropagation?.(); } catch {}
-      const p = clampPointToRect(getPointer(opt), s.imageRect);
+      const pc = clampPointToRect(getPointer(opt), s.imageRect);
+      const p = canvasPointToLasso(s, pc);
       const down = s.downPoint;
       if (!down) return;
 
@@ -1879,11 +1979,19 @@ const Editor2D = forwardRef<Editor2DHandle, Props>(function Editor2D(
       const DRAG_START_DIST2 = 4; // ~2px
       const SAMPLE_DIST2 = 36; // ~6px
 
-      if (!s.isDragging && dist2(p, down) > DRAG_START_DIST2) {
+      const dist2Canvas = (a: any, b: any) => {
+        const ac = lassoPointToCanvas(s, a);
+        const bc = lassoPointToCanvas(s, b);
+        const dx = ac.x - bc.x;
+        const dy = ac.y - bc.y;
+        return dx * dx + dy * dy;
+      };
+
+      if (!s.isDragging && dist2Canvas(p, down) > DRAG_START_DIST2) {
         s.isDragging = true;
         // garante que o primeiro ponto do segmento seja registrado
         const last = s.points[s.points.length - 1];
-        if (!last || dist2(last, down) > 0.25) {
+        if (!last || dist2Canvas(last, down) > 0.25) {
           // snapshot por ponto (undo granular)
           pushLassoSnapshot();
           s.points = [...s.points, { x: down.x, y: down.y, kind: "drag" }];
@@ -1894,7 +2002,7 @@ const Editor2D = forwardRef<Editor2DHandle, Props>(function Editor2D(
       if (s.isDragging) {
         // Se aproximar do ponto inicial com o arrasto ativo, fecha automaticamente.
         const first = s.points[0];
-        if (first && s.points.length >= 3 && isNear(p, first, 12)) {
+        if (first && s.points.length >= 3 && isNear(lassoPointToCanvas(s, p), lassoPointToCanvas(s, first), 12)) {
           // Salva snapshot antes de fechar automaticamente
           pushLassoSnapshot();
           s.closed = true;
@@ -1908,7 +2016,7 @@ const Editor2D = forwardRef<Editor2DHandle, Props>(function Editor2D(
         }
 
         const last = s.lastSample ?? s.points[s.points.length - 1] ?? down;
-        if (dist2(p, last) >= SAMPLE_DIST2) {
+        if (dist2Canvas(p, last) >= SAMPLE_DIST2) {
           // snapshot por ponto (undo granular)
           pushLassoSnapshot();
           s.points = [...s.points, { x: p.x, y: p.y, kind: "drag" }];
@@ -1930,17 +2038,25 @@ const Editor2D = forwardRef<Editor2DHandle, Props>(function Editor2D(
       }
       try { opt?.e?.preventDefault?.(); } catch {}
       try { opt?.e?.stopPropagation?.(); } catch {}
-      const p = clampPointToRect(getPointer(opt), s.imageRect);
+      const pc = clampPointToRect(getPointer(opt), s.imageRect);
+      const p = canvasPointToLasso(s, pc);
       const down = s.downPoint;
       s.isPointerDown = false;
 
       const ptsNow = s.points;
       const first = ptsNow[0];
 
-      const clickLike = !!down && dist2(p, down) <= 36; // <= ~6px
+      const clickLike = (() => {
+        if (!down) return false;
+        const a = lassoPointToCanvas(s, p);
+        const b = lassoPointToCanvas(s, down);
+        const dx = a.x - b.x;
+        const dy = a.y - b.y;
+        return dx * dx + dy * dy <= 36;
+      })();
 
       // Clique no primeiro ponto: 1) fecha o laço, 2) se já fechado, confirma.
-      if (clickLike && first && ptsNow.length >= 3 && isNear(p, first, 12)) {
+      if (clickLike && first && ptsNow.length >= 3 && isNear(lassoPointToCanvas(s, p), lassoPointToCanvas(s, first), 12)) {
         s.isDragging = false;
         s.dragPoint = undefined;
         s.downPoint = undefined;
@@ -1976,7 +2092,7 @@ const Editor2D = forwardRef<Editor2DHandle, Props>(function Editor2D(
           s.points = [...s.points, { x: down.x, y: down.y, kind: "drag" }];
         }
         const last = s.points[s.points.length - 1];
-        if (!last || !isNear(last, p, 0.5)) {
+        if (!last || !isNear(lassoPointToCanvas(s, last), lassoPointToCanvas(s, p), 0.5)) {
           pushLassoSnapshot();
           s.points = [...s.points, { x: p.x, y: p.y, kind: "drag" }];
         }
@@ -2230,11 +2346,14 @@ const Editor2D = forwardRef<Editor2DHandle, Props>(function Editor2D(
         const savedH = Math.max(1, Number(meta.originalImageRect?.height ?? imageRect.height ?? 1));
         const sxPts = imageRect.width / savedW;
         const syPts = imageRect.height / savedH;
-        const absolutePoints: LassoPoint[] = meta.points.map((p) => ({
-          x: imageRect.left + p.x * sxPts,
-          y: imageRect.top + p.y * syPts,
-          kind: p.kind,
-        }));
+        // Converte pontos salvos (pixels relativos ao imageRect antigo) para NORMALIZADOS no imageRect atual.
+        const absolutePoints: LassoPoint[] = meta.points.map((p) => {
+          const xPx = Number(p.x ?? 0) * sxPts;
+          const yPx = Number(p.y ?? 0) * syPts;
+          const u = imageRect.width > 0 ? xPx / imageRect.width : 0;
+          const v = imageRect.height > 0 ? yPx / imageRect.height : 0;
+          return { x: clamp(u, 0, 1), y: clamp(v, 0, 1), kind: p.kind };
+        });
 
         const session: LassoCropSession = {
           active: true,
@@ -2293,8 +2412,8 @@ const Editor2D = forwardRef<Editor2DHandle, Props>(function Editor2D(
         const refreshFromImage = () => {
           const s = lassoCropRef.current;
           if (!s?.active) return;
-          centerImageInCanvas(s.img);
           s.imageRect = getImageRect(s.img);
+          (s as any).__syncingImgHandles = true;
           runSilently(() => {
             try {
               s.highlight.set({ left: s.imageRect.left, top: s.imageRect.top, width: s.imageRect.width, height: s.imageRect.height });
@@ -2315,6 +2434,7 @@ const Editor2D = forwardRef<Editor2DHandle, Props>(function Editor2D(
               s.imgHandles.br.setCoords?.();
             } catch {}
           });
+          (s as any).__syncingImgHandles = false;
           updateLassoGraphics();
           try { c.requestRenderAll?.(); } catch {}
         };
@@ -2322,20 +2442,22 @@ const Editor2D = forwardRef<Editor2DHandle, Props>(function Editor2D(
         const onImgHandleMoving = (h: any) => {
           const s = lassoCropRef.current;
           if (!s?.active) return;
+          if ((s as any).__syncingImgHandles) return;
           const p = h.getCenterPoint?.() ?? { x: Number(h.left ?? 0), y: Number(h.top ?? 0) };
-          const center = getObjectCenter(s.img);
-          const dx = Math.abs(Number(p.x ?? 0) - center.x);
-          const dy = Math.abs(Number(p.y ?? 0) - center.y);
-          const halfW0 = (Number(s.img.width ?? 0) * Number(s.img.scaleX ?? 1)) / 2;
-          const halfH0 = (Number(s.img.height ?? 0) * Number(s.img.scaleY ?? 1)) / 2;
+          const canvasCenter = { x: c.getWidth() / 2, y: c.getHeight() / 2 };
+          const dx = Math.abs(Number(p.x ?? 0) - canvasCenter.x);
+          const dy = Math.abs(Number(p.y ?? 0) - canvasCenter.y);
           const desiredHalfW = Math.max(16, dx);
           const desiredHalfH = Math.max(16, dy);
-          const sx = halfW0 > 0 ? desiredHalfW / halfW0 : 1;
-          const sy = halfH0 > 0 ? desiredHalfH / halfH0 : 1;
-          const factor = Math.max(0.1, Math.min(10, Math.max(sx, sy)));
+          const baseW = Math.max(1, Number(s.img.width ?? 0) || 1);
+          const baseH = Math.max(1, Number(s.img.height ?? 0) || 1);
+          const sx = (2 * desiredHalfW) / baseW;
+          const sy = (2 * desiredHalfH) / baseH;
+          const nextScale = clamp(Math.max(sx, sy), 0.05, 20);
           runSilently(() => {
             try {
-              s.img.set({ scaleX: Number(s.img.scaleX ?? 1) * factor, scaleY: Number(s.img.scaleY ?? 1) * factor });
+              s.img.set({ scaleX: nextScale, scaleY: nextScale });
+              centerImageInCanvas(s.img);
               s.img.setCoords?.();
             } catch {}
           });
@@ -2866,8 +2988,8 @@ const Editor2D = forwardRef<Editor2DHandle, Props>(function Editor2D(
     const refreshFromImage = () => {
       const s = squareCropRef.current;
       if (!s?.active) return;
-      centerImageInCanvas(s.img);
       s.imageRect = getImageRect(s.img);
+      (s as any).__syncingImgHandles = true;
       runSilently(() => {
         try {
           s.highlight.set({ left: s.imageRect.left, top: s.imageRect.top, width: s.imageRect.width, height: s.imageRect.height });
@@ -2888,6 +3010,7 @@ const Editor2D = forwardRef<Editor2DHandle, Props>(function Editor2D(
           s.imgHandles.br.setCoords?.();
         } catch {}
       });
+      (s as any).__syncingImgHandles = false;
       updateSquareCropPreview();
       try { c.requestRenderAll?.(); } catch {}
     };
@@ -2907,23 +3030,24 @@ const Editor2D = forwardRef<Editor2DHandle, Props>(function Editor2D(
     const onImgHandleMoving = (h: any) => {
       const s = squareCropRef.current;
       if (!s?.active) return;
+      if ((s as any).__syncingImgHandles) return;
       beginSquareAdjust();
       const p = h.getCenterPoint?.() ?? { x: Number(h.left ?? 0), y: Number(h.top ?? 0) };
-      const center = getObjectCenter(s.img);
-      const dx = Math.abs(Number(p.x ?? 0) - center.x);
-      const dy = Math.abs(Number(p.y ?? 0) - center.y);
-
-      const halfW0 = (Number(s.img.width ?? 0) * Number(s.img.scaleX ?? 1)) / 2;
-      const halfH0 = (Number(s.img.height ?? 0) * Number(s.img.scaleY ?? 1)) / 2;
+      const canvasCenter = { x: c.getWidth() / 2, y: c.getHeight() / 2 };
+      const dx = Math.abs(Number(p.x ?? 0) - canvasCenter.x);
+      const dy = Math.abs(Number(p.y ?? 0) - canvasCenter.y);
       const desiredHalfW = Math.max(16, dx);
       const desiredHalfH = Math.max(16, dy);
-      const sx = halfW0 > 0 ? desiredHalfW / halfW0 : 1;
-      const sy = halfH0 > 0 ? desiredHalfH / halfH0 : 1;
-      const factor = Math.max(0.1, Math.min(10, Math.max(sx, sy)));
+      const baseW = Math.max(1, Number(s.img.width ?? 0) || 1);
+      const baseH = Math.max(1, Number(s.img.height ?? 0) || 1);
+      const sx = (2 * desiredHalfW) / baseW;
+      const sy = (2 * desiredHalfH) / baseH;
+      const nextScale = clamp(Math.max(sx, sy), 0.05, 20);
 
       runSilently(() => {
         try {
-          s.img.set({ scaleX: Number(s.img.scaleX ?? 1) * factor, scaleY: Number(s.img.scaleY ?? 1) * factor });
+          s.img.set({ scaleX: nextScale, scaleY: nextScale });
+          centerImageInCanvas(s.img);
           s.img.setCoords?.();
         } catch {}
       });
@@ -3115,7 +3239,10 @@ const Editor2D = forwardRef<Editor2DHandle, Props>(function Editor2D(
     if (!c || !fabric || !s?.active) return;
     const img = s.img;
 
-    const ptsCanvas = s.points;
+    const ptsCanvas = (s.points ?? []).map((p: any) => {
+      const pc = lassoPointToCanvas(s, p);
+      return { x: pc.x, y: pc.y, kind: p.kind };
+    });
     if (ptsCanvas.length < 3) return;
 
     // Captura o dataUrl da imagem original para re-edição
@@ -3171,9 +3298,9 @@ const Editor2D = forwardRef<Editor2DHandle, Props>(function Editor2D(
     if (outW < 2 || outH < 2) return;
 
     // Converte pontos para coordenadas relativas ao imageRect (para re-edição)
-    const relativePoints: LassoPoint[] = ptsCanvas.map((p) => ({
-      x: p.x - s.imageRect.left,
-      y: p.y - s.imageRect.top,
+    const relativePoints: LassoPoint[] = (s.points ?? []).map((p: any) => ({
+      x: clamp(Number(p.x ?? 0), 0, 1) * s.imageRect.width,
+      y: clamp(Number(p.y ?? 0), 0, 1) * s.imageRect.height,
       kind: p.kind,
     }));
 
@@ -3334,10 +3461,28 @@ const Editor2D = forwardRef<Editor2DHandle, Props>(function Editor2D(
 
     const wNow = Number(s.cropBox.width ?? s.size) || s.size;
     const hNow = Number(s.cropBox.height ?? s.size) || s.size;
-    const wPx = Math.max(1, Math.round(wNow / scaleX));
-    const hPx = Math.max(1, Math.round(hNow / scaleY));
-    const newCropX = Math.round(existingCropX + relX / scaleX);
-    const newCropY = Math.round(existingCropY + relY / scaleY);
+    // Converte o tamanho do box (canvas units) para pixels da fonte.
+    const wPxRaw = Math.max(1, Math.round(wNow / scaleX));
+    const hPxRaw = Math.max(1, Math.round(hNow / scaleY));
+
+    // Em Fabric, img.width/img.height representam o "window" atual em pixels da fonte (especialmente se já havia crop).
+    // Precisamos clamping para não gerar crop fora do range (o que pode renderizar em branco).
+    const windowW = Math.max(1, Math.round(Number(img.width ?? 0) || wPxRaw));
+    const windowH = Math.max(1, Math.round(Number(img.height ?? 0) || hPxRaw));
+
+    const wPx = clamp(wPxRaw, 1, windowW);
+    const hPx = clamp(hPxRaw, 1, windowH);
+
+    const newCropXRaw = Math.round(existingCropX + relX / scaleX);
+    const newCropYRaw = Math.round(existingCropY + relY / scaleY);
+
+    const minCropX = existingCropX;
+    const minCropY = existingCropY;
+    const maxCropX = existingCropX + windowW - wPx;
+    const maxCropY = existingCropY + windowH - hPx;
+
+    const newCropX = Math.round(clamp(newCropXRaw, minCropX, maxCropX));
+    const newCropY = Math.round(clamp(newCropYRaw, minCropY, maxCropY));
 
     // Ao confirmar, criamos um NOVO objeto de imagem com o crop aplicado e removemos o anterior.
     // Isso gera um gizmo novo e evita estados residuais do modo de corte.
@@ -3356,6 +3501,10 @@ const Editor2D = forwardRef<Editor2DHandle, Props>(function Editor2D(
         newObj.set({ cropX: newCropX, cropY: newCropY, width: wPx, height: hPx });
         newObj.setCoords?.();
       } catch {}
+
+      // Para evitar que o resultado "suma" fora da área visível após um zoom ancorado no cursor,
+      // mantemos o comportamento de pós-corte: imagem centralizada no canvas.
+      try { centerImageInCanvas(newObj); } catch {}
     }
 
     cleanupSquareCropPreview({ restoreImage: false });
@@ -3587,11 +3736,41 @@ const Editor2D = forwardRef<Editor2DHandle, Props>(function Editor2D(
   const deleteSelection = () => {
     const c = canvasRef.current;
     if (!c) return;
-    const active = c.getActiveObject?.();
-    if (active) {
-      c.remove(active);
-      c.discardActiveObject();
+
+    const activeObjects: any[] =
+      (typeof c.getActiveObjects === "function" ? c.getActiveObjects() : []) || [];
+    const objects = activeObjects.length
+      ? activeObjects
+      : c.getActiveObject?.()
+        ? [c.getActiveObject?.()]
+        : [];
+    if (!objects.length) return;
+
+    const shouldPush = shouldRecordHistory();
+
+    // Remove everything in the active selection as a single history entry.
+    runSilently(() => {
+      objects.forEach((obj: any) => {
+        if (!obj) return;
+        if (obj.__isPreview) return;
+        try {
+          c.remove(obj);
+        } catch {}
+      });
+      try {
+        c.discardActiveObject?.();
+      } catch {}
+    });
+
+    try {
       c.requestRenderAll?.();
+    } catch {}
+
+    if (shouldPush) {
+      try {
+        historyRef.current?.push("remove");
+      } catch {}
+      emitHistory();
     }
   };
 
@@ -6601,10 +6780,215 @@ const Editor2D = forwardRef<Editor2DHandle, Props>(function Editor2D(
           // Do not hijack pinch-zoom / browser zoom gestures.
           if ((evt as any).ctrlKey || (evt as any).metaKey) return;
 
-          // If crop is active, wheel should not scale objects.
+          // Crop tools: wheel zoom behaves differently (zoom to cursor; zoom out recenters).
           const cropSession = squareCropRef.current;
           const lassoSession = lassoCropRef.current;
-          if (cropSession?.active || lassoSession?.active) return;
+          const isSquareCropActive = !!cropSession?.active;
+          const isLassoCropActive = !!lassoSession?.active;
+
+          if (isSquareCropActive || isLassoCropActive) {
+            const s: any = isSquareCropActive ? cropSession : lassoSession;
+            const img: any = s?.img;
+            if (!img) return;
+
+            const dy = Number((evt as any).deltaY ?? 0);
+            if (!Number.isFinite(dy) || dy === 0) return;
+
+            const stepMagnitude = Math.min(10, Math.max(0.1, Math.abs(dy) / 100));
+            const step = dy > 0 ? 0.95 : 1.05;
+            const factor = Math.pow(step, stepMagnitude);
+
+            const scaleX0 = Number(img.scaleX ?? 1) || 1;
+            const scaleY0 = Number(img.scaleY ?? 1) || 1;
+            const minScale = 0.05;
+            const maxScale = 20;
+            const nextScaleX = clamp(scaleX0 * factor, minScale, maxScale);
+            const nextScaleY = clamp(scaleY0 * factor, minScale, maxScale);
+
+            // Square crop: group wheel gesture into the crop's internal undo stack.
+            if (isSquareCropActive) {
+              try {
+                if (!s.isAdjusting) {
+                  s.isAdjusting = true;
+                  const prev = s.lastRecorded ?? normalizeSquareCropSnapshot(getSquareCropSnapshot(s));
+                  s.undoStack.push(prev);
+                  if (s.undoStack.length > MAX_SQUARE_CROP_UNDO) s.undoStack.shift();
+                  s.redoStack = [];
+                }
+              } catch {}
+            }
+
+            // Pointer in canvas coordinates.
+            let pointer = { x: 0, y: 0 };
+            try {
+              const p = c.getPointer?.(evt);
+              if (p && typeof p.x === "number" && typeof p.y === "number") pointer = { x: p.x, y: p.y };
+            } catch {}
+            if ((pointer.x === 0 && pointer.y === 0) && opt?.pointer && typeof opt.pointer.x === "number") {
+              pointer = { x: opt.pointer.x, y: opt.pointer.y };
+            }
+
+            runSilently(() => {
+              const imgCenter = getObjectCenter(img);
+              // Zoom in: toward cursor (anchor zoom at mouse position).
+              if (factor > 1) {
+                const fabric: any = fabricRef.current;
+                const canScaleToPoint = typeof img.scaleToPoint === "function" && fabric?.Point;
+                if (canScaleToPoint) {
+                  try {
+                    const pt = new fabric.Point(pointer.x, pointer.y);
+                    // Use uniform scaling around the cursor.
+                    img.scaleToPoint(pt, nextScaleX);
+                    img.set?.({ scaleX: nextScaleX, scaleY: nextScaleY });
+                  } catch {
+                    try { img.set?.({ scaleX: nextScaleX, scaleY: nextScaleY }); } catch {}
+                  }
+                } else {
+                  // Fallback: uniform scale + translate opposite the cursor vector.
+                  const center = imgCenter;
+                  const scaleRatio = scaleX0 > 0 ? nextScaleX / scaleX0 : 1;
+                  const dx = pointer.x - center.x;
+                  const dy2 = pointer.y - center.y;
+                  const nextCenter = { x: center.x - dx * (scaleRatio - 1), y: center.y - dy2 * (scaleRatio - 1) };
+                  try { img.set?.({ scaleX: nextScaleX, scaleY: nextScaleY }); } catch {}
+                  try {
+                    const fabric: any = fabricRef.current;
+                    if (fabric?.Point && typeof img.setPositionByOrigin === "function") {
+                      img.setPositionByOrigin(new fabric.Point(nextCenter.x, nextCenter.y), "center", "center");
+                    } else {
+                      img.left = nextCenter.x;
+                      img.top = nextCenter.y;
+                    }
+                  } catch {}
+                }
+              } else {
+                // Zoom out: scale now, but only recenter AFTER the gesture ends (debounce)
+                // while gently pulling the image back toward the canvas center (no sudden snap).
+                const fabric: any = fabricRef.current;
+                const canScaleToPoint = typeof img.scaleToPoint === "function" && fabric?.Point;
+                if (canScaleToPoint) {
+                  try {
+                    // Keep the image center stable during zoom-out to prevent drift/inverted movement.
+                    const pt = new fabric.Point(imgCenter.x, imgCenter.y);
+                    img.scaleToPoint(pt, nextScaleX);
+                    img.set?.({ scaleX: nextScaleX, scaleY: nextScaleY });
+                  } catch {
+                    try { img.set?.({ scaleX: nextScaleX, scaleY: nextScaleY }); } catch {}
+                  }
+                } else {
+                  try { img.set?.({ scaleX: nextScaleX, scaleY: nextScaleY }); } catch {}
+                  try {
+                    if (fabric?.Point && typeof img.setPositionByOrigin === "function") {
+                      img.setPositionByOrigin(new fabric.Point(imgCenter.x, imgCenter.y), "center", "center");
+                    } else {
+                      img.left = imgCenter.x;
+                      img.top = imgCenter.y;
+                    }
+                  } catch {}
+                }
+
+                // Gentle recentering during zoom-out: move a fraction toward the canvas center.
+                try {
+                  const centerAfter = getObjectCenter(img);
+                  const canvasCenter = { x: c.getWidth() / 2, y: c.getHeight() / 2 };
+                  const pull = clamp((1 - factor) * 1.5, 0.08, 0.35);
+                  const nextCenter = {
+                    x: centerAfter.x + (canvasCenter.x - centerAfter.x) * pull,
+                    y: centerAfter.y + (canvasCenter.y - centerAfter.y) * pull,
+                  };
+                  if (fabric?.Point && typeof img.setPositionByOrigin === "function") {
+                    img.setPositionByOrigin(new fabric.Point(nextCenter.x, nextCenter.y), "center", "center");
+                  } else {
+                    img.left = nextCenter.x;
+                    img.top = nextCenter.y;
+                  }
+                } catch {}
+              }
+
+              try { img.setCoords?.(); } catch {}
+            });
+
+            // Refresh crop UI from image without forcing centering on zoom-in.
+            try {
+              s.imageRect = getImageRect(img);
+            } catch {}
+            if (isSquareCropActive) {
+              try {
+                runSilently(() => {
+                  try {
+                    s.highlight.set({ left: s.imageRect.left, top: s.imageRect.top, width: s.imageRect.width, height: s.imageRect.height });
+                    s.highlight.setCoords?.();
+                  } catch {}
+                  try {
+                    const l = s.imageRect.left;
+                    const t = s.imageRect.top;
+                    const r = s.imageRect.left + s.imageRect.width;
+                    const b = s.imageRect.top + s.imageRect.height;
+                    s.imgHandles.tl.set({ left: l, top: t });
+                    s.imgHandles.tr.set({ left: r, top: t });
+                    s.imgHandles.bl.set({ left: l, top: b });
+                    s.imgHandles.br.set({ left: r, top: b });
+                    s.imgHandles.tl.setCoords?.();
+                    s.imgHandles.tr.setCoords?.();
+                    s.imgHandles.bl.setCoords?.();
+                    s.imgHandles.br.setCoords?.();
+                  } catch {}
+                });
+              } catch {}
+
+              try { updateSquareCropPreview(); } catch {}
+
+              // End gesture after idle; keep snapshot up to date.
+              if (wheelScaleCommitTimerRef.current) {
+                window.clearTimeout(wheelScaleCommitTimerRef.current);
+                wheelScaleCommitTimerRef.current = null;
+              }
+              wheelScaleCommitTimerRef.current = window.setTimeout(() => {
+                wheelScaleCommitTimerRef.current = null;
+                const ss = squareCropRef.current;
+                if (!ss?.active) return;
+                ss.isAdjusting = false;
+                try {
+                  ss.lastRecorded = normalizeSquareCropSnapshot(getSquareCropSnapshot(ss));
+                } catch {}
+              }, 250);
+            } else {
+              // Lasso crop UI refresh.
+              try {
+                runSilently(() => {
+                  try {
+                    s.highlight.set({ left: s.imageRect.left, top: s.imageRect.top, width: s.imageRect.width, height: s.imageRect.height });
+                    s.highlight.setCoords?.();
+                  } catch {}
+                  try {
+                    const l = s.imageRect.left;
+                    const t = s.imageRect.top;
+                    const r = s.imageRect.left + s.imageRect.width;
+                    const b = s.imageRect.top + s.imageRect.height;
+                    s.imgHandles.tl.set({ left: l, top: t });
+                    s.imgHandles.tr.set({ left: r, top: t });
+                    s.imgHandles.bl.set({ left: l, top: b });
+                    s.imgHandles.br.set({ left: r, top: b });
+                    s.imgHandles.tl.setCoords?.();
+                    s.imgHandles.tr.setCoords?.();
+                    s.imgHandles.bl.setCoords?.();
+                    s.imgHandles.br.setCoords?.();
+                  } catch {}
+                });
+              } catch {}
+
+              // Pontos do laço precisam acompanhar a imagem após zoom/move.
+              try { updateLassoGraphics(); } catch {}
+            }
+
+            try { c.requestRenderAll?.(); } catch {}
+
+            try {
+              evt.preventDefault();
+              evt.stopPropagation();
+            } catch {}
+            return;
+          }
 
           const active: any = c.getActiveObject?.();
           if (!active) return;
@@ -7264,6 +7648,24 @@ const Editor2D = forwardRef<Editor2DHandle, Props>(function Editor2D(
           }
           return;
         }
+
+        if (evt.key === "Delete" || evt.key === "Backspace") {
+          evt.preventDefault();
+          resetContinuousChain();
+          if (isDrawing) {
+            cancelDrawing();
+          }
+          if (continuousLineModeRef.current) {
+            try {
+              onContinuousLineCancelRef.current?.();
+            } catch {}
+          }
+          try {
+            onRequestToolChangeRef.current?.("select");
+          } catch {}
+          return;
+        }
+
         if (evt.key === "Enter") {
           evt.preventDefault();
           resetContinuousChain();
