@@ -1379,7 +1379,7 @@ const Creation = () => {
                               type="button"
                               size="icon"
                               variant="outline"
-                              onClick={() => editorRefs.current[activeCanvasTab]?.cancelSquareCrop?.()}
+                              onClick={() => editorRefs.current[activeCanvasTab]?.cancelCrop?.()}
                               title="Cancelar (Esc ou Delete)"
                             >
                               <X className="w-4 h-4" />

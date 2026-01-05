@@ -125,9 +125,18 @@ export type Editor2DHandle = {
   // ==== Corte (crop) ====
   startSquareCrop?: () => void;
   cancelSquareCrop?: () => void;
+  startLassoCrop?: () => void;
+  startLassoCropReEdit?: () => void;
+  canReEditLassoCrop?: () => boolean;
+  cancelCrop?: () => void;
   confirmCrop?: () => void;
   isCropActive?: () => boolean;
   onCropModeChange?: (cb: (active: boolean) => void) => void;
+  // Undo/redo para pontos do laço durante o corte
+  undoLassoPoint?: () => boolean;
+  redoLassoPoint?: () => boolean;
+  canUndoLassoPoint?: () => boolean;
+  canRedoLassoPoint?: () => boolean;
 
   toJSON: () => string;
   loadFromJSON: (json: string) => Promise<void>;
@@ -417,10 +426,32 @@ const Editor2D = forwardRef<Editor2DHandle, Props>(function Editor2D(
   type SquareCropSession = {
     active: boolean;
     img: any;
+    imgPrev: {
+      selectable?: boolean;
+      evented?: boolean;
+      lockMovementX?: boolean;
+      lockMovementY?: boolean;
+      hasControls?: boolean;
+      hasBorders?: boolean;
+    };
+    othersPrev?: Array<{
+      obj: any;
+      selectable?: boolean;
+      evented?: boolean;
+      hasControls?: boolean;
+      hasBorders?: boolean;
+      lockMovementX?: boolean;
+      lockMovementY?: boolean;
+    }>;
+    canvasPrev: {
+      selection?: boolean;
+      defaultCursor?: string;
+    };
     imgOriginalCenter: { x: number; y: number };
     imgOriginalAngle: number;
     cropBox: any;
     handles: { tl: any; tr: any; bl: any; br: any };
+    imgHandles: { tl: any; tr: any; bl: any; br: any };
     overlays: { top: any; bottom: any; left: any; right: any };
     highlight: any;
     size: number;
@@ -583,16 +614,34 @@ const Editor2D = forwardRef<Editor2DHandle, Props>(function Editor2D(
 
       // Se estiver em modo de corte, Enter confirma e Esc/Delete cancela.
       const cropSession = squareCropRef.current;
-      if (cropSession?.active) {
+      const lassoSession = lassoCropRef.current;
+      if (cropSession?.active || lassoSession?.active) {
         if (evt.key === "Enter") {
           evt.preventDefault();
-          try { commitSquareCrop(); } catch {}
+          try { confirmCrop(); } catch {}
           return;
         }
         if (evt.key === "Escape" || evt.key === "Delete" || evt.key === "Backspace") {
           evt.preventDefault();
-          try { cancelSquareCrop(); } catch {}
+          try { cancelCrop(); } catch {}
           return;
+        }
+        
+        // Durante o modo laço, Ctrl+Z desfaz ponto a ponto e Ctrl+Y refaz
+        if (lassoSession?.active) {
+          const isCtrlOrMeta = evt.ctrlKey || evt.metaKey;
+          if (isCtrlOrMeta && evt.key.toLowerCase() === "z" && !evt.shiftKey) {
+            evt.preventDefault();
+            evt.stopPropagation();
+            try { undoLassoPoint(); } catch {}
+            return;
+          }
+          if (isCtrlOrMeta && (evt.key.toLowerCase() === "y" || (evt.key.toLowerCase() === "z" && evt.shiftKey))) {
+            evt.preventDefault();
+            evt.stopPropagation();
+            try { redoLassoPoint(); } catch {}
+            return;
+          }
         }
       }
 
@@ -641,6 +690,1620 @@ const Editor2D = forwardRef<Editor2DHandle, Props>(function Editor2D(
     return img;
   };
 
+  type LassoPoint = { x: number; y: number; kind: "click" | "drag" };
+
+  // Snapshot do estado dos pontos do laço para undo/redo durante o corte
+  type LassoPointsSnapshot = {
+    points: LassoPoint[];
+    closed: boolean;
+  };
+
+  // Metadados armazenados na imagem cortada para permitir re-edição
+  type LassoCropMetadata = {
+    version: 1;
+    points: LassoPoint[];
+    originalImageDataUrl: string;
+    originalImageRect: { left: number; top: number; width: number; height: number };
+  };
+
+  type LassoCropSession = {
+    active: boolean;
+    img: any;
+    imgPrev: {
+      selectable?: boolean;
+      evented?: boolean;
+      lockMovementX?: boolean;
+      lockMovementY?: boolean;
+      hasControls?: boolean;
+      hasBorders?: boolean;
+    };
+    othersPrev?: Array<{
+      obj: any;
+      selectable?: boolean;
+      evented?: boolean;
+      hasControls?: boolean;
+      hasBorders?: boolean;
+      lockMovementX?: boolean;
+      lockMovementY?: boolean;
+    }>;
+    canvasPrev: {
+      selection?: boolean;
+      defaultCursor?: string;
+    };
+    imgOriginalCenter: { x: number; y: number };
+    imgOriginalAngle: number;
+    imageRect: { left: number; top: number; width: number; height: number };
+    highlight: any;
+    overlay: any;
+    stroke: any;
+    imgHandles: { tl: any; tr: any; bl: any; br: any };
+    points: LassoPoint[]; // canvas coords
+    pointMarkers?: any[];
+    closed?: boolean;
+    isEditingPoint?: boolean;
+    editingIndex?: number;
+    isPointerDown: boolean;
+    isFreehand: boolean;
+    isDragging?: boolean;
+    dragPoint?: { x: number; y: number };
+    lastSample?: { x: number; y: number };
+    downPoint?: { x: number; y: number };
+    onMouseDown?: any;
+    onMouseMove?: any;
+    onMouseUp?: any;
+    // Stacks para undo/redo dos pontos durante o corte
+    undoStack: LassoPointsSnapshot[];
+    redoStack: LassoPointsSnapshot[];
+    // Flag para indicar se estamos re-editando um corte anterior
+    isReEdit?: boolean;
+    originalImageForReEdit?: any;
+    originalDataUrlForReEdit?: string;
+  };
+  const lassoCropRef = useRef<LassoCropSession | null>(null);
+
+  const clampPointToRect = (p: { x: number; y: number }, r: { left: number; top: number; width: number; height: number }) => ({
+    x: clamp(p.x, r.left, r.left + r.width),
+    y: clamp(p.y, r.top, r.top + r.height),
+  });
+
+  const centerImageInCanvas = (img: any) => {
+    const c: any = canvasRef.current;
+    const fabric: any = fabricRef.current;
+    if (!c || !fabric || !img) return;
+    runSilently(() => {
+      try {
+        const p = new fabric.Point(c.getWidth() / 2, c.getHeight() / 2);
+        img.setPositionByOrigin?.(p, "center", "center");
+        img.setCoords?.();
+      } catch {}
+    });
+  };
+
+  const getImageRect = (img: any) => {
+    const c: any = canvasRef.current;
+    if (!c || !img) return { left: 0, top: 0, width: 0, height: 0 };
+    try {
+      const r = img.getBoundingRect?.(true, true);
+      if (r && typeof r.left === "number") return { left: r.left, top: r.top, width: r.width, height: r.height };
+    } catch {}
+    const left = Number(img.left ?? 0);
+    const top = Number(img.top ?? 0);
+    const w = Number(img.width ?? 0) * Number(img.scaleX ?? 1);
+    const h = Number(img.height ?? 0) * Number(img.scaleY ?? 1);
+    return { left, top, width: w, height: h };
+  };
+
+  const getObjectCenter = (obj: any) => {
+    if (!obj) return { x: 0, y: 0 };
+    try {
+      const p = obj.getCenterPoint?.();
+      if (p && typeof p.x === "number" && typeof p.y === "number") return { x: p.x, y: p.y };
+    } catch {}
+    const r = getImageRect(obj);
+    return { x: r.left + r.width / 2, y: r.top + r.height / 2 };
+  };
+
+  const freezeImageForCrop = (img: any) => {
+    const prev = {
+      selectable: !!img?.selectable,
+      evented: !!img?.evented,
+      lockMovementX: !!img?.lockMovementX,
+      lockMovementY: !!img?.lockMovementY,
+      hasControls: !!img?.hasControls,
+      hasBorders: !!img?.hasBorders,
+    };
+    runSilently(() => {
+      try {
+        img.set({
+          selectable: false,
+          evented: false,
+          lockMovementX: true,
+          lockMovementY: true,
+          hasControls: false,
+          hasBorders: false,
+        });
+        img.setCoords?.();
+      } catch {}
+    });
+    return prev;
+  };
+
+  const restoreImageAfterCrop = (img: any, prev: any) => {
+    if (!img) return;
+    runSilently(() => {
+      try {
+        img.set({
+          selectable: prev?.selectable,
+          evented: prev?.evented,
+          lockMovementX: prev?.lockMovementX,
+          lockMovementY: prev?.lockMovementY,
+          hasControls: prev?.hasControls,
+          hasBorders: prev?.hasBorders,
+        });
+        img.setCoords?.();
+      } catch {}
+    });
+  };
+
+  const freezeOtherCanvasObjectsForCrop = (exclude: Set<any>) => {
+    const c: any = canvasRef.current;
+    if (!c) return [] as any[];
+
+    const prev: any[] = [];
+    let objs: any[] = [];
+    try {
+      const got = c.getObjects?.();
+      if (Array.isArray(got)) objs = got;
+    } catch {}
+
+    runSilently(() => {
+      for (const obj of objs) {
+        if (!obj) continue;
+        if (exclude.has(obj)) continue;
+        prev.push({
+          obj,
+          selectable: !!obj.selectable,
+          evented: !!obj.evented,
+          hasControls: !!obj.hasControls,
+          hasBorders: !!obj.hasBorders,
+          lockMovementX: !!obj.lockMovementX,
+          lockMovementY: !!obj.lockMovementY,
+        });
+        try {
+          obj.set?.({
+            selectable: false,
+            evented: false,
+            hasControls: false,
+            hasBorders: false,
+            lockMovementX: true,
+            lockMovementY: true,
+          });
+          obj.setCoords?.();
+        } catch {}
+      }
+    });
+
+    return prev;
+  };
+
+  const restoreOtherCanvasObjectsAfterCrop = (prev: any[] | undefined) => {
+    if (!prev || !Array.isArray(prev)) return;
+    runSilently(() => {
+      for (const item of prev) {
+        const obj = item?.obj;
+        if (!obj) continue;
+        try {
+          obj.set?.({
+            selectable: item.selectable,
+            evented: item.evented,
+            hasControls: item.hasControls,
+            hasBorders: item.hasBorders,
+            lockMovementX: item.lockMovementX,
+            lockMovementY: item.lockMovementY,
+          });
+          obj.setCoords?.();
+        } catch {}
+      }
+    });
+  };
+
+  const makeImageScaleHandles = (rect: { left: number; top: number; width: number; height: number }) => {
+    const fabric: any = fabricRef.current;
+    if (!fabric) return null;
+    const handleRadius = 7;
+    const handleStroke = withAlpha(GIZMO_THEME.stroke, 0.9);
+    const handleFill = GIZMO_THEME.primary;
+    const make = (corner: "tl" | "tr" | "bl" | "br", x: number, y: number) => {
+      const h = new fabric.Circle({
+        left: x,
+        top: y,
+        radius: handleRadius,
+        originX: "center",
+        originY: "center",
+        fill: handleFill,
+        stroke: handleStroke,
+        strokeWidth: 2,
+        selectable: true,
+        evented: true,
+        hasControls: false,
+        hasBorders: false,
+        lockRotation: true,
+        lockScalingX: true,
+        lockScalingY: true,
+        hoverCursor: "nwse-resize",
+        excludeFromExport: true,
+      });
+      try { (h as any).__moldaImageScaleCorner = corner; } catch {}
+      return h;
+    };
+    const l = rect.left;
+    const t = rect.top;
+    const r = rect.left + rect.width;
+    const b = rect.top + rect.height;
+    return {
+      tl: make("tl", l, t),
+      tr: make("tr", r, t),
+      bl: make("bl", l, b),
+      br: make("br", r, b),
+    };
+  };
+
+  const replaceImageWithNewObject = (original: any, createNew: () => any) => {
+    const c: any = canvasRef.current;
+    if (!c || !original) return null;
+
+    const idx = (() => {
+      try {
+        const arr = c.getObjects?.();
+        if (Array.isArray(arr)) return arr.indexOf(original);
+      } catch {}
+      return -1;
+    })();
+
+    const next = createNew();
+    if (!next) return null;
+
+    runSilently(() => {
+      try {
+        if (idx >= 0 && typeof c.insertAt === "function") c.insertAt(next, idx, false);
+        else c.add(next);
+      } catch {
+        try { c.add(next); } catch {}
+      }
+      try { c.remove(original); } catch {}
+    });
+
+    // força gizmo novo
+    try { c.discardActiveObject?.(); } catch {}
+    try { c.setActiveObject?.(next); } catch {}
+    try { c.requestRenderAll?.(); } catch {}
+    return next;
+  };
+
+  const copyBasicImageProps = (from: any, to: any) => {
+    if (!from || !to) return;
+    const props: any = {
+      left: Number(from.left ?? 0),
+      top: Number(from.top ?? 0),
+      scaleX: Number(from.scaleX ?? 1),
+      scaleY: Number(from.scaleY ?? 1),
+      angle: Number(from.angle ?? 0),
+      originX: from.originX ?? "left",
+      originY: from.originY ?? "top",
+      flipX: !!from.flipX,
+      flipY: !!from.flipY,
+      skewX: Number(from.skewX ?? 0),
+      skewY: Number(from.skewY ?? 0),
+      opacity: typeof from.opacity === "number" ? from.opacity : 1,
+      cropX: Number(from.cropX ?? 0) || 0,
+      cropY: Number(from.cropY ?? 0) || 0,
+      width: typeof from.width === "number" ? from.width : undefined,
+      height: typeof from.height === "number" ? from.height : undefined,
+      erasable: true,
+      selectable: true,
+      evented: true,
+      lockMovementX: false,
+      lockMovementY: false,
+      hasControls: true,
+      hasBorders: true,
+    };
+    runSilently(() => {
+      try { to.set?.(props); } catch {
+        try {
+          Object.keys(props).forEach((k) => {
+            try { to[k] = props[k]; } catch {}
+          });
+        } catch {}
+      }
+      try { to.setCoords?.(); } catch {}
+    });
+
+    try {
+      const src = (from as any).__moldaOriginalSrc;
+      if (src) (to as any).__moldaOriginalSrc = src;
+    } catch {}
+
+    try {
+      if (Array.isArray(from.filters)) {
+        (to as any).filters = from.filters;
+        try { (to as any).applyFilters?.(); } catch {}
+      }
+    } catch {}
+  };
+
+  const cleanupLassoCropPreview = (opts?: { restoreImage?: boolean }) => {
+    const c: any = canvasRef.current;
+    const fabric: any = fabricRef.current;
+    const s = lassoCropRef.current;
+    if (!c || !fabric || !s) return;
+
+    try {
+      if (s.onMouseDown) c.off?.("mouse:down", s.onMouseDown);
+      if (s.onMouseMove) c.off?.("mouse:move", s.onMouseMove);
+      if (s.onMouseUp) c.off?.("mouse:up", s.onMouseUp);
+    } catch {}
+
+    runSilently(() => {
+      try { c.remove(s.imgHandles?.tl); } catch {}
+      try { c.remove(s.imgHandles?.tr); } catch {}
+      try { c.remove(s.imgHandles?.bl); } catch {}
+      try { c.remove(s.imgHandles?.br); } catch {}
+      try {
+        (s.pointMarkers ?? []).forEach((m) => {
+          try { c.remove(m); } catch {}
+        });
+      } catch {}
+      try { c.remove(s.stroke); } catch {}
+      try { c.remove(s.overlay); } catch {}
+      try { c.remove(s.highlight); } catch {}
+
+      try {
+        const prev = (s as any).canvasPrev;
+        if (prev && typeof prev.selection === "boolean") c.selection = prev.selection;
+        if (prev && typeof prev.defaultCursor === "string") c.defaultCursor = prev.defaultCursor;
+      } catch {}
+
+      try {
+        restoreOtherCanvasObjectsAfterCrop(s.othersPrev);
+      } catch {}
+
+      try {
+        restoreImageAfterCrop(s.img, (s as any).imgPrev);
+      } catch {}
+
+      if (opts?.restoreImage !== false) {
+        try {
+          const p = new fabric.Point(s.imgOriginalCenter.x, s.imgOriginalCenter.y);
+          s.img.setPositionByOrigin?.(p, "center", "center");
+          s.img.set({ angle: s.imgOriginalAngle });
+          s.img.setCoords?.();
+        } catch {}
+      }
+    });
+
+    lassoCropRef.current = null;
+    emitCropMode(false);
+    try { c.requestRenderAll?.(); } catch {}
+  };
+
+  const updateLassoGraphics = () => {
+    const c: any = canvasRef.current;
+    const fabric: any = fabricRef.current;
+    const s = lassoCropRef.current;
+    if (!c || !fabric || !s?.active) return;
+
+    const pts = s.points;
+
+    const basePts = pts.map((p) => ({ x: p.x, y: p.y }));
+    const strokePts: Array<{ x: number; y: number }> = (() => {
+      // Durante arrasto, mostra um preview até o cursor.
+      if (s.isPointerDown && s.isDragging && s.dragPoint) {
+        const base = basePts.slice();
+        if (base.length === 0 && s.downPoint) base.push({ x: s.downPoint.x, y: s.downPoint.y });
+        const last = base[base.length - 1];
+        const d = s.dragPoint;
+        if (!last || Math.abs(last.x - d.x) > 0.001 || Math.abs(last.y - d.y) > 0.001) base.push({ x: d.x, y: d.y });
+        // Fechamento visual do traço
+        if (s.closed && base.length >= 3) {
+          const f = base[0];
+          const l = base[base.length - 1];
+          if (Math.abs(f.x - l.x) > 0.001 || Math.abs(f.y - l.y) > 0.001) base.push({ x: f.x, y: f.y });
+        }
+        return base;
+      }
+
+      const base = basePts.slice();
+      if (s.closed && base.length >= 3) {
+        const f = base[0];
+        const l = base[base.length - 1];
+        if (Math.abs(f.x - l.x) > 0.001 || Math.abs(f.y - l.y) > 0.001) base.push({ x: f.x, y: f.y });
+      }
+      return base;
+    })();
+
+    const clipPts: Array<{ x: number; y: number }> = (() => {
+      // Para clipPath: nunca duplica o primeiro ponto (evita artefatos).
+      // Se estiver fechado, usa apenas os pontos "reais".
+      if (s.closed) return basePts;
+      // Se ainda está desenhando, usa o preview atual (com dragPoint) para mostrar o buraco.
+      return strokePts;
+    })();
+
+    // Atualiza/recicla marcadores de pontos (viram handles arrastáveis)
+    if (!s.isEditingPoint) {
+      runSilently(() => {
+        try {
+          (s.pointMarkers ?? []).forEach((m) => {
+            try { c.remove(m); } catch {}
+          });
+        } catch {}
+        s.pointMarkers = [];
+
+        const markerStroke = withAlpha(GIZMO_THEME.stroke, 0.9);
+        const markerFill = GIZMO_THEME.primary;
+
+        const DISPLAY_DIST2 = 596; // espaçamento entre marcadores de arrasto
+        let lastShown: { x: number; y: number } | null = null;
+
+        for (let i = 0; i < pts.length; i++) {
+          const p = pts[i];
+          const isFirst = i === 0;
+          const isLast = i === pts.length - 1;
+
+          const canEditPoints = !!s.closed;
+          const canCloseFromFirst = !s.closed && isFirst && pts.length >= 3;
+
+          let show = false;
+          if (isFirst || isLast) show = true;
+          else if (p.kind === "click") show = true;
+          else if (!lastShown) show = true;
+          else {
+            const dx = p.x - lastShown.x;
+            const dy = p.y - lastShown.y;
+            if (dx * dx + dy * dy >= DISPLAY_DIST2) show = true;
+          }
+
+          if (!show) continue;
+
+          const radius = isFirst ? 9 : 6;
+          const m = new fabric.Circle({
+            left: p.x,
+            top: p.y,
+            radius,
+            originX: "center",
+            originY: "center",
+            fill: markerFill,
+            stroke: markerStroke,
+            strokeWidth: 2,
+            selectable: canEditPoints || canCloseFromFirst,
+            evented: canEditPoints || canCloseFromFirst,
+            hasControls: false,
+            hasBorders: false,
+            lockRotation: true,
+            lockScalingX: true,
+            lockScalingY: true,
+            hoverCursor: canEditPoints ? "move" : canCloseFromFirst ? "pointer" : "default",
+            objectCaching: false,
+            excludeFromExport: true,
+          });
+          try { (m as any).__moldaLassoPointIndex = i; } catch {}
+
+          m.on?.("mousedown", (ev: any) => {
+            const ss = lassoCropRef.current;
+            if (!ss?.active) return;
+
+            // Enquanto o laço está aberto, clique no primeiro ponto deve FECHAR (não editar).
+            if (!ss.closed && i === 0 && (ss.points?.length ?? 0) >= 3) {
+              // Salva snapshot antes de fechar (via clique no marcador do primeiro ponto)
+              pushLassoSnapshot();
+              ss.closed = true;
+              ss.isPointerDown = false;
+              ss.isDragging = false;
+              ss.dragPoint = undefined;
+              ss.downPoint = undefined;
+              ss.lastSample = undefined;
+              try { ev?.e?.preventDefault?.(); } catch {}
+              try { ev?.e?.stopPropagation?.(); } catch {}
+              updateLassoGraphics();
+              return;
+            }
+
+            // Só permite edição de pontos depois de fechado.
+            if (!ss.closed) {
+              try { ev?.e?.preventDefault?.(); } catch {}
+              try { ev?.e?.stopPropagation?.(); } catch {}
+              return;
+            }
+
+            // Salva snapshot antes de editar ponto (para poder desfazer edição)
+            pushLassoSnapshot();
+            ss.isEditingPoint = true;
+            ss.editingIndex = i;
+            try { ev?.e?.preventDefault?.(); } catch {}
+            try { ev?.e?.stopPropagation?.(); } catch {}
+          });
+
+          m.on?.("moving", () => {
+            const ss = lassoCropRef.current;
+            if (!ss?.active) return;
+            ss.isEditingPoint = true;
+            ss.editingIndex = i;
+            const pp = m.getCenterPoint?.() ?? { x: Number(m.left ?? 0), y: Number(m.top ?? 0) };
+            const cl = clampPointToRect({ x: Number(pp.x ?? 0), y: Number(pp.y ?? 0) }, ss.imageRect);
+            try { m.set({ left: cl.x, top: cl.y }); } catch {}
+            try { m.setCoords?.(); } catch {}
+            const cur = ss.points[i];
+            if (cur) ss.points[i] = { ...cur, x: cl.x, y: cl.y };
+            updateLassoGraphics();
+          });
+
+          m.on?.("modified", () => {
+            const ss = lassoCropRef.current;
+            if (!ss?.active) return;
+            ss.isEditingPoint = false;
+            ss.editingIndex = undefined;
+            updateLassoGraphics();
+          });
+
+          s.pointMarkers.push(m);
+          try { c.add(m); } catch {}
+          lastShown = { x: p.x, y: p.y };
+        }
+      });
+    }
+
+    // Overlay sempre escurece o canvas inteiro. Quando houver forma suficiente, cria “buraco”.
+    runSilently(() => {
+      try {
+        (s.overlay as any).clipPath = null;
+      } catch {}
+    });
+
+    if (strokePts.length >= 2) {
+      // Atualiza o stroke (polyline) — sem Math.min(...arr) pra não estourar com muitos pontos
+      let minX = Infinity;
+      let minY = Infinity;
+      for (let i = 0; i < strokePts.length; i++) {
+        const p = strokePts[i];
+        if (!p) continue;
+        if (p.x < minX) minX = p.x;
+        if (p.y < minY) minY = p.y;
+      }
+      if (!Number.isFinite(minX) || !Number.isFinite(minY)) return;
+
+      const norm = new Array(strokePts.length);
+      for (let i = 0; i < strokePts.length; i++) {
+        const p = strokePts[i];
+        norm[i] = { x: p.x - minX, y: p.y - minY };
+      }
+      runSilently(() => {
+        try {
+          s.stroke.set({ left: minX, top: minY, points: norm });
+          s.stroke.setCoords?.();
+        } catch {}
+      });
+
+
+      // Se já temos uma área fechável (>=3 pontos), aplica clip invertido no overlay
+      if (clipPts.length >= 3) {
+        // Normaliza clipPts no mesmo referencial do stroke
+        let cMinX = Infinity;
+        let cMinY = Infinity;
+        for (let i = 0; i < clipPts.length; i++) {
+          const p = clipPts[i];
+          if (!p) continue;
+          if (p.x < cMinX) cMinX = p.x;
+          if (p.y < cMinY) cMinY = p.y;
+        }
+        if (!Number.isFinite(cMinX) || !Number.isFinite(cMinY)) return;
+
+        const cNorm = new Array(clipPts.length);
+        for (let i = 0; i < clipPts.length; i++) {
+          const p = clipPts[i];
+          cNorm[i] = { x: p.x - cMinX, y: p.y - cMinY };
+        }
+
+        const poly = new fabric.Polygon(cNorm, {
+          left: cMinX,
+          top: cMinY,
+          originX: "left",
+          originY: "top",
+          fill: "rgba(0,0,0,1)",
+          selectable: false,
+          evented: false,
+          absolutePositioned: true,
+          excludeFromExport: true,
+        });
+        try { (poly as any).inverted = true; } catch {}
+        runSilently(() => {
+          try { (s.overlay as any).clipPath = poly; } catch {}
+        });
+      }
+    } else {
+      // Sem pontos suficientes, limpa o traço (evita sobrar segmentos após undo)
+      runSilently(() => {
+        try {
+          s.stroke.set({ left: 0, top: 0, points: [] });
+          s.stroke.setCoords?.();
+        } catch {}
+      });
+    }
+
+    try {
+      s.stroke.bringToFront?.();
+    } catch {}
+    try {
+      (s.pointMarkers ?? []).forEach((m) => m.bringToFront?.());
+    } catch {}
+    try { c.requestRenderAll?.(); } catch {}
+  };
+
+  // Salva o estado atual dos pontos no undoStack antes de modificar
+  const pushLassoSnapshot = () => {
+    const s = lassoCropRef.current;
+    if (!s?.active) return;
+    const snapshot: LassoPointsSnapshot = {
+      points: s.points.map((p) => ({ ...p })),
+      closed: !!s.closed,
+    };
+    s.undoStack.push(snapshot);
+    // Limpa o redoStack quando uma nova ação é feita
+    s.redoStack = [];
+  };
+
+  // Desfaz o último ponto adicionado (ou a última ação de fechar o laço)
+  const undoLassoPoint = (): boolean => {
+    const s = lassoCropRef.current;
+    if (!s?.active) return false;
+    if (s.undoStack.length === 0) return false;
+
+    // Salva estado atual no redoStack antes de restaurar
+    const currentSnapshot: LassoPointsSnapshot = {
+      points: s.points.map((p) => ({ ...p })),
+      closed: !!s.closed,
+    };
+    s.redoStack.push(currentSnapshot);
+
+    // Restaura estado anterior
+    const prev = s.undoStack.pop()!;
+    s.points = prev.points.map((p) => ({ ...p }));
+    s.closed = prev.closed;
+
+    // Limpa estados de arrasto
+    s.isPointerDown = false;
+    s.isDragging = false;
+    s.dragPoint = undefined;
+    s.downPoint = undefined;
+    s.lastSample = undefined;
+    s.isEditingPoint = false;
+    s.editingIndex = undefined;
+
+    updateLassoGraphics();
+    return true;
+  };
+
+  // Refaz o último ponto desfeito
+  const redoLassoPoint = (): boolean => {
+    const s = lassoCropRef.current;
+    if (!s?.active) return false;
+    if (s.redoStack.length === 0) return false;
+
+    // Salva estado atual no undoStack antes de restaurar
+    const currentSnapshot: LassoPointsSnapshot = {
+      points: s.points.map((p) => ({ ...p })),
+      closed: !!s.closed,
+    };
+    s.undoStack.push(currentSnapshot);
+
+    // Restaura próximo estado
+    const next = s.redoStack.pop()!;
+    s.points = next.points.map((p) => ({ ...p }));
+    s.closed = next.closed;
+
+    // Limpa estados de arrasto
+    s.isPointerDown = false;
+    s.isDragging = false;
+    s.dragPoint = undefined;
+    s.downPoint = undefined;
+    s.lastSample = undefined;
+    s.isEditingPoint = false;
+    s.editingIndex = undefined;
+
+    updateLassoGraphics();
+    return true;
+  };
+
+  // Verifica se pode desfazer ponto do laço
+  const canUndoLassoPoint = (): boolean => {
+    const s = lassoCropRef.current;
+    return !!s?.active && s.undoStack.length > 0;
+  };
+
+  // Verifica se pode refazer ponto do laço
+  const canRedoLassoPoint = (): boolean => {
+    const s = lassoCropRef.current;
+    return !!s?.active && s.redoStack.length > 0;
+  };
+
+  const startLassoCrop = () => {
+    const c: any = canvasRef.current;
+    const fabric: any = fabricRef.current;
+    if (!c || !fabric) return;
+
+    // limpa qualquer outro modo
+    cleanupSquareCropPreview({ restoreImage: true });
+    cleanupLassoCropPreview({ restoreImage: true });
+
+    const img = getActiveSingleImageForCrop();
+    if (!img) return;
+
+    // Se a imagem já foi cortada via laço e tem metadados, reabre o corte com os pontos salvos.
+    try {
+      const meta = (img as any).__moldaLassoCropMeta as LassoCropMetadata | undefined;
+      if (meta && meta.version === 1 && Array.isArray(meta.points) && meta.points.length >= 3) {
+        startLassoCropReEdit();
+        return;
+      }
+    } catch {}
+
+    const originalCenter = (() => {
+      try {
+        const p = img.getCenterPoint?.();
+        if (p && typeof p.x === "number" && typeof p.y === "number") return { x: p.x, y: p.y };
+      } catch {}
+      return { x: (c.getWidth?.() ?? 0) / 2, y: (c.getHeight?.() ?? 0) / 2 };
+    })();
+    const originalAngle = Number(img.angle ?? 0);
+
+    // Evita que a imagem seja arrastada durante o modo laço.
+    const imgPrev = freezeImageForCrop(img);
+
+    // Evita o retângulo de seleção do Fabric enquanto desenha.
+    const canvasPrev = { selection: !!c.selection, defaultCursor: String(c.defaultCursor ?? "") };
+    try { c.selection = false; } catch {}
+    try { c.defaultCursor = "crosshair"; } catch {}
+    try { c.discardActiveObject?.(); } catch {}
+
+    // Centraliza temporariamente a imagem no canvas.
+    runSilently(() => {
+      try {
+        const p = new fabric.Point(c.getWidth() / 2, c.getHeight() / 2);
+        img.setPositionByOrigin?.(p, "center", "center");
+        img.setCoords?.();
+      } catch {}
+    });
+
+    const imageRect = (() => {
+      try {
+        const r = img.getBoundingRect?.(true, true);
+        if (r && typeof r.left === "number") return { left: r.left, top: r.top, width: r.width, height: r.height };
+      } catch {}
+      const left = Number(img.left ?? 0);
+      const top = Number(img.top ?? 0);
+      const w = Number(img.width ?? 0) * Number(img.scaleX ?? 1);
+      const h = Number(img.height ?? 0) * Number(img.scaleY ?? 1);
+      return { left, top, width: w, height: h };
+    })();
+
+    const imgHandles = makeImageScaleHandles(imageRect);
+    if (!imgHandles) return;
+
+    const overlay = new fabric.Rect({
+      left: 0,
+      top: 0,
+      width: Number(c.getWidth?.() ?? 0) || 0,
+      height: Number(c.getHeight?.() ?? 0) || 0,
+      fill: "rgba(0,0,0,0.55)",
+      selectable: false,
+      evented: false,
+      excludeFromExport: true,
+    });
+
+    const highlight = new fabric.Rect({
+      left: imageRect.left,
+      top: imageRect.top,
+      width: imageRect.width,
+      height: imageRect.height,
+      fill: "rgba(0,0,0,0)",
+      stroke: withAlpha(GIZMO_THEME.primary, 0.8),
+      strokeWidth: 2,
+      strokeDashArray: [6, 4],
+      selectable: false,
+      evented: false,
+      excludeFromExport: true,
+    });
+
+    const stroke = new fabric.Polyline([], {
+      left: 0,
+      top: 0,
+      originX: "left",
+      originY: "top",
+      stroke: GIZMO_THEME.primary,
+      strokeWidth: 2,
+      fill: "rgba(0,0,0,0)",
+      objectCaching: false,
+      selectable: false,
+      evented: false,
+      excludeFromExport: true,
+    });
+
+    runSilently(() => {
+      try { c.add(overlay); } catch {}
+      try { c.add(highlight); } catch {}
+      try { c.add(imgHandles.tl, imgHandles.tr, imgHandles.bl, imgHandles.br); } catch {}
+      try { c.add(stroke); } catch {}
+      try {
+        highlight.bringToFront?.();
+        imgHandles.tl.bringToFront?.();
+        imgHandles.tr.bringToFront?.();
+        imgHandles.bl.bringToFront?.();
+        imgHandles.br.bringToFront?.();
+        stroke.bringToFront?.();
+      } catch {}
+    });
+
+    const session: LassoCropSession = {
+      active: true,
+      img,
+      imgPrev,
+      canvasPrev,
+      imgOriginalCenter: originalCenter,
+      imgOriginalAngle: originalAngle,
+      imageRect,
+      highlight,
+      overlay,
+      stroke,
+      imgHandles,
+      points: [],
+      isPointerDown: false,
+      isFreehand: false,
+      closed: false,
+      undoStack: [],
+      redoStack: [],
+    };
+
+    try {
+      const exclude = new Set<any>([img, overlay, highlight, stroke, imgHandles.tl, imgHandles.tr, imgHandles.bl, imgHandles.br]);
+      session.othersPrev = freezeOtherCanvasObjectsForCrop(exclude);
+    } catch {}
+
+    lassoCropRef.current = session;
+    emitCropMode(true);
+
+    const getPointer = (opt: any) => {
+      try {
+        const p = c.getPointer?.(opt.e);
+        if (p && typeof p.x === "number" && typeof p.y === "number") return { x: p.x, y: p.y };
+      } catch {}
+      return { x: 0, y: 0 };
+    };
+
+    const dist2 = (a: { x: number; y: number }, b: { x: number; y: number }) => {
+      const dx = a.x - b.x;
+      const dy = a.y - b.y;
+      return dx * dx + dy * dy;
+    };
+
+    const isNear = (a: { x: number; y: number }, b: { x: number; y: number }, radius: number) => dist2(a, b) <= radius * radius;
+
+    const refreshFromImage = () => {
+      const s = lassoCropRef.current;
+      if (!s?.active) return;
+      centerImageInCanvas(s.img);
+      s.imageRect = getImageRect(s.img);
+      runSilently(() => {
+        try {
+          s.highlight.set({ left: s.imageRect.left, top: s.imageRect.top, width: s.imageRect.width, height: s.imageRect.height });
+          s.highlight.setCoords?.();
+        } catch {}
+        try {
+          const l = s.imageRect.left;
+          const t = s.imageRect.top;
+          const r = s.imageRect.left + s.imageRect.width;
+          const b = s.imageRect.top + s.imageRect.height;
+          s.imgHandles.tl.set({ left: l, top: t });
+          s.imgHandles.tr.set({ left: r, top: t });
+          s.imgHandles.bl.set({ left: l, top: b });
+          s.imgHandles.br.set({ left: r, top: b });
+          s.imgHandles.tl.setCoords?.();
+          s.imgHandles.tr.setCoords?.();
+          s.imgHandles.bl.setCoords?.();
+          s.imgHandles.br.setCoords?.();
+        } catch {}
+      });
+      updateLassoGraphics();
+      try { c.requestRenderAll?.(); } catch {}
+    };
+
+    const onImgHandleMoving = (h: any) => {
+      const s = lassoCropRef.current;
+      if (!s?.active) return;
+      const p = h.getCenterPoint?.() ?? { x: Number(h.left ?? 0), y: Number(h.top ?? 0) };
+      const center = getObjectCenter(s.img);
+      const dx = Math.abs(Number(p.x ?? 0) - center.x);
+      const dy = Math.abs(Number(p.y ?? 0) - center.y);
+      const halfW0 = (Number(s.img.width ?? 0) * Number(s.img.scaleX ?? 1)) / 2;
+      const halfH0 = (Number(s.img.height ?? 0) * Number(s.img.scaleY ?? 1)) / 2;
+      const desiredHalfW = Math.max(16, dx);
+      const desiredHalfH = Math.max(16, dy);
+      const sx = halfW0 > 0 ? desiredHalfW / halfW0 : 1;
+      const sy = halfH0 > 0 ? desiredHalfH / halfH0 : 1;
+      const factor = Math.max(0.1, Math.min(10, Math.max(sx, sy)));
+      runSilently(() => {
+        try {
+          s.img.set({ scaleX: Number(s.img.scaleX ?? 1) * factor, scaleY: Number(s.img.scaleY ?? 1) * factor });
+          s.img.setCoords?.();
+        } catch {}
+      });
+      refreshFromImage();
+    };
+
+    const onImgHandleModified = () => {
+      refreshFromImage();
+    };
+
+    imgHandles.tl.on?.("moving", () => onImgHandleMoving(imgHandles.tl));
+    imgHandles.tr.on?.("moving", () => onImgHandleMoving(imgHandles.tr));
+    imgHandles.bl.on?.("moving", () => onImgHandleMoving(imgHandles.bl));
+    imgHandles.br.on?.("moving", () => onImgHandleMoving(imgHandles.br));
+    imgHandles.tl.on?.("modified", onImgHandleModified);
+    imgHandles.tr.on?.("modified", onImgHandleModified);
+    imgHandles.bl.on?.("modified", onImgHandleModified);
+    imgHandles.br.on?.("modified", onImgHandleModified);
+
+    session.onMouseDown = (opt: any) => {
+      const s = lassoCropRef.current;
+      if (!s?.active) return;
+      if ((opt as any)?.target && (opt as any).target.__moldaLassoPointIndex != null) return;
+      if (s.closed) return;
+      try { opt?.e?.preventDefault?.(); } catch {}
+      try { opt?.e?.stopPropagation?.(); } catch {}
+
+      s.isPointerDown = true;
+      s.isFreehand = false;
+      s.isDragging = false;
+      const p0 = clampPointToRect(getPointer(opt), s.imageRect);
+      s.downPoint = p0;
+      s.lastSample = p0;
+      s.dragPoint = p0;
+    };
+
+    session.onMouseMove = (opt: any) => {
+      const s = lassoCropRef.current;
+      if (!s?.active) return;
+      if (s.isEditingPoint) return;
+      if (!s.isPointerDown) return;
+      if (s.closed) return;
+      try { opt?.e?.preventDefault?.(); } catch {}
+      try { opt?.e?.stopPropagation?.(); } catch {}
+      const p = clampPointToRect(getPointer(opt), s.imageRect);
+      const down = s.downPoint;
+      if (!down) return;
+
+      // arrasto: amostra pontos com espaçamento, mantendo fidelidade ao cursor.
+      s.dragPoint = p;
+
+      const DRAG_START_DIST2 = 4; // ~2px
+      const SAMPLE_DIST2 = 36; // ~6px
+
+      if (!s.isDragging && dist2(p, down) > DRAG_START_DIST2) {
+        s.isDragging = true;
+        // garante que o primeiro ponto do segmento seja registrado
+        const last = s.points[s.points.length - 1];
+        if (!last || dist2(last, down) > 0.25) {
+          // snapshot por ponto (undo granular)
+          pushLassoSnapshot();
+          s.points = [...s.points, { x: down.x, y: down.y, kind: "drag" }];
+        }
+        s.lastSample = down;
+      }
+
+      if (s.isDragging) {
+        // Se aproximar do ponto inicial com o arrasto ativo, fecha automaticamente.
+        const first = s.points[0];
+        if (first && s.points.length >= 3 && isNear(p, first, 12)) {
+          // Salva snapshot antes de fechar automaticamente
+          pushLassoSnapshot();
+          s.closed = true;
+          s.isPointerDown = false;
+          s.isDragging = false;
+          s.dragPoint = undefined;
+          s.downPoint = undefined;
+          s.lastSample = undefined;
+          updateLassoGraphics();
+          return;
+        }
+
+        const last = s.lastSample ?? s.points[s.points.length - 1] ?? down;
+        if (dist2(p, last) >= SAMPLE_DIST2) {
+          // snapshot por ponto (undo granular)
+          pushLassoSnapshot();
+          s.points = [...s.points, { x: p.x, y: p.y, kind: "drag" }];
+          s.lastSample = p;
+        }
+      }
+      updateLassoGraphics();
+    };
+
+    session.onMouseUp = (opt: any) => {
+      const s = lassoCropRef.current;
+      if (!s?.active) return;
+      if (s.isEditingPoint) {
+        s.isEditingPoint = false;
+        s.editingIndex = undefined;
+        updateLassoGraphics();
+        return;
+      }
+      try { opt?.e?.preventDefault?.(); } catch {}
+      try { opt?.e?.stopPropagation?.(); } catch {}
+      const p = clampPointToRect(getPointer(opt), s.imageRect);
+      const down = s.downPoint;
+      s.isPointerDown = false;
+
+      const ptsNow = s.points;
+      const first = ptsNow[0];
+
+      const clickLike = !!down && dist2(p, down) <= 36; // <= ~6px
+
+      // Clique no primeiro ponto: 1) fecha o laço, 2) se já fechado, confirma.
+      if (clickLike && first && ptsNow.length >= 3 && isNear(p, first, 12)) {
+        s.isDragging = false;
+        s.dragPoint = undefined;
+        s.downPoint = undefined;
+        s.lastSample = undefined;
+
+        if (!s.closed) {
+          // Salva snapshot antes de fechar (para poder desfazer o fechamento)
+          pushLassoSnapshot();
+          s.closed = true;
+          updateLassoGraphics();
+          return;
+        }
+        // segundo clique (com laço fechado) confirma
+        confirmCrop?.();
+        return;
+      }
+
+      // Se já estiver fechado, não adiciona mais pontos (use arrastar o contorno para mover).
+      if (s.closed) {
+        s.downPoint = undefined;
+        s.lastSample = undefined;
+        s.isDragging = false;
+        s.dragPoint = undefined;
+        updateLassoGraphics();
+        return;
+      }
+
+      if (s.isDragging && down) {
+        // Arrasto: garante ponto final (e ao menos 2 pontos no segmento).
+        // adiciona um por um para permitir desfazer ponto a ponto
+        if (s.points.length === 0) {
+          pushLassoSnapshot();
+          s.points = [...s.points, { x: down.x, y: down.y, kind: "drag" }];
+        }
+        const last = s.points[s.points.length - 1];
+        if (!last || !isNear(last, p, 0.5)) {
+          pushLassoSnapshot();
+          s.points = [...s.points, { x: p.x, y: p.y, kind: "drag" }];
+        }
+      } else {
+        // Clique simples: registra 1 ponto.
+        pushLassoSnapshot();
+        s.points = [...ptsNow, { x: p.x, y: p.y, kind: "click" }];
+      }
+
+      updateLassoGraphics();
+
+      s.downPoint = undefined;
+      s.lastSample = undefined;
+      s.isDragging = false;
+      s.dragPoint = undefined;
+    };
+
+    try {
+      c.on?.("mouse:down", session.onMouseDown);
+      c.on?.("mouse:move", session.onMouseMove);
+      c.on?.("mouse:up", session.onMouseUp);
+    } catch {}
+
+    updateLassoGraphics();
+  };
+
+  // Verifica se a imagem selecionada tem metadados de corte laço e pode ser re-editada
+  const canReEditLassoCrop = (): boolean => {
+    const img = getActiveSingleImageForCrop();
+    if (!img) return false;
+    const meta = (img as any).__moldaLassoCropMeta as LassoCropMetadata | undefined;
+    return !!meta && meta.version === 1 && Array.isArray(meta.points) && meta.points.length >= 3;
+  };
+
+  // Inicia re-edição de um corte laço existente
+  const startLassoCropReEdit = () => {
+    const c: any = canvasRef.current;
+    const fabric: any = fabricRef.current;
+    if (!c || !fabric) return;
+
+    const croppedImg = getActiveSingleImageForCrop();
+    if (!croppedImg) return;
+
+    const meta = (croppedImg as any).__moldaLassoCropMeta as LassoCropMetadata | undefined;
+    if (!meta || meta.version !== 1 || !Array.isArray(meta.points) || meta.points.length < 3) {
+      // Sem metadados de corte, inicia novo corte
+      startLassoCrop();
+      return;
+    }
+
+    // Limpa qualquer outro modo
+    cleanupSquareCropPreview({ restoreImage: true });
+    cleanupLassoCropPreview({ restoreImage: true });
+
+    // Carrega a imagem original para re-edição
+    fabric.Image.fromURL(
+      meta.originalImageDataUrl,
+      (originalImg: any) => {
+        if (!originalImg) {
+          // Fallback: inicia corte novo na imagem atual
+          startLassoCrop();
+          return;
+        }
+
+        // Salva referência à imagem cortada para removê-la depois
+        const croppedImgRef = croppedImg;
+
+        // Insere a imagem original no canvas na mesma posição
+        const idx = (() => {
+          try {
+            const arr = c.getObjects?.();
+            if (Array.isArray(arr)) return arr.indexOf(croppedImgRef);
+          } catch {}
+          return -1;
+        })();
+
+        runSilently(() => {
+          try {
+            // Define propriedades da imagem original. Na re-edição, queremos o mesmo comportamento
+            // de quando o laço é acionado pela primeira vez: imagem centralizada para edição.
+            // Para manter a mesma "ampliação" percebida, escalamos a imagem original de forma que
+            // o bounding box do recorte (calculado pelos pontos salvos) tenha o mesmo tamanho do
+            // PNG recortado atualmente.
+            const baseW = Number(originalImg.width ?? 0);
+            const baseH = Number(originalImg.height ?? 0);
+            const savedW = Math.max(1, Number(meta.originalImageRect?.width ?? 1));
+            const savedH = Math.max(1, Number(meta.originalImageRect?.height ?? 1));
+
+            let minRelX = Infinity;
+            let minRelY = Infinity;
+            let maxRelX = -Infinity;
+            let maxRelY = -Infinity;
+            try {
+              for (const pt of meta.points) {
+                const x = Number(pt?.x);
+                const y = Number(pt?.y);
+                if (!Number.isFinite(x) || !Number.isFinite(y)) continue;
+                if (x < minRelX) minRelX = x;
+                if (y < minRelY) minRelY = y;
+                if (x > maxRelX) maxRelX = x;
+                if (y > maxRelY) maxRelY = y;
+              }
+            } catch {}
+            const cropBoxW = Math.max(1, Math.ceil((Number.isFinite(maxRelX) ? maxRelX : savedW) - (Number.isFinite(minRelX) ? minRelX : 0)));
+            const cropBoxH = Math.max(1, Math.ceil((Number.isFinite(maxRelY) ? maxRelY : savedH) - (Number.isFinite(minRelY) ? minRelY : 0)));
+
+            // Tamanho atual do PNG recortado no canvas (após o usuário redimensionar/mover).
+            const croppedRect = getImageRect(croppedImgRef);
+            const targetCropW = Math.max(1, Number(croppedRect.width ?? 1));
+            const targetCropH = Math.max(1, Number(croppedRect.height ?? 1));
+
+            // Escala dos pontos (e portanto da imagem) para que o recorte fique do mesmo tamanho.
+            const sxPts = targetCropW / cropBoxW;
+            const syPts = targetCropH / cropBoxH;
+            const desiredRectW = savedW * sxPts;
+            const desiredRectH = savedH * syPts;
+
+            let desiredScaleX = 1;
+            let desiredScaleY = 1;
+            if (baseW > 0 && baseH > 0) {
+              desiredScaleX = desiredRectW / baseW;
+              desiredScaleY = desiredRectH / baseH;
+            }
+
+            originalImg.set({
+              left: 0,
+              top: 0,
+              originX: "left",
+              originY: "top",
+              scaleX: desiredScaleX,
+              scaleY: desiredScaleY,
+              erasable: true,
+              selectable: true,
+              evented: true,
+            });
+            // Centraliza igual ao startLassoCrop
+            try {
+              const p = new fabric.Point(c.getWidth() / 2, c.getHeight() / 2);
+              originalImg.setPositionByOrigin?.(p, "center", "center");
+            } catch {}
+            originalImg.setCoords?.();
+
+            // Insere no canvas
+            if (idx >= 0 && typeof c.insertAt === "function") c.insertAt(originalImg, idx, false);
+            else c.add(originalImg);
+
+            // Remove a imagem cortada temporariamente (será restaurada se cancelar)
+            c.remove(croppedImgRef);
+            originalImg.setCoords?.();
+          } catch {}
+        });
+
+        // Seleciona a imagem original
+        try { c.discardActiveObject?.(); } catch {}
+        try { c.setActiveObject?.(originalImg); } catch {}
+        try { c.requestRenderAll?.(); } catch {}
+
+        // Agora inicia o lasso crop com essa imagem
+        // Precisamos iniciar manualmente pois o startLassoCrop pega a seleção
+
+        const originalCenter = (() => {
+          try {
+            const p = originalImg.getCenterPoint?.();
+            if (p && typeof p.x === "number" && typeof p.y === "number") return { x: p.x, y: p.y };
+          } catch {}
+          return { x: (c.getWidth?.() ?? 0) / 2, y: (c.getHeight?.() ?? 0) / 2 };
+        })();
+        const originalAngle = Number(originalImg.angle ?? 0);
+
+        const imgPrev = freezeImageForCrop(originalImg);
+        const canvasPrev = { selection: !!c.selection, defaultCursor: String(c.defaultCursor ?? "") };
+        try { c.selection = false; } catch {}
+        try { c.defaultCursor = "crosshair"; } catch {}
+        try { c.discardActiveObject?.(); } catch {}
+
+        // Em re-edição, centraliza igual ao startLassoCrop.
+
+        const imageRect = (() => {
+          try {
+            const r = originalImg.getBoundingRect?.(true, true);
+            if (r && typeof r.left === "number") return { left: r.left, top: r.top, width: r.width, height: r.height };
+          } catch {}
+          const left = Number(originalImg.left ?? 0);
+          const top = Number(originalImg.top ?? 0);
+          const w = Number(originalImg.width ?? 0) * Number(originalImg.scaleX ?? 1);
+          const h = Number(originalImg.height ?? 0) * Number(originalImg.scaleY ?? 1);
+          return { left, top, width: w, height: h };
+        })();
+
+        const imgHandles = makeImageScaleHandles(imageRect);
+        if (!imgHandles) return;
+
+        const overlay = new fabric.Rect({
+          left: 0,
+          top: 0,
+          width: Number(c.getWidth?.() ?? 0) || 0,
+          height: Number(c.getHeight?.() ?? 0) || 0,
+          fill: "rgba(0,0,0,0.55)",
+          selectable: false,
+          evented: false,
+          excludeFromExport: true,
+        });
+
+        const highlight = new fabric.Rect({
+          left: imageRect.left,
+          top: imageRect.top,
+          width: imageRect.width,
+          height: imageRect.height,
+          fill: "rgba(0,0,0,0)",
+          stroke: withAlpha(GIZMO_THEME.primary, 0.8),
+          strokeWidth: 2,
+          strokeDashArray: [6, 4],
+          selectable: false,
+          evented: false,
+          excludeFromExport: true,
+        });
+
+        const stroke = new fabric.Polyline([], {
+          left: 0,
+          top: 0,
+          originX: "left",
+          originY: "top",
+          stroke: GIZMO_THEME.primary,
+          strokeWidth: 2,
+          fill: "rgba(0,0,0,0)",
+          objectCaching: false,
+          selectable: false,
+          evented: false,
+          excludeFromExport: true,
+        });
+
+        runSilently(() => {
+          try { c.add(overlay); } catch {}
+          try { c.add(highlight); } catch {}
+          try { c.add(imgHandles.tl, imgHandles.tr, imgHandles.bl, imgHandles.br); } catch {}
+          try { c.add(stroke); } catch {}
+          try {
+            highlight.bringToFront?.();
+            imgHandles.tl.bringToFront?.();
+            imgHandles.tr.bringToFront?.();
+            imgHandles.bl.bringToFront?.();
+            imgHandles.br.bringToFront?.();
+            stroke.bringToFront?.();
+          } catch {}
+        });
+
+        // Converte pontos relativos para coordenadas absolutas do canvas.
+        // Observação: os pontos foram salvos relativos ao imageRect da época; se a imagem reabrir
+        // com tamanho diferente, reescala para manter a posição correta.
+        const savedW = Math.max(1, Number(meta.originalImageRect?.width ?? imageRect.width ?? 1));
+        const savedH = Math.max(1, Number(meta.originalImageRect?.height ?? imageRect.height ?? 1));
+        const sxPts = imageRect.width / savedW;
+        const syPts = imageRect.height / savedH;
+        const absolutePoints: LassoPoint[] = meta.points.map((p) => ({
+          x: imageRect.left + p.x * sxPts,
+          y: imageRect.top + p.y * syPts,
+          kind: p.kind,
+        }));
+
+        const session: LassoCropSession = {
+          active: true,
+          img: originalImg,
+          imgPrev,
+          canvasPrev,
+          imgOriginalCenter: originalCenter,
+          imgOriginalAngle: originalAngle,
+          imageRect,
+          highlight,
+          overlay,
+          stroke,
+          imgHandles,
+          points: absolutePoints,
+          isPointerDown: false,
+          isFreehand: false,
+          closed: true, // Já inicia fechado pois estamos re-editando
+          undoStack: [],
+          redoStack: [],
+          isReEdit: true,
+          originalImageForReEdit: croppedImgRef,
+          originalDataUrlForReEdit: meta.originalImageDataUrl,
+        };
+
+        // Salva snapshot inicial (o estado restaurado)
+        session.undoStack.push({
+          points: absolutePoints.map((p) => ({ ...p })),
+          closed: true,
+        });
+
+        try {
+          const exclude = new Set<any>([originalImg, overlay, highlight, stroke, imgHandles.tl, imgHandles.tr, imgHandles.bl, imgHandles.br]);
+          session.othersPrev = freezeOtherCanvasObjectsForCrop(exclude);
+        } catch {}
+
+        lassoCropRef.current = session;
+        emitCropMode(true);
+
+        // Configura handlers (mesmo código de startLassoCrop)
+        const getPointer = (opt: any) => {
+          try {
+            const p = c.getPointer?.(opt.e);
+            if (p && typeof p.x === "number" && typeof p.y === "number") return { x: p.x, y: p.y };
+          } catch {}
+          return { x: 0, y: 0 };
+        };
+
+        const dist2 = (a: { x: number; y: number }, b: { x: number; y: number }) => {
+          const dx = a.x - b.x;
+          const dy = a.y - b.y;
+          return dx * dx + dy * dy;
+        };
+
+        const isNear = (a: { x: number; y: number }, b: { x: number; y: number }, radius: number) => dist2(a, b) <= radius * radius;
+
+        const refreshFromImage = () => {
+          const s = lassoCropRef.current;
+          if (!s?.active) return;
+          centerImageInCanvas(s.img);
+          s.imageRect = getImageRect(s.img);
+          runSilently(() => {
+            try {
+              s.highlight.set({ left: s.imageRect.left, top: s.imageRect.top, width: s.imageRect.width, height: s.imageRect.height });
+              s.highlight.setCoords?.();
+            } catch {}
+            try {
+              const l = s.imageRect.left;
+              const t = s.imageRect.top;
+              const r = s.imageRect.left + s.imageRect.width;
+              const b = s.imageRect.top + s.imageRect.height;
+              s.imgHandles.tl.set({ left: l, top: t });
+              s.imgHandles.tr.set({ left: r, top: t });
+              s.imgHandles.bl.set({ left: l, top: b });
+              s.imgHandles.br.set({ left: r, top: b });
+              s.imgHandles.tl.setCoords?.();
+              s.imgHandles.tr.setCoords?.();
+              s.imgHandles.bl.setCoords?.();
+              s.imgHandles.br.setCoords?.();
+            } catch {}
+          });
+          updateLassoGraphics();
+          try { c.requestRenderAll?.(); } catch {}
+        };
+
+        const onImgHandleMoving = (h: any) => {
+          const s = lassoCropRef.current;
+          if (!s?.active) return;
+          const p = h.getCenterPoint?.() ?? { x: Number(h.left ?? 0), y: Number(h.top ?? 0) };
+          const center = getObjectCenter(s.img);
+          const dx = Math.abs(Number(p.x ?? 0) - center.x);
+          const dy = Math.abs(Number(p.y ?? 0) - center.y);
+          const halfW0 = (Number(s.img.width ?? 0) * Number(s.img.scaleX ?? 1)) / 2;
+          const halfH0 = (Number(s.img.height ?? 0) * Number(s.img.scaleY ?? 1)) / 2;
+          const desiredHalfW = Math.max(16, dx);
+          const desiredHalfH = Math.max(16, dy);
+          const sx = halfW0 > 0 ? desiredHalfW / halfW0 : 1;
+          const sy = halfH0 > 0 ? desiredHalfH / halfH0 : 1;
+          const factor = Math.max(0.1, Math.min(10, Math.max(sx, sy)));
+          runSilently(() => {
+            try {
+              s.img.set({ scaleX: Number(s.img.scaleX ?? 1) * factor, scaleY: Number(s.img.scaleY ?? 1) * factor });
+              s.img.setCoords?.();
+            } catch {}
+          });
+          refreshFromImage();
+        };
+
+        const onImgHandleModified = () => {
+          refreshFromImage();
+        };
+
+        imgHandles.tl.on?.("moving", () => onImgHandleMoving(imgHandles.tl));
+        imgHandles.tr.on?.("moving", () => onImgHandleMoving(imgHandles.tr));
+        imgHandles.bl.on?.("moving", () => onImgHandleMoving(imgHandles.bl));
+        imgHandles.br.on?.("moving", () => onImgHandleMoving(imgHandles.br));
+        imgHandles.tl.on?.("modified", onImgHandleModified);
+        imgHandles.tr.on?.("modified", onImgHandleModified);
+        imgHandles.bl.on?.("modified", onImgHandleModified);
+        imgHandles.br.on?.("modified", onImgHandleModified);
+
+        session.onMouseDown = (opt: any) => {
+          const s = lassoCropRef.current;
+          if (!s?.active) return;
+          if ((opt as any)?.target && (opt as any).target.__moldaLassoPointIndex != null) return;
+          if (s.closed) return;
+          try { opt?.e?.preventDefault?.(); } catch {}
+          try { opt?.e?.stopPropagation?.(); } catch {}
+          
+          pushLassoSnapshot();
+          
+          s.isPointerDown = true;
+          s.isFreehand = false;
+          s.isDragging = false;
+          const p0 = clampPointToRect(getPointer(opt), s.imageRect);
+          s.downPoint = p0;
+          s.lastSample = p0;
+          s.dragPoint = p0;
+        };
+
+        session.onMouseMove = (opt: any) => {
+          const s = lassoCropRef.current;
+          if (!s?.active) return;
+          if (s.isEditingPoint) return;
+          if (!s.isPointerDown) return;
+          if (s.closed) return;
+          try { opt?.e?.preventDefault?.(); } catch {}
+          try { opt?.e?.stopPropagation?.(); } catch {}
+          const p = clampPointToRect(getPointer(opt), s.imageRect);
+          const down = s.downPoint;
+          if (!down) return;
+
+          s.dragPoint = p;
+
+          const DRAG_START_DIST2 = 4;
+          const SAMPLE_DIST2 = 36;
+
+          if (!s.isDragging && dist2(p, down) > DRAG_START_DIST2) {
+            s.isDragging = true;
+            const last = s.points[s.points.length - 1];
+            if (!last || dist2(last, down) > 0.25) {
+              s.points = [...s.points, { x: down.x, y: down.y, kind: "drag" }];
+            }
+            s.lastSample = down;
+          }
+
+          if (s.isDragging) {
+            const first = s.points[0];
+            if (first && s.points.length >= 3 && isNear(p, first, 12)) {
+              pushLassoSnapshot();
+              s.closed = true;
+              s.isPointerDown = false;
+              s.isDragging = false;
+              s.dragPoint = undefined;
+              s.downPoint = undefined;
+              s.lastSample = undefined;
+              updateLassoGraphics();
+              return;
+            }
+
+            const last = s.lastSample ?? s.points[s.points.length - 1] ?? down;
+            if (dist2(p, last) >= SAMPLE_DIST2) {
+              s.points = [...s.points, { x: p.x, y: p.y, kind: "drag" }];
+              s.lastSample = p;
+            }
+          }
+          updateLassoGraphics();
+        };
+
+        session.onMouseUp = (opt: any) => {
+          const s = lassoCropRef.current;
+          if (!s?.active) return;
+          if (s.isEditingPoint) {
+            s.isEditingPoint = false;
+            s.editingIndex = undefined;
+            updateLassoGraphics();
+            return;
+          }
+          try { opt?.e?.preventDefault?.(); } catch {}
+          try { opt?.e?.stopPropagation?.(); } catch {}
+          const p = clampPointToRect(getPointer(opt), s.imageRect);
+          const down = s.downPoint;
+          s.isPointerDown = false;
+
+          const ptsNow = s.points;
+          const first = ptsNow[0];
+
+          const clickLike = !!down && dist2(p, down) <= 36;
+
+          if (clickLike && first && ptsNow.length >= 3 && isNear(p, first, 12)) {
+            s.isDragging = false;
+            s.dragPoint = undefined;
+            s.downPoint = undefined;
+            s.lastSample = undefined;
+
+            if (!s.closed) {
+              pushLassoSnapshot();
+              s.closed = true;
+              updateLassoGraphics();
+              return;
+            }
+            confirmCrop?.();
+            return;
+          }
+
+          if (s.closed) {
+            s.downPoint = undefined;
+            s.lastSample = undefined;
+            s.isDragging = false;
+            s.dragPoint = undefined;
+            updateLassoGraphics();
+            return;
+          }
+
+          if (s.isDragging && down) {
+            const nextPoints = ptsNow.slice();
+            if (nextPoints.length === 0) nextPoints.push({ x: down.x, y: down.y, kind: "drag" });
+            const last = nextPoints[nextPoints.length - 1];
+            if (!last || !isNear(last, p, 0.5)) nextPoints.push({ x: p.x, y: p.y, kind: "drag" });
+            s.points = nextPoints;
+          } else {
+            s.points = [...ptsNow, { x: p.x, y: p.y, kind: "click" }];
+          }
+
+          updateLassoGraphics();
+
+          s.downPoint = undefined;
+          s.lastSample = undefined;
+          s.isDragging = false;
+          s.dragPoint = undefined;
+        };
+
+        try {
+          c.on?.("mouse:down", session.onMouseDown);
+          c.on?.("mouse:move", session.onMouseMove);
+          c.on?.("mouse:up", session.onMouseUp);
+        } catch {}
+
+        updateLassoGraphics();
+      },
+      { crossOrigin: "anonymous" }
+    );
+  };
+
   const cleanupSquareCropPreview = (opts?: { restoreImage?: boolean }) => {
     const c: any = canvasRef.current;
     const fabric: any = fabricRef.current;
@@ -648,6 +2311,19 @@ const Editor2D = forwardRef<Editor2DHandle, Props>(function Editor2D(
     if (!c || !fabric || !s) return;
 
     runSilently(() => {
+      try {
+        const prev = (s as any).canvasPrev;
+        if (prev && typeof prev.selection === "boolean") c.selection = prev.selection;
+        if (prev && typeof prev.defaultCursor === "string") c.defaultCursor = prev.defaultCursor;
+      } catch {}
+
+      try {
+        restoreOtherCanvasObjectsAfterCrop(s.othersPrev);
+      } catch {}
+      try { c.remove(s.imgHandles?.tl); } catch {}
+      try { c.remove(s.imgHandles?.tr); } catch {}
+      try { c.remove(s.imgHandles?.bl); } catch {}
+      try { c.remove(s.imgHandles?.br); } catch {}
       try { c.remove(s.cropBox); } catch {}
       try { c.remove(s.handles.tl); } catch {}
       try { c.remove(s.handles.tr); } catch {}
@@ -658,6 +2334,10 @@ const Editor2D = forwardRef<Editor2DHandle, Props>(function Editor2D(
       try { c.remove(s.overlays.left); } catch {}
       try { c.remove(s.overlays.right); } catch {}
       try { c.remove(s.highlight); } catch {}
+
+      try {
+        restoreImageAfterCrop(s.img, (s as any).imgPrev);
+      } catch {}
 
       if (opts?.restoreImage !== false) {
         try {
@@ -766,6 +2446,15 @@ const Editor2D = forwardRef<Editor2DHandle, Props>(function Editor2D(
     })();
     const originalAngle = Number(img.angle ?? 0);
 
+    // Evita que o usuário arraste a imagem durante o recorte.
+    const imgPrev = freezeImageForCrop(img);
+
+    // Evita o retângulo de seleção do Fabric durante o crop.
+    const canvasPrev = { selection: !!c.selection, defaultCursor: String(c.defaultCursor ?? "") };
+    try { c.selection = false; } catch {}
+    try { c.defaultCursor = "default"; } catch {}
+    try { c.discardActiveObject?.(); } catch {}
+
     // Centraliza temporariamente a imagem no canvas.
     runSilently(() => {
       try {
@@ -787,6 +2476,9 @@ const Editor2D = forwardRef<Editor2DHandle, Props>(function Editor2D(
       const h = Number(img.height ?? 0) * Number(img.scaleY ?? 1);
       return { left, top, width: w, height: h };
     })();
+
+    const imgHandles = makeImageScaleHandles(imageRect);
+    if (!imgHandles) return;
 
     const size = Math.max(10, Math.min(imageRect.width, imageRect.height));
     const startW = size;
@@ -880,6 +2572,7 @@ const Editor2D = forwardRef<Editor2DHandle, Props>(function Editor2D(
     runSilently(() => {
       try { c.add(overlays.top, overlays.bottom, overlays.left, overlays.right); } catch {}
       try { c.add(highlight); } catch {}
+      try { c.add(imgHandles.tl, imgHandles.tr, imgHandles.bl, imgHandles.br); } catch {}
       try { c.add(cropBox); } catch {}
       try { c.add(handles.tl, handles.tr, handles.bl, handles.br); } catch {}
       try {
@@ -896,10 +2589,13 @@ const Editor2D = forwardRef<Editor2DHandle, Props>(function Editor2D(
     squareCropRef.current = {
       active: true,
       img,
+      imgPrev,
+      canvasPrev,
       imgOriginalCenter: originalCenter,
       imgOriginalAngle: originalAngle,
       cropBox,
       handles,
+      imgHandles,
       overlays,
       highlight,
       size,
@@ -907,13 +2603,101 @@ const Editor2D = forwardRef<Editor2DHandle, Props>(function Editor2D(
       imageRect,
     };
 
+    try {
+      const exclude = new Set<any>([
+        img,
+        overlays.top,
+        overlays.bottom,
+        overlays.left,
+        overlays.right,
+        highlight,
+        cropBox,
+        handles.tl,
+        handles.tr,
+        handles.bl,
+        handles.br,
+        imgHandles.tl,
+        imgHandles.tr,
+        imgHandles.bl,
+        imgHandles.br,
+      ]);
+      squareCropRef.current.othersPrev = freezeOtherCanvasObjectsForCrop(exclude);
+    } catch {}
+
     emitCropMode(true);
+
+    const refreshFromImage = () => {
+      const s = squareCropRef.current;
+      if (!s?.active) return;
+      centerImageInCanvas(s.img);
+      s.imageRect = getImageRect(s.img);
+      runSilently(() => {
+        try {
+          s.highlight.set({ left: s.imageRect.left, top: s.imageRect.top, width: s.imageRect.width, height: s.imageRect.height });
+          s.highlight.setCoords?.();
+        } catch {}
+        try {
+          const l = s.imageRect.left;
+          const t = s.imageRect.top;
+          const r = s.imageRect.left + s.imageRect.width;
+          const b = s.imageRect.top + s.imageRect.height;
+          s.imgHandles.tl.set({ left: l, top: t });
+          s.imgHandles.tr.set({ left: r, top: t });
+          s.imgHandles.bl.set({ left: l, top: b });
+          s.imgHandles.br.set({ left: r, top: b });
+          s.imgHandles.tl.setCoords?.();
+          s.imgHandles.tr.setCoords?.();
+          s.imgHandles.bl.setCoords?.();
+          s.imgHandles.br.setCoords?.();
+        } catch {}
+      });
+      updateSquareCropPreview();
+      try { c.requestRenderAll?.(); } catch {}
+    };
 
     const onAnyDrag = () => updateSquareCropPreview();
 
     // Move o recorte inteiro
     cropBox.on?.("moving", onAnyDrag);
     cropBox.on?.("modified", onAnyDrag);
+
+    const onImgHandleMoving = (h: any) => {
+      const s = squareCropRef.current;
+      if (!s?.active) return;
+      const p = h.getCenterPoint?.() ?? { x: Number(h.left ?? 0), y: Number(h.top ?? 0) };
+      const center = getObjectCenter(s.img);
+      const dx = Math.abs(Number(p.x ?? 0) - center.x);
+      const dy = Math.abs(Number(p.y ?? 0) - center.y);
+
+      const halfW0 = (Number(s.img.width ?? 0) * Number(s.img.scaleX ?? 1)) / 2;
+      const halfH0 = (Number(s.img.height ?? 0) * Number(s.img.scaleY ?? 1)) / 2;
+      const desiredHalfW = Math.max(16, dx);
+      const desiredHalfH = Math.max(16, dy);
+      const sx = halfW0 > 0 ? desiredHalfW / halfW0 : 1;
+      const sy = halfH0 > 0 ? desiredHalfH / halfH0 : 1;
+      const factor = Math.max(0.1, Math.min(10, Math.max(sx, sy)));
+
+      runSilently(() => {
+        try {
+          s.img.set({ scaleX: Number(s.img.scaleX ?? 1) * factor, scaleY: Number(s.img.scaleY ?? 1) * factor });
+          s.img.setCoords?.();
+        } catch {}
+      });
+      refreshFromImage();
+    };
+
+    const onImgHandleModified = () => {
+      refreshFromImage();
+    };
+
+    imgHandles.tl.on?.("moving", () => onImgHandleMoving(imgHandles.tl));
+    imgHandles.tr.on?.("moving", () => onImgHandleMoving(imgHandles.tr));
+    imgHandles.bl.on?.("moving", () => onImgHandleMoving(imgHandles.bl));
+    imgHandles.br.on?.("moving", () => onImgHandleMoving(imgHandles.br));
+    imgHandles.tl.on?.("modified", onImgHandleModified);
+    imgHandles.tr.on?.("modified", onImgHandleModified);
+    imgHandles.bl.on?.("modified", onImgHandleModified);
+    imgHandles.br.on?.("modified", onImgHandleModified);
 
     const onHandleMoving = (h: any) => {
       const session = squareCropRef.current;
@@ -1012,12 +2796,269 @@ const Editor2D = forwardRef<Editor2DHandle, Props>(function Editor2D(
   };
 
   const confirmCrop = () => {
-    // Hoje o único modo implementado é o corte via preview (startSquareCrop).
-    commitSquareCrop();
+    // Prioriza o modo ativo
+    if (squareCropRef.current?.active) {
+      commitSquareCrop();
+      return;
+    }
+    if (lassoCropRef.current?.active) {
+      commitLassoCrop();
+      return;
+    }
   };
 
   const isCropActive = () => {
-    return !!squareCropRef.current?.active;
+    return !!squareCropRef.current?.active || !!lassoCropRef.current?.active;
+  };
+
+  const cancelCrop = () => {
+    if (squareCropRef.current?.active) {
+      cancelSquareCrop();
+      return;
+    }
+    if (lassoCropRef.current?.active) {
+      cancelLassoCrop();
+      return;
+    }
+  };
+
+  const cancelLassoCrop = () => {
+    const c: any = canvasRef.current;
+    const s = lassoCropRef.current;
+    
+    // Se estávamos re-editando, restaura a imagem cortada original
+    if (s?.isReEdit && s.originalImageForReEdit && c) {
+      const croppedImg = s.originalImageForReEdit;
+      const tempOriginalImg = s.img;
+      
+      runSilently(() => {
+        try {
+          // Restaura a imagem cortada original
+          const idx = (() => {
+            try {
+              const arr = c.getObjects?.();
+              if (Array.isArray(arr)) return arr.indexOf(tempOriginalImg);
+            } catch {}
+            return -1;
+          })();
+          
+          if (idx >= 0 && typeof c.insertAt === "function") {
+            c.insertAt(croppedImg, idx, false);
+          } else {
+            c.add(croppedImg);
+          }
+          
+          // Remove a imagem original temporária
+          c.remove(tempOriginalImg);
+          croppedImg.setCoords?.();
+        } catch {}
+      });
+      
+      // Seleciona a imagem restaurada
+      try { c.discardActiveObject?.(); } catch {}
+      try { c.setActiveObject?.(croppedImg); } catch {}
+    }
+    
+    cleanupLassoCropPreview({ restoreImage: true });
+  };
+
+  const commitLassoCrop = () => {
+    const c: any = canvasRef.current;
+    const fabric: any = fabricRef.current;
+    const s = lassoCropRef.current;
+    if (!c || !fabric || !s?.active) return;
+    const img = s.img;
+
+    const ptsCanvas = s.points;
+    if (ptsCanvas.length < 3) return;
+
+    // Captura o dataUrl da imagem original para re-edição
+    const originalImageDataUrl: string | null = (() => {
+      // Se é re-edição, usa o original guardado
+      if (s.isReEdit && s.originalDataUrlForReEdit) {
+        return s.originalDataUrlForReEdit;
+      }
+
+      // Preferir uma fonte já guardada (mais confiável e não depende de canvas não-tainted)
+      try {
+        const src = (img as any).__moldaOriginalSrc;
+        if (typeof src === "string" && src.length > 0) return src;
+      } catch {}
+
+      // Senão, gera do elemento atual
+      try {
+        const el: any = img.getElement?.() ?? img._element ?? img._originalElement;
+        if (!el) return null;
+        const tmp = document.createElement("canvas");
+        const cropX = Number(img.cropX ?? 0) || 0;
+        const cropY = Number(img.cropY ?? 0) || 0;
+        const srcW = Number(img.width ?? 0) || (el.naturalWidth ?? el.width ?? 0);
+        const srcH = Number(img.height ?? 0) || (el.naturalHeight ?? el.height ?? 0);
+        tmp.width = srcW;
+        tmp.height = srcH;
+        const ctx = tmp.getContext("2d");
+        if (!ctx) return null;
+        ctx.drawImage(el, cropX, cropY, srcW, srcH, 0, 0, srcW, srcH);
+        return tmp.toDataURL("image/png");
+      } catch {
+        return null;
+      }
+    })();
+
+    // Rasteriza o recorte em uma nova imagem (PNG) para que o gizmo seja do recorte.
+    let minCX = Infinity;
+    let minCY = Infinity;
+    let maxCX = -Infinity;
+    let maxCY = -Infinity;
+    for (let i = 0; i < ptsCanvas.length; i++) {
+      const p = ptsCanvas[i];
+      if (!p) continue;
+      if (p.x < minCX) minCX = p.x;
+      if (p.y < minCY) minCY = p.y;
+      if (p.x > maxCX) maxCX = p.x;
+      if (p.y > maxCY) maxCY = p.y;
+    }
+    if (!Number.isFinite(minCX) || !Number.isFinite(minCY) || !Number.isFinite(maxCX) || !Number.isFinite(maxCY)) return;
+
+    const outW = Math.max(1, Math.ceil(maxCX - minCX));
+    const outH = Math.max(1, Math.ceil(maxCY - minCY));
+    if (outW < 2 || outH < 2) return;
+
+    // Converte pontos para coordenadas relativas ao imageRect (para re-edição)
+    const relativePoints: LassoPoint[] = ptsCanvas.map((p) => ({
+      x: p.x - s.imageRect.left,
+      y: p.y - s.imageRect.top,
+      kind: p.kind,
+    }));
+
+    const dataUrl: string | null = (() => {
+      try {
+        const el: any = img.getElement?.() ?? img._element ?? img._originalElement;
+        if (!el) return null;
+
+        const tmp = document.createElement("canvas");
+        tmp.width = outW;
+        tmp.height = outH;
+        const ctx = tmp.getContext("2d");
+        if (!ctx) return null;
+
+        ctx.save();
+        ctx.beginPath();
+        for (let i = 0; i < ptsCanvas.length; i++) {
+          const p = ptsCanvas[i];
+          const x = p.x - minCX;
+          const y = p.y - minCY;
+          if (i === 0) ctx.moveTo(x, y);
+          else ctx.lineTo(x, y);
+        }
+        ctx.closePath();
+        ctx.clip();
+
+        const cropX = Number(img.cropX ?? 0) || 0;
+        const cropY = Number(img.cropY ?? 0) || 0;
+        const srcW = Number(img.width ?? 0) || (el.naturalWidth ?? el.width ?? 0);
+        const srcH = Number(img.height ?? 0) || (el.naturalHeight ?? el.height ?? 0);
+        const sx = Number(img.scaleX ?? 1) || 1;
+        const sy = Number(img.scaleY ?? 1) || 1;
+
+        const dx = Number(img.left ?? 0) - minCX;
+        const dy = Number(img.top ?? 0) - minCY;
+        const dw = srcW * sx;
+        const dh = srcH * sy;
+
+        ctx.drawImage(el, cropX, cropY, srcW, srcH, dx, dy, dw, dh);
+        ctx.restore();
+
+        return tmp.toDataURL("image/png");
+      } catch {
+        return null;
+      }
+    })();
+
+    // Encerra o modo de corte (UI) imediatamente (sem "voltar" a imagem para o centro original).
+    cleanupLassoCropPreview({ restoreImage: false });
+
+    if (!dataUrl) return;
+
+    // Evita que o usuário clique/seleciona a imagem antiga enquanto a nova carrega.
+    try {
+      runSilently(() => {
+        try { img.set?.({ selectable: false, evented: false }); } catch {}
+        try { img.setCoords?.(); } catch {}
+      });
+    } catch {}
+
+    const idx = (() => {
+      try {
+        const arr = c.getObjects?.();
+        if (Array.isArray(arr)) return arr.indexOf(img);
+      } catch {}
+      return -1;
+    })();
+
+    // Metadados para permitir re-edição do corte
+    const lassoCropMeta: LassoCropMetadata | null = originalImageDataUrl ? {
+      version: 1,
+      points: relativePoints,
+      originalImageDataUrl,
+      originalImageRect: { ...s.imageRect },
+    } : null;
+
+    fabric.Image.fromURL(
+      dataUrl,
+      (newImg: any) => {
+        if (!newImg) return;
+        runSilently(() => {
+          try {
+            newImg.set({
+              left: minCX,
+              top: minCY,
+              originX: "left",
+              originY: "top",
+              scaleX: 1,
+              scaleY: 1,
+              erasable: true,
+              selectable: true,
+              evented: true,
+            });
+          } catch {}
+
+          // Para ajustes futuros, a base agora é o PNG recortado.
+          try { (newImg as any).__moldaOriginalSrc = dataUrl; } catch {}
+          try {
+            const adj = (img as any).__moldaImageAdjustments;
+            if (adj) (newImg as any).__moldaImageAdjustments = adj;
+          } catch {}
+          
+          // Armazena metadados do corte laço para re-edição
+          if (lassoCropMeta) {
+            try { (newImg as any).__moldaLassoCropMeta = lassoCropMeta; } catch {}
+          }
+
+          try {
+            if (idx >= 0 && typeof c.insertAt === "function") c.insertAt(newImg, idx, false);
+            else c.add(newImg);
+          } catch {
+            try { c.add(newImg); } catch {}
+          }
+          try { c.remove(img); } catch {}
+          try { newImg.setCoords?.(); } catch {}
+        });
+
+        // gizmo novo
+        try { c.discardActiveObject?.(); } catch {}
+        try { c.setActiveObject?.(newImg); } catch {}
+        try { c.requestRenderAll?.(); } catch {}
+
+        try {
+          if (!isRestoringRef.current && !isLoadingRef.current) {
+            historyRef.current?.push("crop-lasso");
+            emitHistory();
+          }
+        } catch {}
+      },
+      { crossOrigin: "anonymous" }
+    );
   };
 
   const commitSquareCrop = () => {
@@ -1052,23 +3093,26 @@ const Editor2D = forwardRef<Editor2DHandle, Props>(function Editor2D(
     const newCropX = Math.round(existingCropX + relX / scaleX);
     const newCropY = Math.round(existingCropY + relY / scaleY);
 
-    // Aplica o crop e restaura a imagem para o centro original (era temporário).
-    try {
-      img.set({ cropX: newCropX, cropY: newCropY, width: wPx, height: hPx });
-      img.setCoords?.();
-    } catch {}
+    // Ao confirmar, criamos um NOVO objeto de imagem com o crop aplicado e removemos o anterior.
+    // Isso gera um gizmo novo e evita estados residuais do modo de corte.
+    const newObj = replaceImageWithNewObject(img, () => {
+      try {
+        const fabric: any = fabricRef.current;
+        const el = img.getElement?.() ?? img._element ?? img._originalElement;
+        if (el && fabric?.Image) return new fabric.Image(el, {});
+      } catch {}
+      return null;
+    });
 
-    try {
-      const fabric: any = fabricRef.current;
-      if (fabric?.Point) {
-        const p = new fabric.Point(s.imgOriginalCenter.x, s.imgOriginalCenter.y);
-        img.setPositionByOrigin?.(p, "center", "center");
-      }
-      img.setCoords?.();
-    } catch {}
+    if (newObj) {
+      copyBasicImageProps(img, newObj);
+      try {
+        newObj.set({ cropX: newCropX, cropY: newCropY, width: wPx, height: hPx });
+        newObj.setCoords?.();
+      } catch {}
+    }
 
     cleanupSquareCropPreview({ restoreImage: false });
-    try { c.setActiveObject?.(img); } catch {}
     try { c.requestRenderAll?.(); } catch {}
 
     // captura histórico ao finalizar
@@ -1099,6 +3143,7 @@ const Editor2D = forwardRef<Editor2DHandle, Props>(function Editor2D(
         "__moldaPatternScale",
         "__moldaOriginalFill",
         "__moldaOriginalStroke",
+        "__moldaLassoCropMeta",
       ]);
       return JSON.stringify({ kind: "fabric", data });
     }
@@ -3898,8 +5943,16 @@ const Editor2D = forwardRef<Editor2DHandle, Props>(function Editor2D(
     applyActiveImageAdjustments,
     startSquareCrop,
     cancelSquareCrop,
+    startLassoCrop,
+    startLassoCropReEdit,
+    canReEditLassoCrop,
+    cancelCrop,
     confirmCrop,
     isCropActive,
+    undoLassoPoint,
+    redoLassoPoint,
+    canUndoLassoPoint,
+    canRedoLassoPoint,
     onCropModeChange: (cb) => {
       cropModeListenersRef.current.add(cb);
     },
@@ -4899,6 +6952,10 @@ const Editor2D = forwardRef<Editor2DHandle, Props>(function Editor2D(
   useEffect(() => {
     if (!isActive) return;
     const onKey = (e: KeyboardEvent) => {
+      // Se estiver no modo de corte (laço ou quadrado), não processa undo/redo global
+      // O handler em onGlobalKeyDown cuida do undo/redo dos pontos do laço
+      if (lassoCropRef.current?.active || squareCropRef.current?.active) return;
+      
       const target = e.target as HTMLElement | null;
       if (
         target &&

@@ -383,14 +383,22 @@ export default function ImageToolbar({ visible, editor, position = "bottom" }: P
     setCropPinned(false);
     setCropOpen(false);
 
-    // Corte quadrado: entra em modo de preview no Fabric.
+    // Corte: entra em modo de preview no Fabric.
     if (next === "square") {
       try {
         editor?.current?.startSquareCrop?.();
       } catch {}
+      return;
+    }
+
+    if (next === "lasso") {
+      try {
+        editor?.current?.startLassoCrop?.();
+      } catch {}
+      return;
     } else {
       try {
-        editor?.current?.cancelSquareCrop?.();
+        editor?.current?.cancelCrop?.();
       } catch {}
     }
   };
