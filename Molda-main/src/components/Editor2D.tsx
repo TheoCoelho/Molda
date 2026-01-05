@@ -510,6 +510,7 @@ const Editor2D = forwardRef<Editor2DHandle, Props>(function Editor2D(
   }, [isActive]);
 
   const imageAdjCommitTimerRef = useRef<number | null>(null);
+  const wheelScaleCommitTimerRef = useRef<number | null>(null);
   const imageAdjOpIdRef = useRef(0);
   const imageAdjRunningRef = useRef(false);
   const imageAdjPendingRef = useRef<ImageAdjustments | null>(null);
@@ -1834,9 +1835,17 @@ const Editor2D = forwardRef<Editor2DHandle, Props>(function Editor2D(
     imgHandles.bl.on?.("modified", onImgHandleModified);
     imgHandles.br.on?.("modified", onImgHandleModified);
 
+    const isImageScaleHandleTarget = (opt: any) => {
+      const t = (opt as any)?.target;
+      return !!t && (t as any).__moldaImageScaleCorner != null;
+    };
+
     session.onMouseDown = (opt: any) => {
       const s = lassoCropRef.current;
       if (!s?.active) return;
+      // Se o usuário clicou/arrastou um handle de escala da imagem, não deve registrar pontos do laço.
+      // Importante: não bloquear o evento para permitir o drag do handle.
+      if (isImageScaleHandleTarget(opt)) return;
       if ((opt as any)?.target && (opt as any).target.__moldaLassoPointIndex != null) return;
       if (s.closed) return;
       try { opt?.e?.preventDefault?.(); } catch {}
@@ -1854,6 +1863,7 @@ const Editor2D = forwardRef<Editor2DHandle, Props>(function Editor2D(
     session.onMouseMove = (opt: any) => {
       const s = lassoCropRef.current;
       if (!s?.active) return;
+      if (isImageScaleHandleTarget(opt)) return;
       if (s.isEditingPoint) return;
       if (!s.isPointerDown) return;
       if (s.closed) return;
@@ -1911,6 +1921,7 @@ const Editor2D = forwardRef<Editor2DHandle, Props>(function Editor2D(
     session.onMouseUp = (opt: any) => {
       const s = lassoCropRef.current;
       if (!s?.active) return;
+      if (isImageScaleHandleTarget(opt)) return;
       if (s.isEditingPoint) {
         s.isEditingPoint = false;
         s.editingIndex = undefined;
@@ -2347,6 +2358,10 @@ const Editor2D = forwardRef<Editor2DHandle, Props>(function Editor2D(
         session.onMouseDown = (opt: any) => {
           const s = lassoCropRef.current;
           if (!s?.active) return;
+          // Se o usuário clicou/arrastou um handle de escala da imagem, não deve registrar pontos do laço.
+          // Importante: não bloquear o evento para permitir o drag do handle.
+          const t = (opt as any)?.target;
+          if (t && (t as any).__moldaImageScaleCorner != null) return;
           if ((opt as any)?.target && (opt as any).target.__moldaLassoPointIndex != null) return;
           if (s.closed) return;
           try { opt?.e?.preventDefault?.(); } catch {}
@@ -2366,6 +2381,8 @@ const Editor2D = forwardRef<Editor2DHandle, Props>(function Editor2D(
         session.onMouseMove = (opt: any) => {
           const s = lassoCropRef.current;
           if (!s?.active) return;
+          const t = (opt as any)?.target;
+          if (t && (t as any).__moldaImageScaleCorner != null) return;
           if (s.isEditingPoint) return;
           if (!s.isPointerDown) return;
           if (s.closed) return;
@@ -2415,6 +2432,8 @@ const Editor2D = forwardRef<Editor2DHandle, Props>(function Editor2D(
         session.onMouseUp = (opt: any) => {
           const s = lassoCropRef.current;
           if (!s?.active) return;
+          const t = (opt as any)?.target;
+          if (t && (t as any).__moldaImageScaleCorner != null) return;
           if (s.isEditingPoint) {
             s.isEditingPoint = false;
             s.editingIndex = undefined;
@@ -6574,6 +6593,93 @@ const Editor2D = forwardRef<Editor2DHandle, Props>(function Editor2D(
           });
         };
 
+        const __onWheelScale = (opt: any) => {
+          const evt: WheelEvent | undefined = opt?.e;
+          if (!evt) return;
+          if (!isActiveRef.current) return;
+
+          // Do not hijack pinch-zoom / browser zoom gestures.
+          if ((evt as any).ctrlKey || (evt as any).metaKey) return;
+
+          // If crop is active, wheel should not scale objects.
+          const cropSession = squareCropRef.current;
+          const lassoSession = lassoCropRef.current;
+          if (cropSession?.active || lassoSession?.active) return;
+
+          const active: any = c.getActiveObject?.();
+          if (!active) return;
+
+          // If user is currently editing text, allow normal scrolling.
+          const isTextEditing =
+            !!active &&
+            (active.isEditing === true ||
+              (typeof active.enterEditing === "function" && active.hiddenTextarea));
+          if (isTextEditing) return;
+
+          // Respect locked scaling.
+          if (active.lockScalingX && active.lockScalingY) return;
+          if (active.selectable === false || active.evented === false) return;
+
+          const dy = Number((evt as any).deltaY ?? 0);
+          if (!Number.isFinite(dy) || dy === 0) return;
+
+          // One "notch" is usually ~100. Use an exponential step so trackpads feel smooth.
+          const stepMagnitude = Math.min(10, Math.max(0.1, Math.abs(dy) / 100));
+          const step = dy > 0 ? 0.95 : 1.05;
+          const factor = Math.pow(step, stepMagnitude);
+
+          const scaleX0 = Number(active.scaleX ?? 1) || 1;
+          const scaleY0 = Number(active.scaleY ?? 1) || 1;
+          const minScale = 0.05;
+          const maxScale = 20;
+          const nextScaleX = clamp(scaleX0 * factor, minScale, maxScale);
+          const nextScaleY = clamp(scaleY0 * factor, minScale, maxScale);
+
+          // Preserve center so scaling feels natural.
+          const center = typeof active.getCenterPoint === "function" ? active.getCenterPoint() : null;
+          try {
+            active.set?.({ scaleX: nextScaleX, scaleY: nextScaleY });
+          } catch {
+            try {
+              active.scaleX = nextScaleX;
+              active.scaleY = nextScaleY;
+            } catch {}
+          }
+          if (center && typeof active.setPositionByOrigin === "function") {
+            try {
+              active.setPositionByOrigin(center, "center", "center");
+            } catch {}
+          }
+          try { active.setCoords?.(); } catch {}
+
+          // Reuse existing scaling listeners (e.g. pattern invalidation).
+          try {
+            c.fire?.("object:scaling", { target: active });
+          } catch {}
+
+          try { c.requestRenderAll?.(); } catch {}
+
+          try {
+            evt.preventDefault();
+            evt.stopPropagation();
+          } catch {}
+
+          // Debounce history so a scroll gesture becomes a single undo step.
+          if (wheelScaleCommitTimerRef.current) {
+            window.clearTimeout(wheelScaleCommitTimerRef.current);
+            wheelScaleCommitTimerRef.current = null;
+          }
+          wheelScaleCommitTimerRef.current = window.setTimeout(() => {
+            wheelScaleCommitTimerRef.current = null;
+            if (shouldRecordHistory()) {
+              try {
+                historyRef.current?.push("scale-wheel");
+              } catch {}
+              emitHistory();
+            }
+          }, 250);
+        };
+
     c.on("object:added", __onAdded);
     c.on("object:removed", __onRemoved);
     c.on("object:modified", __onModified);
@@ -6588,6 +6694,7 @@ const Editor2D = forwardRef<Editor2DHandle, Props>(function Editor2D(
         c.on("object:moving", __onMoving);
         c.on("object:rotating", __onRotating);
         c.on("object:scaling", __onScaling);
+        c.on("mouse:wheel", __onWheelScale);
 
         setCanvasReady(true);
         console.log("[Editor2D] Canvas ready set to true");
@@ -6604,6 +6711,10 @@ const Editor2D = forwardRef<Editor2DHandle, Props>(function Editor2D(
       if (imageAdjCommitTimerRef.current) {
         window.clearTimeout(imageAdjCommitTimerRef.current);
         imageAdjCommitTimerRef.current = null;
+      }
+      if (wheelScaleCommitTimerRef.current) {
+        window.clearTimeout(wheelScaleCommitTimerRef.current);
+        wheelScaleCommitTimerRef.current = null;
       }
       if (idleResolversRef.current.size) {
         const pending = Array.from(idleResolversRef.current);
@@ -6626,6 +6737,7 @@ const Editor2D = forwardRef<Editor2DHandle, Props>(function Editor2D(
         c.off("object:moving");
         c.off("object:rotating");
         c.off("object:scaling");
+        c.off("mouse:wheel");
         c.dispose?.();
       }
       roRef.current?.disconnect();
