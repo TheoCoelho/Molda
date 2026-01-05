@@ -138,6 +138,12 @@ export type Editor2DHandle = {
   canUndoLassoPoint?: () => boolean;
   canRedoLassoPoint?: () => boolean;
 
+  // Undo/redo para o corte quadrado durante o corte
+  undoSquareCropStep?: () => boolean;
+  redoSquareCropStep?: () => boolean;
+  canUndoSquareCropStep?: () => boolean;
+  canRedoSquareCropStep?: () => boolean;
+
   toJSON: () => string;
   loadFromJSON: (json: string) => Promise<void>;
   deleteSelection: () => void;
@@ -423,6 +429,11 @@ const Editor2D = forwardRef<Editor2DHandle, Props>(function Editor2D(
   const lastCreatedObjectRef = useRef<any>(null);
 
   // ----------------------- corte quadrado (preview) -----------------------
+  type SquareCropSnapshot = {
+    cropBox: { left: number; top: number; width: number; height: number };
+    img: { scaleX: number; scaleY: number };
+  };
+
   type SquareCropSession = {
     active: boolean;
     img: any;
@@ -457,8 +468,17 @@ const Editor2D = forwardRef<Editor2DHandle, Props>(function Editor2D(
     size: number;
     overhang: number;
     imageRect: { left: number; top: number; width: number; height: number };
+
+    // Stacks para undo/redo do corte quadrado durante o corte
+    undoStack: SquareCropSnapshot[];
+    redoStack: SquareCropSnapshot[];
+    isAdjusting?: boolean;
+
+    // Último estado gravado (para registrar cada modificação incremental)
+    lastRecorded?: SquareCropSnapshot;
   };
   const squareCropRef = useRef<SquareCropSession | null>(null);
+  const squareCropRecordGuardRef = useRef(0);
   const cropModeListenersRef = useRef(new Set<(active: boolean) => void>());
 
   const emitCropMode = (active: boolean) => {
@@ -627,9 +647,10 @@ const Editor2D = forwardRef<Editor2DHandle, Props>(function Editor2D(
           return;
         }
         
+        const isCtrlOrMeta = evt.ctrlKey || evt.metaKey;
+
         // Durante o modo laço, Ctrl+Z desfaz ponto a ponto e Ctrl+Y refaz
         if (lassoSession?.active) {
-          const isCtrlOrMeta = evt.ctrlKey || evt.metaKey;
           if (isCtrlOrMeta && evt.key.toLowerCase() === "z" && !evt.shiftKey) {
             evt.preventDefault();
             evt.stopPropagation();
@@ -640,6 +661,22 @@ const Editor2D = forwardRef<Editor2DHandle, Props>(function Editor2D(
             evt.preventDefault();
             evt.stopPropagation();
             try { redoLassoPoint(); } catch {}
+            return;
+          }
+        }
+
+        // Durante o modo quadrado, Ctrl+Z desfaz passo a passo e Ctrl+Y refaz
+        if (cropSession?.active) {
+          if (isCtrlOrMeta && evt.key.toLowerCase() === "z" && !evt.shiftKey) {
+            evt.preventDefault();
+            evt.stopPropagation();
+            try { undoSquareCropStep(); } catch {}
+            return;
+          }
+          if (isCtrlOrMeta && (evt.key.toLowerCase() === "y" || (evt.key.toLowerCase() === "z" && evt.shiftKey))) {
+            evt.preventDefault();
+            evt.stopPropagation();
+            try { redoSquareCropStep(); } catch {}
             return;
           }
         }
@@ -677,6 +714,127 @@ const Editor2D = forwardRef<Editor2DHandle, Props>(function Editor2D(
   }, [isActive]);
 
   const clamp = (n: number, min: number, max: number) => Math.max(min, Math.min(max, n));
+
+  // ---- Undo/redo do corte quadrado (snapshot) ----
+  const MAX_SQUARE_CROP_UNDO = 5000;
+
+  const getSquareCropSnapshot = (s: SquareCropSession): SquareCropSnapshot => {
+    const wNow = Number(s.cropBox.width ?? s.size) || s.size;
+    const hNow = Number(s.cropBox.height ?? s.size) || s.size;
+    return {
+      cropBox: {
+        left: Number(s.cropBox.left ?? 0),
+        top: Number(s.cropBox.top ?? 0),
+        width: Number.isFinite(wNow) ? wNow : s.size,
+        height: Number.isFinite(hNow) ? hNow : s.size,
+      },
+      img: {
+        scaleX: Number(s.img.scaleX ?? 1) || 1,
+        scaleY: Number(s.img.scaleY ?? 1) || 1,
+      },
+    };
+  };
+
+  const normalizeSquareCropSnapshot = (snap: SquareCropSnapshot): SquareCropSnapshot => {
+    const roundScale = (v: number) => Math.round(v * 10000) / 10000;
+    const w = Math.max(1, Math.round(Number(snap.cropBox.width ?? 1)));
+    const h = Math.max(1, Math.round(Number(snap.cropBox.height ?? 1)));
+    return {
+      cropBox: {
+        left: Math.round(Number(snap.cropBox.left ?? 0)),
+        top: Math.round(Number(snap.cropBox.top ?? 0)),
+        width: w,
+        height: h,
+      },
+      img: {
+        scaleX: roundScale(Number(snap.img.scaleX ?? 1) || 1),
+        scaleY: roundScale(Number(snap.img.scaleY ?? 1) || 1),
+      },
+    };
+  };
+
+  const isSameSquareCropSnapshot = (a?: SquareCropSnapshot, b?: SquareCropSnapshot) => {
+    if (!a || !b) return false;
+    return (
+      a.cropBox.left === b.cropBox.left &&
+      a.cropBox.top === b.cropBox.top &&
+      a.cropBox.width === b.cropBox.width &&
+      a.cropBox.height === b.cropBox.height &&
+      a.img.scaleX === b.img.scaleX &&
+      a.img.scaleY === b.img.scaleY
+    );
+  };
+
+
+  const applySquareCropSnapshot = (snap: SquareCropSnapshot): boolean => {
+    const c: any = canvasRef.current;
+    const s = squareCropRef.current;
+    if (!c || !s?.active) return false;
+
+    const normalized = normalizeSquareCropSnapshot(snap);
+
+    squareCropRecordGuardRef.current += 1;
+
+    runSilently(() => {
+      try {
+        s.img.set({ scaleX: normalized.img.scaleX, scaleY: normalized.img.scaleY });
+        s.img.setCoords?.();
+      } catch {}
+
+      // Mantém o comportamento do modo de corte: imagem centralizada
+      try { centerImageInCanvas(s.img); } catch {}
+
+      try { s.imageRect = getImageRect(s.img); } catch {}
+
+      try {
+        s.cropBox.set({ left: normalized.cropBox.left, top: normalized.cropBox.top, width: normalized.cropBox.width, height: normalized.cropBox.height });
+        s.cropBox.setCoords?.();
+      } catch {}
+    });
+
+    updateSquareCropPreview();
+    try { c.requestRenderAll?.(); } catch {}
+
+    // updateSquareCropPreview faz clamp e pode ajustar cropBox; grave o estado real final.
+    try {
+      s.lastRecorded = normalizeSquareCropSnapshot(getSquareCropSnapshot(s));
+    } catch {}
+
+    squareCropRecordGuardRef.current = Math.max(0, squareCropRecordGuardRef.current - 1);
+    return true;
+  };
+
+  const undoSquareCropStep = (): boolean => {
+    const s = squareCropRef.current;
+    if (!s?.active) return false;
+    if (s.undoStack.length === 0) return false;
+
+    if (s.lastRecorded) s.redoStack.push(s.lastRecorded);
+    const prev = s.undoStack.pop()!;
+    s.isAdjusting = false;
+    return applySquareCropSnapshot(prev);
+  };
+
+  const redoSquareCropStep = (): boolean => {
+    const s = squareCropRef.current;
+    if (!s?.active) return false;
+    if (s.redoStack.length === 0) return false;
+
+    if (s.lastRecorded) s.undoStack.push(s.lastRecorded);
+    const next = s.redoStack.pop()!;
+    s.isAdjusting = false;
+    return applySquareCropSnapshot(next);
+  };
+
+  const canUndoSquareCropStep = (): boolean => {
+    const s = squareCropRef.current;
+    return !!s?.active && s.undoStack.length > 0;
+  };
+
+  const canRedoSquareCropStep = (): boolean => {
+    const s = squareCropRef.current;
+    return !!s?.active && s.redoStack.length > 0;
+  };
 
   const getActiveSingleImageForCrop = (): any | null => {
     const imgs = getSelectedImageObjects();
@@ -1569,6 +1727,31 @@ const Editor2D = forwardRef<Editor2DHandle, Props>(function Editor2D(
 
     lassoCropRef.current = session;
     emitCropMode(true);
+
+    const beginSquareAdjust = () => {
+      const s = squareCropRef.current;
+      if (!s?.active) return;
+      if (s.isAdjusting) return;
+      s.isAdjusting = true;
+
+      // Um único registro por gesto: guarda o estado anterior ao arrasto
+      try {
+        const prev = s.lastRecorded ?? normalizeSquareCropSnapshot(getSquareCropSnapshot(s));
+        s.undoStack.push(prev);
+        if (s.undoStack.length > MAX_SQUARE_CROP_UNDO) s.undoStack.shift();
+        s.redoStack = [];
+      } catch {}
+    };
+
+    const endSquareAdjust = () => {
+      const s = squareCropRef.current;
+      if (!s?.active) return;
+      s.isAdjusting = false;
+      // Atualiza o estado atual (para o próximo gesto/undo)
+      try {
+        s.lastRecorded = normalizeSquareCropSnapshot(getSquareCropSnapshot(s));
+      } catch {}
+    };
 
     const getPointer = (opt: any) => {
       try {
@@ -2601,7 +2784,17 @@ const Editor2D = forwardRef<Editor2DHandle, Props>(function Editor2D(
       size,
       overhang,
       imageRect,
+
+      undoStack: [],
+      redoStack: [],
+      isAdjusting: false,
+      lastRecorded: undefined,
     };
+
+    // Estado inicial para gravação incremental
+    try {
+      squareCropRef.current.lastRecorded = normalizeSquareCropSnapshot(getSquareCropSnapshot(squareCropRef.current));
+    } catch {}
 
     try {
       const exclude = new Set<any>([
@@ -2625,6 +2818,31 @@ const Editor2D = forwardRef<Editor2DHandle, Props>(function Editor2D(
     } catch {}
 
     emitCropMode(true);
+
+    const beginSquareAdjust = () => {
+      const s = squareCropRef.current;
+      if (!s?.active) return;
+      if (s.isAdjusting) return;
+      s.isAdjusting = true;
+
+      // Um único registro por gesto: guarda o estado anterior ao arrasto
+      try {
+        const prev = s.lastRecorded ?? normalizeSquareCropSnapshot(getSquareCropSnapshot(s));
+        s.undoStack.push(prev);
+        if (s.undoStack.length > MAX_SQUARE_CROP_UNDO) s.undoStack.shift();
+        s.redoStack = [];
+      } catch {}
+    };
+
+    const endSquareAdjust = () => {
+      const s = squareCropRef.current;
+      if (!s?.active) return;
+      s.isAdjusting = false;
+      // Atualiza o estado atual (para o próximo gesto/undo)
+      try {
+        s.lastRecorded = normalizeSquareCropSnapshot(getSquareCropSnapshot(s));
+      } catch {}
+    };
 
     const refreshFromImage = () => {
       const s = squareCropRef.current;
@@ -2658,12 +2876,19 @@ const Editor2D = forwardRef<Editor2DHandle, Props>(function Editor2D(
     const onAnyDrag = () => updateSquareCropPreview();
 
     // Move o recorte inteiro
-    cropBox.on?.("moving", onAnyDrag);
-    cropBox.on?.("modified", onAnyDrag);
+    cropBox.on?.("moving", () => {
+      beginSquareAdjust();
+      onAnyDrag();
+    });
+    cropBox.on?.("modified", () => {
+      onAnyDrag();
+      endSquareAdjust();
+    });
 
     const onImgHandleMoving = (h: any) => {
       const s = squareCropRef.current;
       if (!s?.active) return;
+      beginSquareAdjust();
       const p = h.getCenterPoint?.() ?? { x: Number(h.left ?? 0), y: Number(h.top ?? 0) };
       const center = getObjectCenter(s.img);
       const dx = Math.abs(Number(p.x ?? 0) - center.x);
@@ -2688,6 +2913,7 @@ const Editor2D = forwardRef<Editor2DHandle, Props>(function Editor2D(
 
     const onImgHandleModified = () => {
       refreshFromImage();
+      endSquareAdjust();
     };
 
     imgHandles.tl.on?.("moving", () => onImgHandleMoving(imgHandles.tl));
@@ -2702,6 +2928,7 @@ const Editor2D = forwardRef<Editor2DHandle, Props>(function Editor2D(
     const onHandleMoving = (h: any) => {
       const session = squareCropRef.current;
       if (!session?.active) return;
+      beginSquareAdjust();
       const imgR = session.imageRect;
       const corner = String((h as any).__moldaSquareCropCorner || "");
 
@@ -2783,10 +3010,10 @@ const Editor2D = forwardRef<Editor2DHandle, Props>(function Editor2D(
     handles.bl.on?.("moving", () => onHandleMoving(handles.bl));
     handles.br.on?.("moving", () => onHandleMoving(handles.br));
 
-    handles.tl.on?.("modified", onAnyDrag);
-    handles.tr.on?.("modified", onAnyDrag);
-    handles.bl.on?.("modified", onAnyDrag);
-    handles.br.on?.("modified", onAnyDrag);
+    handles.tl.on?.("modified", () => { onAnyDrag(); endSquareAdjust(); });
+    handles.tr.on?.("modified", () => { onAnyDrag(); endSquareAdjust(); });
+    handles.bl.on?.("modified", () => { onAnyDrag(); endSquareAdjust(); });
+    handles.br.on?.("modified", () => { onAnyDrag(); endSquareAdjust(); });
 
     updateSquareCropPreview();
   };
@@ -5953,6 +6180,10 @@ const Editor2D = forwardRef<Editor2DHandle, Props>(function Editor2D(
     redoLassoPoint,
     canUndoLassoPoint,
     canRedoLassoPoint,
+    undoSquareCropStep,
+    redoSquareCropStep,
+    canUndoSquareCropStep,
+    canRedoSquareCropStep,
     onCropModeChange: (cb) => {
       cropModeListenersRef.current.add(cb);
     },
