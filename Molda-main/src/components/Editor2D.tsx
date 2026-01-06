@@ -153,11 +153,15 @@ export type Editor2DHandle = {
   startEffectBrush?: (effectKind: ImageEffectKind, effectAmount: number, brushSize: number) => void;
   cancelEffectBrush?: () => void;
   isEffectBrushActive?: () => boolean;
+  confirmEffectBrush?: () => void;
+  canConfirmEffectBrush?: () => boolean;
 
   // ==== Effect Lasso Mode ====
   startEffectLasso?: (effectKind: ImageEffectKind, effectAmount: number) => void;
   cancelEffectLasso?: () => void;
   isEffectLassoActive?: () => boolean;
+  confirmEffectLasso?: () => void;
+  canConfirmEffectLasso?: () => boolean;
 
   // ==== Effect Edit Mode (listener) ====
   onEffectEditModeChange?: (cb: (active: boolean) => void) => void;
@@ -697,6 +701,49 @@ const Editor2D = forwardRef<Editor2DHandle, Props>(function Editor2D(
       // Se estiver em modo de corte, Enter confirma e Esc/Delete cancela.
       const cropSession = squareCropRef.current;
       const lassoSession = lassoCropRef.current;
+      const effectBrushSession = effectBrushRef.current;
+      const effectLassoSession = effectLassoRef.current;
+
+      // Durante o laço de efeitos, Esc cancela e Ctrl+Z/Y desfaz/refaz ponto a ponto
+      if (effectLassoSession?.active) {
+        const isCtrlOrMeta = evt.ctrlKey || evt.metaKey;
+        if (evt.key === "Enter") {
+          evt.preventDefault();
+          try { confirmEffectLasso(); } catch {}
+          return;
+        }
+        if (evt.key === "Escape" || evt.key === "Delete" || evt.key === "Backspace") {
+          evt.preventDefault();
+          try { cancelEffectLasso(); } catch {}
+          return;
+        }
+        if (isCtrlOrMeta && evt.key.toLowerCase() === "z" && !evt.shiftKey) {
+          evt.preventDefault();
+          evt.stopPropagation();
+          try { undoEffectLassoPoint(); } catch {}
+          return;
+        }
+        if (isCtrlOrMeta && (evt.key.toLowerCase() === "y" || (evt.key.toLowerCase() === "z" && evt.shiftKey))) {
+          evt.preventDefault();
+          evt.stopPropagation();
+          try { redoEffectLassoPoint(); } catch {}
+          return;
+        }
+      }
+
+      // Durante o pincel de efeitos, Enter confirma e Esc/Delete cancela.
+      if (effectBrushSession?.active) {
+        if (evt.key === "Enter") {
+          evt.preventDefault();
+          try { confirmEffectBrush(); } catch {}
+          return;
+        }
+        if (evt.key === "Escape" || evt.key === "Delete" || evt.key === "Backspace") {
+          evt.preventDefault();
+          try { cancelEffectBrush(); } catch {}
+          return;
+        }
+      }
       if (cropSession?.active || lassoSession?.active) {
         if (evt.key === "Enter") {
           evt.preventDefault();
@@ -1103,7 +1150,7 @@ const Editor2D = forwardRef<Editor2DHandle, Props>(function Editor2D(
   };
   const effectBrushRef = useRef<EffectBrushSession | null>(null);
 
-  type EffectLassoPoint = { x: number; y: number; kind: "click" | "drag" };
+  type EffectLassoPoint = LassoPoint;
   type EffectLassoSession = {
     active: boolean;
     img: any;
@@ -1138,17 +1185,462 @@ const Editor2D = forwardRef<Editor2DHandle, Props>(function Editor2D(
     effectKind: ImageEffectKind;
     effectAmount: number;
     points: EffectLassoPoint[];
+    pointMarkers?: any[];
     closed: boolean;
+    isEditingPoint?: boolean;
+    editingIndex?: number;
     isPointerDown: boolean;
     isDragging: boolean;
     dragPoint?: { x: number; y: number };
     downPoint?: { x: number; y: number };
     lastSample?: { x: number; y: number };
+    // Undo/redo granular (ponto a ponto) como no laço de corte
+    undoStack: LassoPointsSnapshot[];
+    redoStack: LassoPointsSnapshot[];
+    // Preview/commit
+    baseSrc?: string;
+    baseAdj?: ImageAdjustments;
+    previewSrc?: string;
+    previewTimer?: number | null;
+    previewOpId?: number;
+    previewApplyInFlight?: boolean;
+    previewApplyPending?: boolean;
     onMouseDown?: any;
     onMouseMove?: any;
     onMouseUp?: any;
   };
   const effectLassoRef = useRef<EffectLassoSession | null>(null);
+
+  const updateEffectLassoGraphics = () => {
+    const c: any = canvasRef.current;
+    const s = effectLassoRef.current;
+    const fabric: any = fabricRef.current;
+    if (!c || !fabric || !s?.active) return;
+
+    const pts = s.points;
+    const basePts = pts.map((p) => lassoPointToCanvas(s, p));
+    const strokePts: Array<{ x: number; y: number }> = (() => {
+      // Durante arrasto, mostra preview até o cursor.
+      if (s.isPointerDown && s.isDragging && s.dragPoint) {
+        const base = basePts.slice();
+        if (base.length === 0 && s.downPoint) base.push(lassoPointToCanvas(s, s.downPoint));
+        const last = base[base.length - 1];
+        const d = lassoPointToCanvas(s, s.dragPoint);
+        if (!last || Math.abs(last.x - d.x) > 0.001 || Math.abs(last.y - d.y) > 0.001) base.push({ x: d.x, y: d.y });
+        if (s.closed && base.length >= 3) {
+          const f = base[0];
+          const l = base[base.length - 1];
+          if (Math.abs(f.x - l.x) > 0.001 || Math.abs(f.y - l.y) > 0.001) base.push({ x: f.x, y: f.y });
+        }
+        return base;
+      }
+
+      const base = basePts.slice();
+      if (s.closed && base.length >= 3) {
+        const f = base[0];
+        const l = base[base.length - 1];
+        if (Math.abs(f.x - l.x) > 0.001 || Math.abs(f.y - l.y) > 0.001) base.push({ x: f.x, y: f.y });
+      }
+      return base;
+    })();
+
+    const clipPts: Array<{ x: number; y: number }> = (() => {
+      // Para clipPath: nunca duplica o primeiro ponto (evita artefatos).
+      // Se estiver fechado, usa apenas os pontos "reais".
+      if (s.closed) return basePts;
+      // Se ainda está desenhando, usa o preview atual (com dragPoint) para mostrar o buraco.
+      return strokePts;
+    })();
+
+    // Atualiza/recicla marcadores de pontos (mesma lógica do laço de corte)
+    if (!s.isEditingPoint) {
+      runSilently(() => {
+        try {
+          (s.pointMarkers ?? []).forEach((m) => {
+            try { c.remove(m); } catch {}
+          });
+        } catch {}
+        s.pointMarkers = [];
+
+        const markerStroke = withAlpha(GIZMO_THEME.stroke, 0.9);
+        const markerFill = GIZMO_THEME.primary;
+
+        const DISPLAY_DIST2 = 596;
+        let lastShown: { x: number; y: number } | null = null;
+
+        for (let i = 0; i < pts.length; i++) {
+          const p = pts[i];
+          const pc = lassoPointToCanvas(s, p);
+          const isFirst = i === 0;
+          const isLast = i === pts.length - 1;
+
+          const canEditPoints = !!s.closed;
+          const canCloseFromFirst = !s.closed && isFirst && pts.length >= 3;
+
+          let show = false;
+          if (isFirst || isLast) show = true;
+          else if (p.kind === "click") show = true;
+          else if (!lastShown) show = true;
+          else {
+            const dx = pc.x - lastShown.x;
+            const dy = pc.y - lastShown.y;
+            if (dx * dx + dy * dy >= DISPLAY_DIST2) show = true;
+          }
+
+          if (!show) continue;
+
+          const radius = isFirst ? 9 : 6;
+          const m = new fabric.Circle({
+            left: pc.x,
+            top: pc.y,
+            radius,
+            originX: "center",
+            originY: "center",
+            fill: markerFill,
+            stroke: markerStroke,
+            strokeWidth: 2,
+            selectable: canEditPoints || canCloseFromFirst,
+            evented: canEditPoints || canCloseFromFirst,
+            hasControls: false,
+            hasBorders: false,
+            lockRotation: true,
+            lockScalingX: true,
+            lockScalingY: true,
+            hoverCursor: canEditPoints ? "move" : canCloseFromFirst ? "pointer" : "default",
+            objectCaching: false,
+            excludeFromExport: true,
+          });
+          try { (m as any).__moldaLassoPointIndex = i; } catch {}
+
+          m.on?.("mousedown", (ev: any) => {
+            const ss = effectLassoRef.current;
+            if (!ss?.active) return;
+
+            // Enquanto o laço está aberto, clique no primeiro ponto deve FECHAR.
+            if (!ss.closed && i === 0 && (ss.points?.length ?? 0) >= 3) {
+              pushEffectLassoSnapshot();
+              ss.closed = true;
+              ss.isPointerDown = false;
+              ss.isDragging = false;
+              ss.dragPoint = undefined;
+              ss.downPoint = undefined;
+              ss.lastSample = undefined;
+              try { ev?.e?.preventDefault?.(); } catch {}
+              try { ev?.e?.stopPropagation?.(); } catch {}
+              updateEffectLassoGraphics();
+              scheduleEffectLassoPreviewUpdate();
+              return;
+            }
+
+            // Só permite edição de pontos depois de fechado.
+            if (!ss.closed) {
+              try { ev?.e?.preventDefault?.(); } catch {}
+              try { ev?.e?.stopPropagation?.(); } catch {}
+              return;
+            }
+
+            pushEffectLassoSnapshot();
+            ss.isEditingPoint = true;
+            ss.editingIndex = i;
+            try { ev?.e?.preventDefault?.(); } catch {}
+            try { ev?.e?.stopPropagation?.(); } catch {}
+          });
+
+          m.on?.("moving", () => {
+            const ss = effectLassoRef.current;
+            if (!ss?.active) return;
+            if (!ss.closed) return;
+            ss.isEditingPoint = true;
+            ss.editingIndex = i;
+            const pp = m.getCenterPoint?.() ?? { x: Number(m.left ?? 0), y: Number(m.top ?? 0) };
+            const cl = clampPointToRect({ x: Number(pp.x ?? 0), y: Number(pp.y ?? 0) }, ss.imageRect);
+            try { m.set({ left: cl.x, top: cl.y }); } catch {}
+            try { m.setCoords?.(); } catch {}
+            const cur = ss.points[i];
+            if (cur) {
+              const norm = canvasPointToLasso(ss, cl);
+              ss.points[i] = { ...cur, x: norm.x, y: norm.y };
+            }
+            updateEffectLassoGraphics();
+            scheduleEffectLassoPreviewUpdate();
+          });
+
+          m.on?.("modified", () => {
+            const ss = effectLassoRef.current;
+            if (!ss?.active) return;
+            ss.isEditingPoint = false;
+            ss.editingIndex = undefined;
+            updateEffectLassoGraphics();
+            scheduleEffectLassoPreviewUpdate();
+          });
+
+          s.pointMarkers.push(m);
+          try { c.add(m); } catch {}
+          lastShown = { x: pc.x, y: pc.y };
+        }
+      });
+    }
+
+    // Overlay sempre escurece o canvas inteiro. Quando houver forma suficiente, cria “buraco”.
+    runSilently(() => {
+      try { (s.overlay as any).clipPath = null; } catch {}
+    });
+
+    if (strokePts.length >= 2) {
+      let minX = Infinity;
+      let minY = Infinity;
+      for (let i = 0; i < strokePts.length; i++) {
+        const p = strokePts[i];
+        if (!p) continue;
+        if (p.x < minX) minX = p.x;
+        if (p.y < minY) minY = p.y;
+      }
+      if (!Number.isFinite(minX) || !Number.isFinite(minY)) return;
+
+      const norm = new Array(strokePts.length);
+      for (let i = 0; i < strokePts.length; i++) {
+        const p = strokePts[i];
+        norm[i] = { x: p.x - minX, y: p.y - minY };
+      }
+      runSilently(() => {
+        try {
+          s.stroke.set({ left: minX, top: minY, points: norm });
+          s.stroke.setCoords?.();
+        } catch {}
+      });
+
+      // Se já temos uma área fechável (>=3 pontos), aplica clip invertido no overlay
+      if (clipPts.length >= 3) {
+        let cMinX = Infinity;
+        let cMinY = Infinity;
+        for (let i = 0; i < clipPts.length; i++) {
+          const p = clipPts[i];
+          if (!p) continue;
+          if (p.x < cMinX) cMinX = p.x;
+          if (p.y < cMinY) cMinY = p.y;
+        }
+        if (Number.isFinite(cMinX) && Number.isFinite(cMinY)) {
+          const cNorm = new Array(clipPts.length);
+          for (let i = 0; i < clipPts.length; i++) {
+            const p = clipPts[i];
+            cNorm[i] = { x: p.x - cMinX, y: p.y - cMinY };
+          }
+
+          const poly = new fabric.Polygon(cNorm, {
+            left: cMinX,
+            top: cMinY,
+            originX: "left",
+            originY: "top",
+            fill: "rgba(0,0,0,1)",
+            selectable: false,
+            evented: false,
+            absolutePositioned: true,
+            excludeFromExport: true,
+          });
+          try { (poly as any).inverted = true; } catch {}
+          runSilently(() => {
+            try { (s.overlay as any).clipPath = poly; } catch {}
+          });
+        }
+      }
+    } else {
+      runSilently(() => {
+        try {
+          s.stroke.set({ left: 0, top: 0, points: [] });
+          s.stroke.setCoords?.();
+        } catch {}
+      });
+    }
+
+    try { s.stroke.bringToFront?.(); } catch {}
+    try { (s.pointMarkers ?? []).forEach((m) => m.bringToFront?.()); } catch {}
+    try { c.requestRenderAll?.(); } catch {}
+  };
+
+  const pushEffectLassoSnapshot = () => {
+    const s = effectLassoRef.current;
+    if (!s?.active) return;
+    const snapshot: LassoPointsSnapshot = {
+      points: s.points.map((p) => ({ ...p })),
+      closed: !!s.closed,
+    };
+    s.undoStack.push(snapshot);
+    s.redoStack = [];
+  };
+
+  const undoEffectLassoPoint = (): boolean => {
+    const s = effectLassoRef.current;
+    if (!s?.active) return false;
+    if (s.undoStack.length === 0) return false;
+
+    const currentSnapshot: LassoPointsSnapshot = {
+      points: s.points.map((p) => ({ ...p })),
+      closed: !!s.closed,
+    };
+    s.redoStack.push(currentSnapshot);
+
+    const prev = s.undoStack.pop()!;
+    s.points = prev.points.map((p) => ({ ...p }));
+    s.closed = prev.closed;
+
+    s.isPointerDown = false;
+    s.isDragging = false;
+    s.dragPoint = undefined;
+    s.downPoint = undefined;
+    s.lastSample = undefined;
+
+    updateEffectLassoGraphics();
+    return true;
+  };
+
+  const redoEffectLassoPoint = (): boolean => {
+    const s = effectLassoRef.current;
+    if (!s?.active) return false;
+    if (s.redoStack.length === 0) return false;
+
+    const currentSnapshot: LassoPointsSnapshot = {
+      points: s.points.map((p) => ({ ...p })),
+      closed: !!s.closed,
+    };
+    s.undoStack.push(currentSnapshot);
+
+    const next = s.redoStack.pop()!;
+    s.points = next.points.map((p) => ({ ...p }));
+    s.closed = next.closed;
+
+    s.isPointerDown = false;
+    s.isDragging = false;
+    s.dragPoint = undefined;
+    s.downPoint = undefined;
+    s.lastSample = undefined;
+
+    updateEffectLassoGraphics();
+    return true;
+  };
+
+  const canConfirmEffectLasso = (): boolean => {
+    const s = effectLassoRef.current;
+    return !!s?.active && !!s.closed && (s.points?.length ?? 0) >= 3;
+  };
+
+  const buildEffectLassoMaskCanvas = (s: EffectLassoSession): HTMLCanvasElement | null => {
+    const w = Math.max(1, Math.round(Number(s.img.width ?? 1) || 1));
+    const h = Math.max(1, Math.round(Number(s.img.height ?? 1) || 1));
+    const mc = document.createElement("canvas");
+    mc.width = w;
+    mc.height = h;
+    const mctx = mc.getContext("2d");
+    if (!mctx) return null;
+    mctx.clearRect(0, 0, w, h);
+
+    const poly = s.points.map((p) => ({ x: clamp(p.x, 0, 1) * w, y: clamp(p.y, 0, 1) * h }));
+    if (poly.length < 3) return null;
+
+    mctx.fillStyle = "rgba(255,255,255,1)";
+    mctx.beginPath();
+    mctx.moveTo(poly[0].x, poly[0].y);
+    for (let i = 1; i < poly.length; i++) mctx.lineTo(poly[i].x, poly[i].y);
+    mctx.closePath();
+    mctx.fill();
+    return mc;
+  };
+
+  const applyEffectLassoPreviewNow = async (): Promise<void> => {
+    const c: any = canvasRef.current;
+    const s = effectLassoRef.current;
+    if (!c || !s?.active) return;
+    if (!s.closed || (s.points?.length ?? 0) < 3) return;
+    if (!s.baseSrc) return;
+
+    const mc = buildEffectLassoMaskCanvas(s);
+    if (!mc) return;
+
+    try {
+      const dataUrl = await exportImageWithEffectsMaskedToDataUrl(
+        s.baseSrc,
+        s.baseAdj ?? { ...DEFAULT_IMAGE_ADJ },
+        { kind: s.effectKind, amount: s.effectAmount },
+        mc
+      );
+
+      await new Promise<void>((resolve) => {
+        s.img.setSrc(
+          dataUrl,
+          () => {
+            try { c.requestRenderAll?.(); } catch {}
+            resolve();
+          },
+          { crossOrigin: "anonymous" }
+        );
+      });
+
+      s.previewSrc = dataUrl;
+      try { delete (s.img as any).__moldaImageEffects; } catch {}
+    } catch {}
+  };
+
+  const scheduleEffectLassoPreviewUpdate = () => {
+    const s = effectLassoRef.current;
+    if (!s?.active) return;
+    if (!s.closed) return;
+
+    const nextOpId = (s.previewOpId ?? 0) + 1;
+    s.previewOpId = nextOpId;
+
+    if (s.previewTimer != null) {
+      try { window.clearTimeout(s.previewTimer); } catch {}
+    }
+
+    s.previewTimer = window.setTimeout(async () => {
+      const cur = effectLassoRef.current;
+      if (!cur?.active) return;
+      if (cur.previewOpId !== nextOpId) return;
+
+      if (cur.previewApplyInFlight) {
+        cur.previewApplyPending = true;
+        return;
+      }
+
+      cur.previewApplyInFlight = true;
+      cur.previewApplyPending = false;
+      try {
+        await applyEffectLassoPreviewNow();
+      } finally {
+        const after = effectLassoRef.current;
+        if (after?.active) {
+          after.previewApplyInFlight = false;
+          if (after.previewApplyPending) {
+            after.previewApplyPending = false;
+            scheduleEffectLassoPreviewUpdate();
+          }
+        }
+      }
+    }, 50);
+  };
+
+  const confirmEffectLasso = () => {
+    void (async () => {
+      const s = effectLassoRef.current;
+      if (!s?.active) return;
+      if (!canConfirmEffectLasso()) return;
+
+      // Garante que o preview mais recente foi aplicado
+      await applyEffectLassoPreviewNow();
+
+      const finalSrc = s.previewSrc;
+      if (finalSrc) {
+        try { (s.img as any).__moldaOriginalSrc = finalSrc; } catch {}
+        try { delete (s.img as any).__moldaImageEffects; } catch {}
+      }
+
+      if (shouldRecordHistory() && finalSrc) {
+        historyRef.current?.push("image-effect-lasso");
+        emitHistory();
+      }
+
+      cleanupEffectLasso({ restoreImage: true });
+    })();
+  };
 
   const clampPointToRect = (p: { x: number; y: number }, r: { left: number; top: number; width: number; height: number }) => ({
     x: clamp(p.x, r.left, r.left + r.width),
@@ -1696,7 +2188,7 @@ const Editor2D = forwardRef<Editor2DHandle, Props>(function Editor2D(
   };
 
   // ========== Effect Brush Mode ==========
-  const cleanupEffectBrush = (opts?: { restoreImage?: boolean }) => {
+  const cleanupEffectBrush = (opts?: { restoreImage?: boolean; commitResult?: boolean }) => {
     const c: any = canvasRef.current;
     const fabric: any = fabricRef.current;
     const s = effectBrushRef.current;
@@ -1717,13 +2209,17 @@ const Editor2D = forwardRef<Editor2DHandle, Props>(function Editor2D(
     } catch {}
 
     runSilently(() => {
-      // Persistência do resultado final do pincel: salva como nova origem apenas ao sair do modo.
-      try {
-        if (s.lastBakedSrc) {
-          (s.img as any).__moldaOriginalSrc = s.lastBakedSrc;
-          try { delete (s.img as any).__moldaImageEffects; } catch {}
-        }
-      } catch {}
+      // Persistência do resultado final do pincel: salva como nova origem apenas ao confirmar/sair.
+      // Cancelar NÃO deve sobrescrever a origem.
+      const shouldCommit = opts?.commitResult ?? true;
+      if (shouldCommit) {
+        try {
+          if (s.lastBakedSrc) {
+            (s.img as any).__moldaOriginalSrc = s.lastBakedSrc;
+            try { delete (s.img as any).__moldaImageEffects; } catch {}
+          }
+        } catch {}
+      }
 
       try { c.remove(s.imgHandles?.tl); } catch {}
       try { c.remove(s.imgHandles?.tr); } catch {}
@@ -1781,6 +2277,11 @@ const Editor2D = forwardRef<Editor2DHandle, Props>(function Editor2D(
       try { c.remove(s.imgHandles?.tr); } catch {}
       try { c.remove(s.imgHandles?.bl); } catch {}
       try { c.remove(s.imgHandles?.br); } catch {}
+      try {
+        (s.pointMarkers ?? []).forEach((m) => {
+          try { c.remove(m); } catch {}
+        });
+      } catch {}
       try { c.remove(s.stroke); } catch {}
       try { c.remove(s.overlay); } catch {}
       try { c.remove(s.highlight); } catch {}
@@ -1870,19 +2371,7 @@ const Editor2D = forwardRef<Editor2DHandle, Props>(function Editor2D(
     const canvasPrev = { selection: !!c.selection, defaultCursor: String(c.defaultCursor ?? "") };
     try { c.selection = false; } catch {}
     try {
-      const size = Math.max(8, Math.min(128, Math.round(Number(brushSize) || 24)));
-      const stroke = 2;
-      const r = Math.max(1, size / 2 - stroke);
-      const svg =
-        `<svg xmlns="http://www.w3.org/2000/svg" width="${size}" height="${size}" viewBox="0 0 ${size} ${size}">` +
-        `<circle cx="${size / 2}" cy="${size / 2}" r="${r}" fill="none" stroke="white" stroke-width="${stroke}"/>` +
-        `<circle cx="${size / 2}" cy="${size / 2}" r="${Math.max(1, r - 1)}" fill="none" stroke="black" stroke-width="1" opacity="0.7"/>` +
-        `</svg>`;
-      const encoded = encodeURIComponent(svg)
-        .replace(/'/g, "%27")
-        .replace(/\(/g, "%28")
-        .replace(/\)/g, "%29");
-      c.defaultCursor = `url("data:image/svg+xml,${encoded}") ${size / 2} ${size / 2}, crosshair`;
+      c.defaultCursor = buildCircularCursor(brushSize);
     } catch {
       try { c.defaultCursor = "crosshair"; } catch {}
     }
@@ -2554,7 +3043,15 @@ const Editor2D = forwardRef<Editor2DHandle, Props>(function Editor2D(
   };
 
   const cancelEffectBrush = () => {
-    cleanupEffectBrush({ restoreImage: true });
+    cleanupEffectBrush({ restoreImage: true, commitResult: false });
+  };
+
+  const confirmEffectBrush = () => {
+    cleanupEffectBrush({ restoreImage: true, commitResult: true });
+  };
+
+  const canConfirmEffectBrush = (): boolean => {
+    return !!effectBrushRef.current?.active;
   };
 
   const isEffectBrushActive = (): boolean => {
@@ -2656,6 +3153,18 @@ const Editor2D = forwardRef<Editor2DHandle, Props>(function Editor2D(
       } catch {}
     });
 
+    const baseSrc: string | undefined =
+      (img as any).__moldaOriginalSrc ||
+      (typeof img?.getSrc === "function" ? img.getSrc() : undefined) ||
+      img?._originalElement?.src ||
+      img?._element?.src;
+    if (!baseSrc) return;
+
+    const baseAdj: ImageAdjustments = (() => {
+      const saved = (img as any).__moldaImageAdjustments as ImageAdjustments | undefined;
+      return saved ? { ...DEFAULT_IMAGE_ADJ, ...saved } : { ...DEFAULT_IMAGE_ADJ };
+    })();
+
     const session: EffectLassoSession = {
       active: true,
       img,
@@ -2674,6 +3183,11 @@ const Editor2D = forwardRef<Editor2DHandle, Props>(function Editor2D(
       closed: false,
       isPointerDown: false,
       isDragging: false,
+      undoStack: [],
+      redoStack: [],
+      baseSrc,
+      baseAdj,
+      previewTimer: null,
     };
 
     try {
@@ -2699,31 +3213,6 @@ const Editor2D = forwardRef<Editor2DHandle, Props>(function Editor2D(
       return dx * dx + dy * dy;
     };
     const isNear = (a: { x: number; y: number }, b: { x: number; y: number }, radius: number) => dist2(a, b) <= radius * radius;
-
-    const updateEffectLassoGraphics = () => {
-      const s = effectLassoRef.current;
-      if (!s?.active) return;
-      const pts = s.points;
-      const basePts = pts.map((p) => lassoPointToCanvas(s, p));
-      const strokePts: Array<{ x: number; y: number }> = (() => {
-        if (s.isPointerDown && s.isDragging && s.dragPoint) {
-          const base = basePts.slice();
-          if (base.length === 0 && s.downPoint) base.push(lassoPointToCanvas(s, s.downPoint));
-          const d = lassoPointToCanvas(s, s.dragPoint);
-          base.push({ x: d.x, y: d.y });
-          if (s.closed && base.length >= 3) base.push(base[0]);
-          return base;
-        }
-        const base = basePts.slice();
-        if (s.closed && base.length >= 3) base.push(base[0]);
-        return base;
-      })();
-      runSilently(() => {
-        try { s.stroke.set({ points: strokePts }); } catch {}
-        try { s.stroke.setCoords?.(); } catch {}
-      });
-      try { c.requestRenderAll?.(); } catch {}
-    };
 
     const confirmEffectLasso = async () => {
       const s = effectLassoRef.current;
@@ -2854,6 +3343,8 @@ const Editor2D = forwardRef<Editor2DHandle, Props>(function Editor2D(
       const s = effectLassoRef.current;
       if (!s?.active) return;
       if (isImageScaleHandleTarget(opt)) return;
+      if ((opt as any)?.target && (opt as any).target.__moldaLassoPointIndex != null) return;
+      if (s.isEditingPoint) return;
       if (s.closed) return;
       try { opt?.e?.preventDefault?.(); } catch {}
       try { opt?.e?.stopPropagation?.(); } catch {}
@@ -2870,6 +3361,8 @@ const Editor2D = forwardRef<Editor2DHandle, Props>(function Editor2D(
       const s = effectLassoRef.current;
       if (!s?.active) return;
       if (isImageScaleHandleTarget(opt)) return;
+      if ((opt as any)?.target && (opt as any).target.__moldaLassoPointIndex != null) return;
+      if (s.isEditingPoint) return;
       if (!s.isPointerDown) return;
       if (s.closed) return;
       try { opt?.e?.preventDefault?.(); } catch {}
@@ -2894,6 +3387,8 @@ const Editor2D = forwardRef<Editor2DHandle, Props>(function Editor2D(
         s.isDragging = true;
         const last = s.points[s.points.length - 1];
         if (!last || dist2Canvas(last, down) > 0.25) {
+          // snapshot por ponto (undo granular)
+          pushEffectLassoSnapshot();
           s.points = [...s.points, { x: down.x, y: down.y, kind: "drag" }];
         }
         s.lastSample = down;
@@ -2902,6 +3397,8 @@ const Editor2D = forwardRef<Editor2DHandle, Props>(function Editor2D(
       if (s.isDragging) {
         const first = s.points[0];
         if (first && s.points.length >= 3 && isNear(lassoPointToCanvas(s, p), lassoPointToCanvas(s, first), 12)) {
+          // snapshot antes de fechar
+          pushEffectLassoSnapshot();
           s.closed = true;
           s.isPointerDown = false;
           s.isDragging = false;
@@ -2909,11 +3406,14 @@ const Editor2D = forwardRef<Editor2DHandle, Props>(function Editor2D(
           s.downPoint = undefined;
           s.lastSample = undefined;
           updateEffectLassoGraphics();
+          scheduleEffectLassoPreviewUpdate();
           return;
         }
 
         const last = s.lastSample ?? s.points[s.points.length - 1] ?? down;
         if (dist2Canvas(p, last) >= SAMPLE_DIST2) {
+          // snapshot por ponto (undo granular)
+          pushEffectLassoSnapshot();
           s.points = [...s.points, { x: p.x, y: p.y, kind: "drag" }];
           s.lastSample = p;
         }
@@ -2925,6 +3425,7 @@ const Editor2D = forwardRef<Editor2DHandle, Props>(function Editor2D(
       const s = effectLassoRef.current;
       if (!s?.active) return;
       if (isImageScaleHandleTarget(opt)) return;
+      if ((opt as any)?.target && (opt as any).target.__moldaLassoPointIndex != null) return;
       try { opt?.e?.preventDefault?.(); } catch {}
       try { opt?.e?.stopPropagation?.(); } catch {}
       const pc = clampPointToRect(getPointer(opt), s.imageRect);
@@ -2951,19 +3452,42 @@ const Editor2D = forwardRef<Editor2DHandle, Props>(function Editor2D(
         s.lastSample = undefined;
 
         if (!s.closed) {
+          pushEffectLassoSnapshot();
           s.closed = true;
-          updateEffectLassoGraphics();
-          return;
         }
-        void confirmEffectLasso();
+        updateEffectLassoGraphics();
+        scheduleEffectLassoPreviewUpdate();
         return;
       }
 
-      // clique simples adiciona ponto
-      if (!s.isDragging) {
-        s.points = [...s.points, { x: p.x, y: p.y, kind: "click" }];
+      // Se já estiver fechado (ex: por fechamento automático), não adiciona mais pontos.
+      if (s.closed) {
+        s.isDragging = false;
+        s.dragPoint = undefined;
+        s.downPoint = undefined;
+        s.lastSample = undefined;
         updateEffectLassoGraphics();
+        return;
       }
+
+      if (s.isDragging && down) {
+        // Arrasto: garante ponto final (undo granular: adiciona 1 a 1)
+        if (s.points.length === 0) {
+          pushEffectLassoSnapshot();
+          s.points = [...s.points, { x: down.x, y: down.y, kind: "drag" }];
+        }
+        const last = s.points[s.points.length - 1];
+        if (!last || !isNear(lassoPointToCanvas(s, last), lassoPointToCanvas(s, p), 0.5)) {
+          pushEffectLassoSnapshot();
+          s.points = [...s.points, { x: p.x, y: p.y, kind: "drag" }];
+        }
+      } else {
+        // Clique simples: registra 1 ponto.
+        pushEffectLassoSnapshot();
+        s.points = [...ptsNow, { x: p.x, y: p.y, kind: "click" }];
+      }
+
+      updateEffectLassoGraphics();
 
       s.isDragging = false;
       s.dragPoint = undefined;
@@ -2981,7 +3505,25 @@ const Editor2D = forwardRef<Editor2DHandle, Props>(function Editor2D(
   };
 
   const cancelEffectLasso = () => {
-    cleanupEffectLasso({ restoreImage: true });
+    void (async () => {
+      const c: any = canvasRef.current;
+      const s = effectLassoRef.current;
+      if (c && s?.active && s.baseSrc) {
+        try {
+          await new Promise<void>((resolve) => {
+            s.img.setSrc(
+              s.baseSrc!,
+              () => {
+                try { c.requestRenderAll?.(); } catch {}
+                resolve();
+              },
+              { crossOrigin: "anonymous" }
+            );
+          });
+        } catch {}
+      }
+      cleanupEffectLasso({ restoreImage: true });
+    })();
   };
 
   const isEffectLassoActive = (): boolean => {
@@ -6734,6 +7276,23 @@ const Editor2D = forwardRef<Editor2DHandle, Props>(function Editor2D(
     state.isPointerDown = false;
   };
 
+  // ==== Build circular SVG cursor based on brush size ====
+  const buildCircularCursor = (size: number): string => {
+    const safeSize = Math.max(8, Math.min(128, Math.round(Number(size) || 24)));
+    const stroke = 2;
+    const r = Math.max(1, safeSize / 2 - stroke);
+    const svg =
+      `<svg xmlns="http://www.w3.org/2000/svg" width="${safeSize}" height="${safeSize}" viewBox="0 0 ${safeSize} ${safeSize}">` +
+      `<circle cx="${safeSize / 2}" cy="${safeSize / 2}" r="${r}" fill="none" stroke="white" stroke-width="${stroke}"/>` +
+      `<circle cx="${safeSize / 2}" cy="${safeSize / 2}" r="${Math.max(1, r - 1)}" fill="none" stroke="black" stroke-width="1" opacity="0.7"/>` +
+      `</svg>`;
+    const encoded = encodeURIComponent(svg)
+      .replace(/'/g, "%27")
+      .replace(/\(/g, "%28")
+      .replace(/\)/g, "%29");
+    return `url("data:image/svg+xml,${encoded}") ${safeSize / 2} ${safeSize / 2}, crosshair`;
+  };
+
   const createBrush = (
     c: FabricCanvas,
     variant: BrushVariant,
@@ -8312,9 +8871,13 @@ const Editor2D = forwardRef<Editor2DHandle, Props>(function Editor2D(
     startEffectBrush,
     cancelEffectBrush,
     isEffectBrushActive,
+    confirmEffectBrush,
+    canConfirmEffectBrush,
     startEffectLasso,
     cancelEffectLasso,
     isEffectLassoActive,
+    confirmEffectLasso,
+    canConfirmEffectLasso,
     startSquareCrop,
     cancelSquareCrop,
     startLassoCrop,
@@ -9132,13 +9695,20 @@ const Editor2D = forwardRef<Editor2DHandle, Props>(function Editor2D(
     // reset handlers
     detachLineListeners(c);
 
-    const enableDrawingMode = (cursor: string) => {
+    const enableDrawingMode = (cursor: string, brushSize?: number) => {
       c.isDrawingMode = true;
       c.selection = false;
       c.skipTargetFind = true;
       setObjectsSelectable(c, false);
       c.discardActiveObject();
-      setHostCursor(cursor);
+      // Use circular cursor if brushSize is provided
+      if (typeof brushSize === "number" && brushSize > 0) {
+        const circularCursor = buildCircularCursor(brushSize);
+        setHostCursor(circularCursor);
+        try { c.freeDrawingCursor = circularCursor; } catch {}
+      } else {
+        setHostCursor(cursor);
+      }
     };
 
     const disableDrawingMode = (cursor: string) => {
@@ -9157,6 +9727,9 @@ const Editor2D = forwardRef<Editor2DHandle, Props>(function Editor2D(
         c.freeDrawingBrush.color = withAlpha(strokeColor, opacity);
         c.freeDrawingBrush.width = strokeWidth;
       }
+      // Apply circular cursor to the canvas drawing cursor
+      const circularCursor = buildCircularCursor(strokeWidth);
+      try { c.freeDrawingCursor = circularCursor; } catch {}
       c.renderAll();
     };
 
@@ -9464,7 +10037,7 @@ const Editor2D = forwardRef<Editor2DHandle, Props>(function Editor2D(
 
     // BRUSH/ERASER (eraser é um variant especial)
     if (tool === "brush" || brushVariant === "eraser") {
-      enableDrawingMode("crosshair");
+      enableDrawingMode("crosshair", strokeWidth);
       setupFreeDrawingBrush();
       return;
     }

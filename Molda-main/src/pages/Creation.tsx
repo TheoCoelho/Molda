@@ -1388,7 +1388,13 @@ const Creation = () => {
                           </div>
                         ))}
 
-                      {cropModeActive && (
+                      {(() => {
+                        const activeEditor = editorRefs.current[activeCanvasTab] as Editor2DHandle | undefined;
+                        const effectBrushActive = !!activeEditor?.isEffectBrushActive?.();
+                        const effectLassoActive = !!activeEditor?.isEffectLassoActive?.();
+                        const showToolConfirm = cropModeActive || effectBrushActive || effectLassoActive;
+                        if (!showToolConfirm) return null;
+                        return (
                         <div className="absolute left-1/2 bottom-6 z-10 max-w-[95%] -translate-x-1/2">
                           <div
                             className={[
@@ -1397,12 +1403,18 @@ const Creation = () => {
                               "backdrop-blur supports-[backdrop-filter]:bg-background/90",
                             ].join(" ")}
                             role="toolbar"
-                            aria-label="Corte"
+                            aria-label={cropModeActive ? "Corte" : (effectBrushActive ? "Efeito (Pincel)" : "Efeito (Laço)")}
                           >
                             <Button
                               type="button"
                               size="icon"
-                              onClick={() => editorRefs.current[activeCanvasTab]?.confirmCrop?.()}
+                              onClick={() =>
+                                cropModeActive
+                                  ? editorRefs.current[activeCanvasTab]?.confirmCrop?.()
+                                  : (effectLassoActive
+                                    ? editorRefs.current[activeCanvasTab]?.confirmEffectLasso?.()
+                                    : editorRefs.current[activeCanvasTab]?.confirmEffectBrush?.())
+                              }
                               title="Confirmar (Enter)"
                             >
                               <Check className="w-4 h-4" />
@@ -1411,16 +1423,29 @@ const Creation = () => {
                               type="button"
                               size="icon"
                               variant="outline"
-                              onClick={() => editorRefs.current[activeCanvasTab]?.cancelCrop?.()}
+                              onClick={() =>
+                                cropModeActive
+                                  ? editorRefs.current[activeCanvasTab]?.cancelCrop?.()
+                                  : (effectLassoActive
+                                    ? editorRefs.current[activeCanvasTab]?.cancelEffectLasso?.()
+                                    : editorRefs.current[activeCanvasTab]?.cancelEffectBrush?.())
+                              }
                               title="Cancelar (Esc ou Delete)"
                             >
                               <X className="w-4 h-4" />
                             </Button>
                           </div>
                         </div>
-                      )}
+                        );
+                      })()}
 
-                      {!cropModeActive && !effectsEditModeActive && selectionKind === "text" && (
+                      {(() => {
+                        const activeEditor = editorRefs.current[activeCanvasTab] as Editor2DHandle | undefined;
+                        const effectBrushActive = !!activeEditor?.isEffectBrushActive?.();
+                        const effectLassoActive = !!activeEditor?.isEffectLassoActive?.();
+                        const effectToolActive = effectBrushActive || effectLassoActive;
+                        return (!cropModeActive && !effectToolActive && !effectsEditModeActive && selectionKind === "text");
+                      })() && (
                         <div className="absolute left-1/2 bottom-6 z-10 max-w-[95%] -translate-x-1/2">
                           <TextToolbar
                             editor={{ current: editorRefs.current[activeCanvasTab] as Editor2DHandle }}
@@ -1430,7 +1455,13 @@ const Creation = () => {
                         </div>
                       )}
 
-                      {!cropModeActive && (effectsEditModeActive || selectionKind === "image") && (
+                      {(() => {
+                        const activeEditor = editorRefs.current[activeCanvasTab] as Editor2DHandle | undefined;
+                        const effectBrushActive = !!activeEditor?.isEffectBrushActive?.();
+                        const effectLassoActive = !!activeEditor?.isEffectLassoActive?.();
+                        const effectToolActive = effectBrushActive || effectLassoActive;
+                        return (!cropModeActive && !effectToolActive && (effectsEditModeActive || selectionKind === "image"));
+                      })() && (
                         <div className="absolute left-1/2 bottom-6 z-10 max-w-[95%] -translate-x-1/2">
                           <ImageToolbar
                             editor={{ current: editorRefs.current[activeCanvasTab] as Editor2DHandle }}
@@ -1440,7 +1471,13 @@ const Creation = () => {
                         </div>
                       )}
 
-                      {!cropModeActive && !effectsEditModeActive && selectionKind !== "text" && selectionKind !== "image" && (
+                      {(() => {
+                        const activeEditor = editorRefs.current[activeCanvasTab] as Editor2DHandle | undefined;
+                        const effectBrushActive = !!activeEditor?.isEffectBrushActive?.();
+                        const effectLassoActive = !!activeEditor?.isEffectLassoActive?.();
+                        const effectToolActive = effectBrushActive || effectLassoActive;
+                        return (!cropModeActive && !effectToolActive && !effectsEditModeActive && selectionKind !== "text" && selectionKind !== "image");
+                      })() && (
                         <div className="absolute left-1/2 bottom-6 z-10 max-w-[95%] -translate-x-1/2">
                           <FloatingEditorToolbar
                             strokeColor={strokeColor}

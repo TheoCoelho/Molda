@@ -130,8 +130,7 @@ export default function ImageToolbar({ visible, editor, position = "bottom" }: P
   const [effectsPinned, setEffectsPinned] = useState(false);
   const [effectKind, setEffectKind] = useState<ImageEffectKind>("none");
   const [effectAmount, setEffectAmount] = useState(100); // 0-100 (será convertido para 0-1)
-  const [effectMode, setEffectMode] = useState<"bucket" | "brush">("bucket");
-  const [effectEditTool, setEffectEditTool] = useState<"brush" | "lasso">("brush");
+  const [effectMode, setEffectMode] = useState<"bucket" | "brush" | "lasso">("bucket");
   const [effectBrushSize, setEffectBrushSize] = useState(40);
   const [canScrollEffectsLeft, setCanScrollEffectsLeft] = useState(false);
   const [canScrollEffectsRight, setCanScrollEffectsRight] = useState(false);
@@ -209,29 +208,28 @@ export default function ImageToolbar({ visible, editor, position = "bottom" }: P
 
   const handleEffectKindChange = (kind: ImageEffectKind) => {
     setEffectKind(kind);
-    
-    // Se está no modo brush e selecionou um efeito (não "none"), inicia o modo de edição
-    if (effectMode === "brush" && kind !== "none") {
-      if (effectEditTool === "brush") {
-        editor?.current?.startEffectBrush?.(kind, effectAmount / 100, effectBrushSize);
-      } else {
-        editor?.current?.startEffectLasso?.(kind, effectAmount / 100);
-      }
-    } else if (effectMode === "brush" && kind === "none") {
-      // Se selecionou "none" no modo brush, cancela o modo de edição
-      editor?.current?.cancelEffectBrush?.();
+
+    // Em modos regionais: só entra em edição ao selecionar um efeito.
+    if (effectMode === "brush") {
+      if (kind !== "none") editor?.current?.startEffectBrush?.(kind, effectAmount / 100, effectBrushSize);
+      else editor?.current?.cancelEffectBrush?.();
       editor?.current?.cancelEffectLasso?.();
+      return;
     }
-    
-    // No modo bucket, aplica diretamente
-    if (effectMode === "bucket") {
-      applyEffect(kind, effectAmount);
+    if (effectMode === "lasso") {
+      if (kind !== "none") editor?.current?.startEffectLasso?.(kind, effectAmount / 100);
+      else editor?.current?.cancelEffectLasso?.();
+      editor?.current?.cancelEffectBrush?.();
+      return;
     }
+
+    // No modo bucket, aplica diretamente.
+    applyEffect(kind, effectAmount);
   };
 
   const handleEffectAmountChange = (val: number) => {
     setEffectAmount(val);
-    applyEffect(effectKind, val);
+    if (effectMode === "bucket") applyEffect(effectKind, val);
   };
 
   // Sincroniza efeitos com a imagem selecionada ao abrir
@@ -1171,7 +1169,7 @@ export default function ImageToolbar({ visible, editor, position = "bottom" }: P
             onMouseLeave={() => scheduleEffectsClose(520)}
           >
             <div className="bg-white/95 dark:bg-neutral-900/95 backdrop-blur-md rounded-xl shadow-xl border border-black/10 dark:border-white/10 p-3">
-              {/* Header com título e toggle bucket/brush */}
+              {/* Header com título e toggle bucket/brush/lasso */}
               <div className="flex items-center justify-between mb-2 px-1">
                 <div className="text-xs font-medium text-muted-foreground">Efeitos</div>
                 <div className="flex items-center gap-1 bg-black/5 dark:bg-white/5 rounded-lg p-0.5">
@@ -1188,6 +1186,7 @@ export default function ImageToolbar({ visible, editor, position = "bottom" }: P
                       // Cancela o modo brush se estiver ativo
                       editor?.current?.cancelEffectBrush?.();
                       editor?.current?.cancelEffectLasso?.();
+                      if (effectKind !== "none") applyEffect(effectKind, effectAmount);
                     }}
                   >
                     <PaintBucket className="h-3.5 w-3.5" />
@@ -1202,61 +1201,31 @@ export default function ImageToolbar({ visible, editor, position = "bottom" }: P
                     }`}
                     onClick={() => {
                       setEffectMode("brush");
-                      // Se já tem um efeito selecionado, inicia o modo de edição
-                      if (effectKind !== "none") {
-                        if (effectEditTool === "brush") {
-                          editor?.current?.startEffectBrush?.(effectKind, effectAmount / 100, effectBrushSize);
-                        } else {
-                          editor?.current?.startEffectLasso?.(effectKind, effectAmount / 100);
-                        }
-                      }
+                      // Não entra em edição aqui: entra quando selecionar um efeito.
+                      editor?.current?.cancelEffectLasso?.();
                     }}
                   >
                     <Paintbrush className="h-3.5 w-3.5" />
                   </button>
+
+                  <button
+                    type="button"
+                    title="Laço (aplicar por área)"
+                    className={`h-7 w-7 grid place-items-center rounded-md transition ${
+                      effectMode === "lasso"
+                        ? "bg-white dark:bg-neutral-800 shadow-sm"
+                        : "hover:bg-white/50 dark:hover:bg-white/10"
+                    }`}
+                    onClick={() => {
+                      setEffectMode("lasso");
+                      // Não entra em edição aqui: entra quando selecionar um efeito.
+                      editor?.current?.cancelEffectBrush?.();
+                    }}
+                  >
+                    <Lasso className="h-3.5 w-3.5" />
+                  </button>
                 </div>
               </div>
-
-              {/* Sub-ferramentas do modo de edição (brush / laço) */}
-              {effectMode === "brush" && effectKind !== "none" && (
-                <div className="flex items-center justify-between mb-2 px-1">
-                  <div className="text-xs text-muted-foreground">Ferramenta</div>
-                  <div className="flex items-center gap-1 bg-black/5 dark:bg-white/5 rounded-lg p-0.5">
-                    <button
-                      type="button"
-                      title="Pincel"
-                      className={`h-7 w-7 grid place-items-center rounded-md transition ${
-                        effectEditTool === "brush"
-                          ? "bg-white dark:bg-neutral-800 shadow-sm"
-                          : "hover:bg-white/50 dark:hover:bg-white/10"
-                      }`}
-                      onClick={() => {
-                        setEffectEditTool("brush");
-                        editor?.current?.cancelEffectLasso?.();
-                        editor?.current?.startEffectBrush?.(effectKind, effectAmount / 100, effectBrushSize);
-                      }}
-                    >
-                      <Paintbrush className="h-3.5 w-3.5" />
-                    </button>
-                    <button
-                      type="button"
-                      title="Laço (aplicar efeito na área)"
-                      className={`h-7 w-7 grid place-items-center rounded-md transition ${
-                        effectEditTool === "lasso"
-                          ? "bg-white dark:bg-neutral-800 shadow-sm"
-                          : "hover:bg-white/50 dark:hover:bg-white/10"
-                      }`}
-                      onClick={() => {
-                        setEffectEditTool("lasso");
-                        editor?.current?.cancelEffectBrush?.();
-                        editor?.current?.startEffectLasso?.(effectKind, effectAmount / 100);
-                      }}
-                    >
-                      <Lasso className="h-3.5 w-3.5" />
-                    </button>
-                  </div>
-                </div>
-              )}
 
               {/* Container horizontal com scroll */}
               <div className="relative">
