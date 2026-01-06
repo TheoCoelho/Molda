@@ -1,6 +1,8 @@
 // src/pages/Profile.tsx
-import { useState, useEffect } from "react";
+import { useMemo, useState, useEffect } from "react";
+import { useNavigate } from "react-router-dom";
 import Header from "@/components/Header";
+import Canvas3DViewer from "@/components/Canvas3DViewer";
 import { Button } from "@/components/ui/button";
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
 import { Tabs, TabsContent, TabsList, TabsTrigger } from "@/components/ui/tabs";
@@ -12,6 +14,8 @@ import { Settings, Pencil } from "lucide-react";
 import { useAuth } from "@/contexts/AuthContext";
 import { supabase } from "@/integrations/supabase/client";
 import { AVATAR_BUCKET } from "@/lib/constants/storage";
+import type { DecalTransform, ExternalDecalData } from "@/types/decals";
+import { getProjectDisplayName } from "@/lib/creativeNames";
 
 type ViewUser = {
   id?: string;
@@ -22,8 +26,52 @@ type ViewUser = {
   createdAt?: string;
 };
 
+type DraftCanvasTab = { id: string; name: string; type: "2d" | "3d" };
+
+type DraftData = {
+  projectName?: string;
+  baseColor?: string;
+  size?: string;
+  fabric?: string;
+  notes?: string;
+  part?: string | null;
+  type?: string | null;
+  subtype?: string | null;
+  canvasTabs?: DraftCanvasTab[];
+  tabVisibility?: Record<string, boolean>;
+  tabDecalPreviews?: Record<string, string>;
+  tabDecalPlacements?: Record<string, DecalTransform>;
+  canvasSnapshots?: Record<string, string>;
+  activeCanvasTab?: string;
+  savedAt?: string;
+  draftKey?: string;
+  draftId?: string;
+  projectKey?: string;
+  isPermanent?: boolean;
+  ephemeralExpiresAt?: string | null;
+};
+
+type DraftRecord = {
+  id: string;
+  projectKey: string;
+  updatedAt: string | null;
+  data: DraftData;
+};
+
+type CreationItem = {
+  id: string;
+  title: string;
+  date: string;
+  status: "finalizada" | "rascunho" | "producao";
+  draft?: DraftRecord;
+  baseColor?: string;
+  selection?: { part?: string | null; type?: string | null; subtype?: string | null };
+  externalDecals?: ExternalDecalData[];
+};
+
 const Profile = () => {
   const { user: authUser, session, getProfile } = useAuth();
+  const navigate = useNavigate();
 
   const [user, setUser] = useState<ViewUser>({
     name: "Usuário",
@@ -46,12 +94,11 @@ const Profile = () => {
   const [checkingUsername, setCheckingUsername] = useState(false);
   const [savingField, setSavingField] = useState<"nickname" | "username" | null>(null);
 
-  // Dados mock das seções (restaurados)
-  const [creations] = useState([
-    { id: 1, title: "Camiseta Street", date: "10/01/2024", status: "finalizada" as const, thumbnail: "/api/placeholder/200/120" },
-    { id: 2, title: "Moletom Minimal", date: "05/01/2024", status: "rascunho" as const,   thumbnail: "/api/placeholder/200/120" },
-    { id: 3, title: "Jaqueta Retrô",   date: "28/12/2023", status: "producao" as const,   thumbnail: "/api/placeholder/200/120" },
-  ]);
+  const [drafts, setDrafts] = useState<DraftRecord[]>([]);
+  const [draftsLoading, setDraftsLoading] = useState(false);
+  const [draftsError, setDraftsError] = useState<string | null>(null);
+
+  const [piecesFilter, setPiecesFilter] = useState<"todas" | "finalizadas" | "rascunhos">("todas");
 
   const [savedElements] = useState([
     { id: 1, type: "image", name: "Logo Empresa", preview: "/api/placeholder/100/100" },
@@ -59,6 +106,160 @@ const Profile = () => {
     { id: 3, type: "drawing", name: "Desenho Abstrato", preview: "/api/placeholder/100/100" },
     { id: 4, type: "pattern", name: "Padrão Geométrico", preview: "/api/placeholder/100/100" },
   ]);
+
+  const formatShortDate = (iso: string | null | undefined) => {
+    if (!iso) return "";
+    const date = new Date(iso);
+    if (Number.isNaN(date.getTime())) return "";
+    return date.toLocaleDateString("pt-BR");
+  };
+
+  const resolveDraftDecals = (data: DraftData): ExternalDecalData[] => {
+    const tabs = data.canvasTabs ?? [];
+    const previews = data.tabDecalPreviews ?? {};
+    const visibility = data.tabVisibility ?? {};
+    const placements = data.tabDecalPlacements ?? {};
+
+    const fromTabs = tabs
+      .filter((tab) => tab.type === "2d" && visibility[tab.id] && previews[tab.id])
+      .map((tab) => ({
+        id: tab.id,
+        label: tab.name,
+        dataUrl: previews[tab.id] as string,
+        transform: placements[tab.id] ?? null,
+      } satisfies ExternalDecalData));
+
+    if (fromTabs.length) return fromTabs;
+
+    // fallback: se não houver tabs/visibilidade, tenta renderizar qualquer preview disponível
+    return Object.entries(previews)
+      .filter(([, url]) => Boolean(url))
+      .map(([id, url]) => ({
+        id,
+        label: id,
+        dataUrl: url as string,
+        transform: placements[id] ?? null,
+      } satisfies ExternalDecalData));
+  };
+
+  const creations: CreationItem[] = useMemo(() => {
+    const items = drafts.map((draft) => {
+      const title = getProjectDisplayName(draft.data.projectName, draft.id);
+      const date = formatShortDate(draft.updatedAt ?? draft.data.savedAt ?? null);
+      return {
+        id: draft.id,
+        title,
+        date,
+        status: "rascunho",
+        draft,
+        baseColor: draft.data.baseColor || "#ffffff",
+        selection: {
+          part: draft.data.part ?? null,
+          type: draft.data.type ?? null,
+          subtype: draft.data.subtype ?? null,
+        },
+        externalDecals: resolveDraftDecals(draft.data),
+      } satisfies CreationItem;
+    });
+
+    if (piecesFilter === "finalizadas") return items.filter((item) => item.status === "finalizada");
+    if (piecesFilter === "rascunhos") return items.filter((item) => item.status === "rascunho");
+    return items;
+  }, [drafts, piecesFilter]);
+
+  useEffect(() => {
+    if (!authUser?.id) return;
+    let cancelled = false;
+
+    const fetchDrafts = async () => {
+      setDraftsLoading(true);
+      setDraftsError(null);
+
+      try {
+        const { data, error } = await supabase
+          .from("project_drafts")
+          .select("id, project_key, data, updated_at")
+          .eq("user_id", authUser.id)
+          .order("updated_at", { ascending: false });
+
+        if (cancelled) return;
+
+        if (error) {
+          console.error("Erro ao carregar rascunhos:", error);
+          setDraftsError("Erro ao carregar rascunhos.");
+          setDrafts([]);
+          return;
+        }
+
+        const mapped: DraftRecord[] = (data ?? []).map((row: any) => ({
+          id: String(row.id),
+          projectKey: String(row.project_key ?? ""),
+          updatedAt: (row.updated_at ?? null) as string | null,
+          data: (row.data ?? {}) as DraftData,
+        }));
+
+        setDrafts(mapped);
+      } catch (err) {
+        if (!cancelled) {
+          console.error("Erro inesperado ao buscar rascunhos:", err);
+          setDraftsError("Erro inesperado ao carregar rascunhos.");
+          setDrafts([]);
+        }
+      } finally {
+        if (!cancelled) setDraftsLoading(false);
+      }
+    };
+
+    void fetchDrafts();
+
+    return () => {
+      cancelled = true;
+    };
+  }, [authUser?.id]);
+
+  const persistDraftToLocal = (draft: DraftRecord) => {
+    const data = draft.data ?? {};
+    const draftKey = draft.projectKey || data.draftKey || data.projectKey || undefined;
+    const payload: DraftData = {
+      ...data,
+      draftId: draft.id,
+      draftKey,
+      projectKey: draftKey,
+    };
+    try {
+      localStorage.setItem("currentProject", JSON.stringify(payload));
+    } catch (err) {
+      console.warn("Não foi possível persistir o rascunho localmente:", err);
+    }
+    return { payload, draftKey };
+  };
+
+  const handleEditDraft = (draft: DraftRecord) => {
+    const { payload, draftKey } = persistDraftToLocal(draft);
+    const params = new URLSearchParams();
+    if (payload.part) params.set("part", payload.part);
+    if (payload.type) params.set("type", payload.type);
+    if (payload.subtype) params.set("subtype", payload.subtype);
+    const query = params.toString();
+
+    navigate(`/creation${query ? `?${query}` : ""}`,
+      {
+        state: {
+          part: payload.part ?? undefined,
+          type: payload.type ?? undefined,
+          subtype: payload.subtype ?? undefined,
+          restoreDraft: true,
+          draftId: draft.id,
+          draftKey,
+        },
+      }
+    );
+  };
+
+  const handleProduceDraft = (draft: DraftRecord) => {
+    persistDraftToLocal(draft);
+    navigate("/finalize");
+  };
 
   // Carrega profile e converte avatar_path -> publicUrl (mantido)
   useEffect(() => {
@@ -436,32 +637,103 @@ const Profile = () => {
             <div className="flex items-center justify-between mb-4">
               <h2 className="text-xl font-semibold">Minhas Peças</h2>
               <div className="flex gap-2">
-                <Button variant="outline" size="sm">Todas</Button>
-                <Button variant="outline" size="sm">Finalizadas</Button>
-                <Button variant="outline" size="sm">Rascunhos</Button>
+                <Button
+                  variant={piecesFilter === "todas" ? "default" : "outline"}
+                  size="sm"
+                  onClick={() => setPiecesFilter("todas")}
+                >
+                  Todas
+                </Button>
+                <Button
+                  variant={piecesFilter === "finalizadas" ? "default" : "outline"}
+                  size="sm"
+                  onClick={() => setPiecesFilter("finalizadas")}
+                >
+                  Finalizadas
+                </Button>
+                <Button
+                  variant={piecesFilter === "rascunhos" ? "default" : "outline"}
+                  size="sm"
+                  onClick={() => setPiecesFilter("rascunhos")}
+                >
+                  Rascunhos
+                </Button>
               </div>
             </div>
 
-            <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-6">
-              {creations.map((item) => (
-                <Card key={item.id} className="shadow-lg hover:shadow-xl transition-shadow">
-                  <CardHeader className="pb-3">
-                    <div className="flex items-center justify-between">
-                      <CardTitle className="text-lg">{item.title}</CardTitle>
-                      {getStatusBadge(item.status)}
-                    </div>
-                    <p className="text-sm text-gray-500">Criado em {item.date}</p>
-                  </CardHeader>
-                  <CardContent>
-                    <div className="aspect-video w-full overflow-hidden rounded-md bg-muted mb-4" />
-                    <div className="flex gap-2">
-                      <Button variant="outline" className="w-full">Editar</Button>
-                      <Button className="w-full">Produzir</Button>
-                    </div>
-                  </CardContent>
-                </Card>
-              ))}
-            </div>
+            {draftsLoading ? (
+              <div className="grid grid-cols-2 md:grid-cols-3 lg:grid-cols-4 gap-4">
+                {Array.from({ length: 5 }).map((_, idx) => (
+                  <Card key={idx} className="shadow-md">
+                    <CardHeader className="p-3 pb-2">
+                      <div className="h-4 w-24 rounded bg-muted/60 animate-pulse" />
+                      <div className="mt-1 h-3 w-16 rounded bg-muted/60 animate-pulse" />
+                    </CardHeader>
+                    <CardContent className="p-3 pt-0">
+                      <div className="aspect-[3/4] w-full overflow-hidden rounded-md bg-muted/60 mb-3 animate-pulse" />
+                      <div className="flex gap-1.5">
+                        <div className="h-8 w-full rounded bg-muted/60 animate-pulse" />
+                        <div className="h-8 w-full rounded bg-muted/60 animate-pulse" />
+                      </div>
+                    </CardContent>
+                  </Card>
+                ))}
+              </div>
+            ) : draftsError ? (
+              <div className="rounded-xl border border-destructive/40 bg-destructive/10 px-4 py-3 text-sm text-destructive">
+                {draftsError}
+              </div>
+            ) : creations.length === 0 ? (
+              <div className="rounded-xl border border-dashed px-4 py-8 text-sm text-muted-foreground text-center">
+                Nenhum rascunho salvo ainda.
+              </div>
+            ) : (
+              <div className="grid grid-cols-2 md:grid-cols-3 lg:grid-cols-4 gap-4">
+                {creations.map((item) => (
+                  <Card key={item.id} className="shadow-md hover:shadow-lg transition-shadow">
+                    <CardHeader className="p-3 pb-2">
+                      <div className="flex items-center justify-between gap-1">
+                        <CardTitle className="text-sm font-medium truncate">{item.title}</CardTitle>
+                        {getStatusBadge(item.status)}
+                      </div>
+                      <p className="text-xs text-gray-500">
+                        {item.date ? `Criado em ${item.date}` : ""}
+                      </p>
+                    </CardHeader>
+                    <CardContent className="p-3 pt-0">
+                      <div className="aspect-[3/4] w-full overflow-hidden rounded-md bg-transparent mb-3">
+                        <Canvas3DViewer
+                          baseColor={item.baseColor || "#ffffff"}
+                          externalDecals={item.externalDecals || []}
+                          interactive={false}
+                          selectionOverride={item.selection}
+                          className="h-full w-full"
+                        />
+                      </div>
+                      <div className="flex gap-1.5">
+                        <Button
+                          variant="outline"
+                          size="sm"
+                          className="w-full text-xs"
+                          onClick={() => item.draft && handleEditDraft(item.draft)}
+                          disabled={!item.draft}
+                        >
+                          Editar
+                        </Button>
+                        <Button
+                          size="sm"
+                          className="w-full text-xs"
+                          onClick={() => item.draft && handleProduceDraft(item.draft)}
+                          disabled={!item.draft}
+                        >
+                          Produzir
+                        </Button>
+                      </div>
+                    </CardContent>
+                  </Card>
+                ))}
+              </div>
+            )}
           </TabsContent>
 
           {/* Elementos Salvos */}

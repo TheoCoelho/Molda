@@ -10,6 +10,7 @@ import ExpirationTimer from "@/components/ExpirationTimer";
 import { supabase } from "@/integrations/supabase/client";
 import { cn } from "@/lib/utils";
 import type { ExternalDecalData, DecalTransform } from "../types/decals";
+import { getProjectDisplayName } from "@/lib/creativeNames";
 import { Canvas, type ThreeEvent } from "@react-three/fiber";
 import { Bounds, Center, Environment, Html, OrbitControls, useGLTF } from "@react-three/drei";
 import * as THREE from "three";
@@ -521,7 +522,7 @@ const Create = () => {
                             >
                               <div className="flex items-center justify-between gap-3">
                                 <span className="text-sm font-semibold">
-                                  {draft.data.projectName || "Projeto sem nome"}
+                                  {getProjectDisplayName(draft.data.projectName, draft.id)}
                                 </span>
                                 <span className="text-xs text-muted-foreground">{updatedAtLabel}</span>
                               </div>

@@ -44,10 +44,6 @@ export default function DecalEngineHost({
     const src = cfg.src || "/models/tshirt-low-poly/scene.gltf";
     // usage.ts espera caminho relativo a /models
     const modelParam = src.startsWith("/models/") ? src.replace("/models/", "") : src;
-    const url = new URL(window.location.href);
-    url.searchParams.set("model", modelParam);
-    url.searchParams.set("hideMenu", "1"); // oculta menu interno de seleção
-    window.history.replaceState(null, "", url.toString());
 
     const mountEl = containerRef.current;
     const boot = async () => {
@@ -56,6 +52,8 @@ export default function DecalEngineHost({
           interactive,
           background: null,
           gizmoTheme: DEFAULT_GIZMO_THEME,
+          model: modelParam,
+          hideMenu: true,
         });
         if (cancelled) return;
         apiRef.current = handle;
@@ -124,6 +122,7 @@ export default function DecalEngineHost({
       const api = apiRef.current;
       if (api) {
         prevExternalIdsRef.current.forEach((id) => api.removeExternalDecal(id));
+        api.destroy?.();
       }
       prevExternalIdsRef.current = new Set();
       apiRef.current = null;

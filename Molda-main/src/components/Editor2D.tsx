@@ -80,6 +80,29 @@ export type ImageAdjustments = {
   shadowOpacity: number;
 };
 
+/** Tipos de efeitos de imagem */
+export type ImageEffectKind =
+  | "none"
+  | "grayscale"
+  | "sepia"
+  | "invert"
+  | "blur"
+  | "sharpen"
+  | "vintage"
+  | "cold"
+  | "warm"
+  | "dramatic"
+  | "fade"
+  | "vignette";
+
+/** Configuração de efeitos de imagem */
+export type ImageEffects = {
+  kind: ImageEffectKind;
+  amount: number; // 0-1 intensidade
+};
+
+type EffectEditTool = "brush" | "lasso";
+
 /** Informações sobre a seleção atual para context menu */
 export type SelectionInfo = {
   hasSelection: boolean;
@@ -121,6 +144,23 @@ export type Editor2DHandle = {
   // ==== Imagem (níveis) ====
   getActiveImageAdjustments?: () => ImageAdjustments | null;
   applyActiveImageAdjustments?: (adj: ImageAdjustments) => Promise<void>;
+
+  // ==== Imagem (efeitos) ====
+  getActiveImageEffects?: () => ImageEffects | null;
+  applyActiveImageEffects?: (fx: ImageEffects) => Promise<void>;
+
+  // ==== Effect Brush Mode ====
+  startEffectBrush?: (effectKind: ImageEffectKind, effectAmount: number, brushSize: number) => void;
+  cancelEffectBrush?: () => void;
+  isEffectBrushActive?: () => boolean;
+
+  // ==== Effect Lasso Mode ====
+  startEffectLasso?: (effectKind: ImageEffectKind, effectAmount: number) => void;
+  cancelEffectLasso?: () => void;
+  isEffectLassoActive?: () => boolean;
+
+  // ==== Effect Edit Mode (listener) ====
+  onEffectEditModeChange?: (cb: (active: boolean) => void) => void;
 
   // ==== Corte (crop) ====
   startSquareCrop?: () => void;
@@ -481,9 +521,19 @@ const Editor2D = forwardRef<Editor2DHandle, Props>(function Editor2D(
   const squareCropRecordGuardRef = useRef(0);
   const cropModeListenersRef = useRef(new Set<(active: boolean) => void>());
 
+  const effectEditModeListenersRef = useRef(new Set<(active: boolean) => void>());
+
   const emitCropMode = (active: boolean) => {
     try {
       cropModeListenersRef.current.forEach((cb) => {
+        try { cb(active); } catch {}
+      });
+    } catch {}
+  };
+
+  const emitEffectEditMode = (active: boolean) => {
+    try {
+      effectEditModeListenersRef.current.forEach((cb) => {
         try { cb(active); } catch {}
       });
     } catch {}
@@ -989,6 +1039,117 @@ const Editor2D = forwardRef<Editor2DHandle, Props>(function Editor2D(
   };
   const lassoCropRef = useRef<LassoCropSession | null>(null);
 
+  // ========== Modo Effect Brush ==========
+  type EffectBrushSession = {
+    active: boolean;
+    img: any;
+    imgPrev: {
+      selectable?: boolean;
+      evented?: boolean;
+      lockMovementX?: boolean;
+      lockMovementY?: boolean;
+      hasControls?: boolean;
+      hasBorders?: boolean;
+    };
+    othersPrev?: Array<{
+      obj: any;
+      selectable?: boolean;
+      evented?: boolean;
+      hasControls?: boolean;
+      hasBorders?: boolean;
+      lockMovementX?: boolean;
+      lockMovementY?: boolean;
+    }>;
+    canvasPrev: {
+      selection?: boolean;
+      defaultCursor?: string;
+    };
+    imgOriginalCenter: { x: number; y: number };
+    imgOriginalAngle: number;
+    imageRect: { left: number; top: number; width: number; height: number };
+    highlight: any;
+    overlay: any;
+    imgHandles: { tl: any; tr: any; bl: any; br: any };
+    effectKind: ImageEffectKind;
+    effectAmount: number;
+    brushSize: number;
+
+    // Base (imutável) para evitar que o efeito acumule ao passar no mesmo local.
+    baseSrc?: string;
+    baseAdj?: ImageAdjustments;
+    baseFx?: ImageEffects;
+
+    // Preview ao vivo
+    previewPrepared?: boolean;
+    previewPrepOpId?: number;
+    previewUpdateOpId?: number;
+    previewTimer?: number | null;
+    previewApplyInFlight?: boolean;
+    previewApplyPending?: boolean;
+    previewCanvas?: HTMLCanvasElement;
+    previewCtx?: CanvasRenderingContext2D;
+    previewOutData?: ImageData;
+    previewBasePixels?: Uint8ClampedArray;
+    previewFxPixels?: Uint8ClampedArray;
+    previewW?: number;
+    previewH?: number;
+    lastBakedSrc?: string;
+    // Canvas offscreen para pintar a máscara de efeito
+    maskCanvas?: HTMLCanvasElement;
+    maskCtx?: CanvasRenderingContext2D;
+    isPointerDown: boolean;
+    lastPoint?: { x: number; y: number };
+    onWindowMouseUp?: (ev: MouseEvent) => void;
+  };
+  const effectBrushRef = useRef<EffectBrushSession | null>(null);
+
+  type EffectLassoPoint = { x: number; y: number; kind: "click" | "drag" };
+  type EffectLassoSession = {
+    active: boolean;
+    img: any;
+    imgPrev: {
+      selectable?: boolean;
+      evented?: boolean;
+      lockMovementX?: boolean;
+      lockMovementY?: boolean;
+      hasControls?: boolean;
+      hasBorders?: boolean;
+    };
+    othersPrev?: Array<{
+      obj: any;
+      selectable?: boolean;
+      evented?: boolean;
+      hasControls?: boolean;
+      hasBorders?: boolean;
+      lockMovementX?: boolean;
+      lockMovementY?: boolean;
+    }>;
+    canvasPrev: {
+      selection?: boolean;
+      defaultCursor?: string;
+    };
+    imgOriginalCenter: { x: number; y: number };
+    imgOriginalAngle: number;
+    imageRect: { left: number; top: number; width: number; height: number };
+    highlight: any;
+    overlay: any;
+    stroke: any;
+    imgHandles: { tl: any; tr: any; bl: any; br: any };
+    effectKind: ImageEffectKind;
+    effectAmount: number;
+    points: EffectLassoPoint[];
+    closed: boolean;
+    isPointerDown: boolean;
+    isDragging: boolean;
+    dragPoint?: { x: number; y: number };
+    downPoint?: { x: number; y: number };
+    lastSample?: { x: number; y: number };
+    onMouseDown?: any;
+    onMouseMove?: any;
+    onMouseUp?: any;
+  };
+  const effectLassoRef = useRef<EffectLassoSession | null>(null);
+
   const clampPointToRect = (p: { x: number; y: number }, r: { left: number; top: number; width: number; height: number }) => ({
     x: clamp(p.x, r.left, r.left + r.width),
     y: clamp(p.y, r.top, r.top + r.height),
@@ -1015,6 +1176,204 @@ const Editor2D = forwardRef<Editor2DHandle, Props>(function Editor2D(
       y: clamp(v, 0, 1),
     };
   };
+
+  const exportImageWithEffectsMaskedToDataUrl = async (
+    src: string,
+    adj: ImageAdjustments,
+    fx: ImageEffects,
+    maskCanvas: HTMLCanvasElement
+  ): Promise<string> =>
+    new Promise((resolve, reject) => {
+      const imgEl = new Image();
+      imgEl.crossOrigin = "anonymous";
+      imgEl.onload = () => {
+        try {
+          const canvas = document.createElement("canvas");
+          canvas.width = imgEl.naturalWidth;
+          canvas.height = imgEl.naturalHeight;
+          const ctx = canvas.getContext("2d");
+          if (!ctx) return reject(new Error("Canvas 2D não disponível"));
+
+          // Aplica ajustes globais primeiro
+          const filterCss =
+            `brightness(${adj.brightness}%) contrast(${adj.contrast}%) saturate(${adj.saturation}%) ` +
+            `sepia(${adj.sepia}%) grayscale(${adj.grayscale}%) hue-rotate(${adj.hue}deg)`;
+          try {
+            (ctx as any).filter = filterCss;
+          } catch {}
+          ctx.drawImage(imgEl, 0, 0);
+
+          const kind = fx.kind ?? "none";
+          const amount = typeof fx.amount === "number" ? fx.amount : 1;
+          if (kind === "none" || amount <= 0) {
+            resolve(canvas.toDataURL("image/png"));
+            return;
+          }
+
+          // Constrói uma versão com o efeito aplicado (full) e depois mistura pelo alpha da máscara.
+          const w = canvas.width;
+          const h = canvas.height;
+          const baseData = ctx.getImageData(0, 0, w, h);
+          const fxData = ctx.getImageData(0, 0, w, h);
+          const data = fxData.data;
+          const clamp255 = (n: number) => Math.max(0, Math.min(255, n));
+
+          for (let i = 0; i < data.length; i += 4) {
+            let r = data[i];
+            let g = data[i + 1];
+            let b = data[i + 2];
+            const or = r,
+              og = g,
+              ob = b;
+
+            switch (kind) {
+              case "grayscale": {
+                const gray = 0.299 * r + 0.587 * g + 0.114 * b;
+                r = g = b = gray;
+                break;
+              }
+              case "sepia": {
+                const tr = 0.393 * r + 0.769 * g + 0.189 * b;
+                const tg = 0.349 * r + 0.686 * g + 0.168 * b;
+                const tb = 0.272 * r + 0.534 * g + 0.131 * b;
+                r = tr;
+                g = tg;
+                b = tb;
+                break;
+              }
+              case "invert": {
+                r = 255 - r;
+                g = 255 - g;
+                b = 255 - b;
+                break;
+              }
+              case "vintage": {
+                const tr = 0.393 * r + 0.769 * g + 0.189 * b;
+                const tg = 0.349 * r + 0.686 * g + 0.168 * b;
+                const tb = 0.272 * r + 0.534 * g + 0.131 * b;
+                r = tr * 0.9 + 25;
+                g = tg * 0.85 + 20;
+                b = tb * 0.8 + 15;
+                break;
+              }
+              case "cold": {
+                r = r * 0.9;
+                g = g * 0.95;
+                b = b * 1.1 + 10;
+                break;
+              }
+              case "warm": {
+                r = r * 1.1 + 10;
+                g = g * 1.02;
+                b = b * 0.9;
+                break;
+              }
+              case "dramatic": {
+                const gray = 0.299 * r + 0.587 * g + 0.114 * b;
+                r = r * 0.7 + gray * 0.3;
+                g = g * 0.7 + gray * 0.3;
+                b = b * 0.7 + gray * 0.3;
+                r = 128 + (r - 128) * 1.4;
+                g = 128 + (g - 128) * 1.4;
+                b = 128 + (b - 128) * 1.4;
+                break;
+              }
+              case "fade": {
+                r = r * 0.85 + 38;
+                g = g * 0.85 + 38;
+                b = b * 0.85 + 38;
+                break;
+              }
+              case "vignette":
+              case "blur":
+              case "sharpen":
+                break;
+            }
+
+            r = or + (r - or) * amount;
+            g = og + (g - og) * amount;
+            b = ob + (b - ob) * amount;
+
+            data[i] = clamp255(r);
+            data[i + 1] = clamp255(g);
+            data[i + 2] = clamp255(b);
+          }
+
+          if (kind === "vignette") {
+            const cx = w / 2;
+            const cy = h / 2;
+            const maxDist = Math.sqrt(cx * cx + cy * cy);
+            for (let y = 0; y < h; y++) {
+              for (let x = 0; x < w; x++) {
+                const i = (y * w + x) * 4;
+                const dx = x - cx;
+                const dy = y - cy;
+                const dist = Math.sqrt(dx * dx + dy * dy) / maxDist;
+                const factor = 1 - Math.pow(dist, 1.5) * 0.7 * amount;
+                data[i] = clamp255(data[i] * factor);
+                data[i + 1] = clamp255(data[i + 1] * factor);
+                data[i + 2] = clamp255(data[i + 2] * factor);
+              }
+            }
+          }
+
+          if (kind === "blur" && amount > 0) {
+            const radius = Math.round(amount * 5);
+            if (radius > 0) {
+              const srcData = new Uint8ClampedArray(data);
+              for (let y = 0; y < h; y++) {
+                for (let x = 0; x < w; x++) {
+                  let rSum = 0,
+                    gSum = 0,
+                    bSum = 0,
+                    count = 0;
+                  for (let ddy = -radius; ddy <= radius; ddy++) {
+                    const yy = y + ddy;
+                    if (yy < 0 || yy >= h) continue;
+                    for (let ddx = -radius; ddx <= radius; ddx++) {
+                      const xx = x + ddx;
+                      if (xx < 0 || xx >= w) continue;
+                      const j = (yy * w + xx) * 4;
+                      rSum += srcData[j];
+                      gSum += srcData[j + 1];
+                      bSum += srcData[j + 2];
+                      count++;
+                    }
+                  }
+                  const i = (y * w + x) * 4;
+                  data[i] = rSum / count;
+                  data[i + 1] = gSum / count;
+                  data[i + 2] = bSum / count;
+                }
+              }
+            }
+          }
+
+          // Máscara (alpha) - assume maskCanvas com mesmo tamanho (img pixels)
+          const maskCtx = maskCanvas.getContext("2d");
+          if (!maskCtx) return reject(new Error("Mask ctx inválido"));
+          const mask = maskCtx.getImageData(0, 0, w, h).data;
+
+          const out = baseData.data;
+          const fxPixels = fxData.data;
+          for (let i = 0; i < out.length; i += 4) {
+            const a = (mask[i + 3] ?? 0) / 255;
+            if (a <= 0) continue;
+            const t = a; // máscara controla o blend (pintura)
+            out[i] = out[i] + (fxPixels[i] - out[i]) * t;
+            out[i + 1] = out[i + 1] + (fxPixels[i + 1] - out[i + 1]) * t;
+            out[i + 2] = out[i + 2] + (fxPixels[i + 2] - out[i + 2]) * t;
+          }
+
+          ctx.putImageData(baseData, 0, 0);
+          resolve(canvas.toDataURL("image/png"));
+        } catch (err) {
+          reject(err);
+        }
+      };
+      imgEl.onerror = () => reject(new Error("Falha ao carregar a imagem"));
+      imgEl.src = src;
+    });
 
   const centerImageInCanvas = (img: any) => {
     const c: any = canvasRef.current;
@@ -1334,6 +1693,1299 @@ const Editor2D = forwardRef<Editor2DHandle, Props>(function Editor2D(
     lassoCropRef.current = null;
     emitCropMode(false);
     try { c.requestRenderAll?.(); } catch {}
+  };
+
+  // ========== Effect Brush Mode ==========
+  const cleanupEffectBrush = (opts?: { restoreImage?: boolean }) => {
+    const c: any = canvasRef.current;
+    const fabric: any = fabricRef.current;
+    const s = effectBrushRef.current;
+    if (!c || !fabric || !s) return;
+
+    try {
+      if (s.onWindowMouseUp) window.removeEventListener("mouseup", s.onWindowMouseUp);
+    } catch {}
+
+    try {
+      if (s.previewTimer != null) window.clearTimeout(s.previewTimer);
+    } catch {}
+
+    try {
+      if ((s as any).onMouseDown) c.off?.("mouse:down", (s as any).onMouseDown);
+      if ((s as any).onMouseMove) c.off?.("mouse:move", (s as any).onMouseMove);
+      if ((s as any).onMouseUp) c.off?.("mouse:up", (s as any).onMouseUp);
+    } catch {}
+
+    runSilently(() => {
+      // Persistência do resultado final do pincel: salva como nova origem apenas ao sair do modo.
+      try {
+        if (s.lastBakedSrc) {
+          (s.img as any).__moldaOriginalSrc = s.lastBakedSrc;
+          try { delete (s.img as any).__moldaImageEffects; } catch {}
+        }
+      } catch {}
+
+      try { c.remove(s.imgHandles?.tl); } catch {}
+      try { c.remove(s.imgHandles?.tr); } catch {}
+      try { c.remove(s.imgHandles?.bl); } catch {}
+      try { c.remove(s.imgHandles?.br); } catch {}
+      try { c.remove(s.overlay); } catch {}
+      try { c.remove(s.highlight); } catch {}
+
+      try {
+        const prev = s.canvasPrev;
+        if (prev && typeof prev.selection === "boolean") c.selection = prev.selection;
+        if (prev && typeof prev.defaultCursor === "string") c.defaultCursor = prev.defaultCursor;
+      } catch {}
+
+      try {
+        restoreOtherCanvasObjectsAfterCrop(s.othersPrev);
+      } catch {}
+
+      try {
+        restoreImageAfterCrop(s.img, s.imgPrev);
+      } catch {}
+
+      if (opts?.restoreImage !== false) {
+        try {
+          const p = new fabric.Point(s.imgOriginalCenter.x, s.imgOriginalCenter.y);
+          s.img.setPositionByOrigin?.(p, "center", "center");
+          s.img.set({ angle: s.imgOriginalAngle });
+          s.img.setCoords?.();
+        } catch {}
+      }
+    });
+
+    effectBrushRef.current = null;
+    try {
+      const anyActive = !!effectBrushRef.current?.active || !!effectLassoRef.current?.active;
+      emitEffectEditMode(anyActive);
+    } catch {}
+    try { c.requestRenderAll?.(); } catch {}
+  };
+
+  const cleanupEffectLasso = (opts?: { restoreImage?: boolean }) => {
+    const c: any = canvasRef.current;
+    const fabric: any = fabricRef.current;
+    const s = effectLassoRef.current;
+    if (!c || !fabric || !s) return;
+
+    try {
+      if (s.onMouseDown) c.off?.("mouse:down", s.onMouseDown);
+      if (s.onMouseMove) c.off?.("mouse:move", s.onMouseMove);
+      if (s.onMouseUp) c.off?.("mouse:up", s.onMouseUp);
+    } catch {}
+
+    runSilently(() => {
+      try { c.remove(s.imgHandles?.tl); } catch {}
+      try { c.remove(s.imgHandles?.tr); } catch {}
+      try { c.remove(s.imgHandles?.bl); } catch {}
+      try { c.remove(s.imgHandles?.br); } catch {}
+      try { c.remove(s.stroke); } catch {}
+      try { c.remove(s.overlay); } catch {}
+      try { c.remove(s.highlight); } catch {}
+
+      try {
+        const prev = s.canvasPrev;
+        if (prev && typeof prev.selection === "boolean") c.selection = prev.selection;
+        if (prev && typeof prev.defaultCursor === "string") c.defaultCursor = prev.defaultCursor;
+      } catch {}
+
+      try {
+        restoreOtherCanvasObjectsAfterCrop(s.othersPrev);
+      } catch {}
+
+      try {
+        restoreImageAfterCrop(s.img, s.imgPrev);
+      } catch {}
+
+      if (opts?.restoreImage !== false) {
+        try {
+          const p = new fabric.Point(s.imgOriginalCenter.x, s.imgOriginalCenter.y);
+          s.img.setPositionByOrigin?.(p, "center", "center");
+          s.img.set({ angle: s.imgOriginalAngle });
+          s.img.setCoords?.();
+        } catch {}
+      }
+    });
+
+    effectLassoRef.current = null;
+    try {
+      const anyActive = !!effectBrushRef.current?.active || !!effectLassoRef.current?.active;
+      emitEffectEditMode(anyActive);
+    } catch {}
+    try { c.requestRenderAll?.(); } catch {}
+  };
+
+  const startEffectBrush = (effectKind: ImageEffectKind, effectAmount: number, brushSize: number) => {
+    const c: any = canvasRef.current;
+    const fabric: any = fabricRef.current;
+    if (!c || !fabric) return;
+
+    const existingImg = effectBrushRef.current?.img || effectLassoRef.current?.img;
+
+    // Limpa outros modos
+    cleanupSquareCropPreview({ restoreImage: true });
+    cleanupLassoCropPreview({ restoreImage: true });
+    cleanupEffectBrush({ restoreImage: true });
+    cleanupEffectLasso({ restoreImage: true });
+
+    const img = existingImg ?? getActiveSingleImageForCrop();
+    if (!img) return;
+
+    const resolveOriginalSrc = (): string | undefined => {
+      try {
+        const s: any = effectBrushRef.current;
+        if (s?.baseSrc) return String(s.baseSrc);
+      } catch {}
+      return (
+        (img as any).__moldaOriginalSrc ||
+        (typeof img?.getSrc === "function" ? img.getSrc() : undefined) ||
+        img?._originalElement?.src ||
+        img?._element?.src
+      );
+    };
+
+    const originalSrc = resolveOriginalSrc();
+    if (!originalSrc) return;
+
+    const adj: ImageAdjustments = (() => {
+      const saved = (img as any).__moldaImageAdjustments as ImageAdjustments | undefined;
+      return saved ? { ...DEFAULT_IMAGE_ADJ, ...saved } : { ...DEFAULT_IMAGE_ADJ };
+    })();
+
+    const originalCenter = (() => {
+      try {
+        const p = img.getCenterPoint?.();
+        if (p && typeof p.x === "number" && typeof p.y === "number") return { x: p.x, y: p.y };
+      } catch {}
+      return { x: (c.getWidth?.() ?? 0) / 2, y: (c.getHeight?.() ?? 0) / 2 };
+    })();
+    const originalAngle = Number(img.angle ?? 0);
+
+    // Evita que a imagem seja arrastada durante o modo brush.
+    const imgPrev = freezeImageForCrop(img);
+
+    // Evita o retângulo de seleção do Fabric enquanto pinta.
+    const canvasPrev = { selection: !!c.selection, defaultCursor: String(c.defaultCursor ?? "") };
+    try { c.selection = false; } catch {}
+    try {
+      const size = Math.max(8, Math.min(128, Math.round(Number(brushSize) || 24)));
+      const stroke = 2;
+      const r = Math.max(1, size / 2 - stroke);
+      const svg =
+        `<svg xmlns="http://www.w3.org/2000/svg" width="${size}" height="${size}" viewBox="0 0 ${size} ${size}">` +
+        `<circle cx="${size / 2}" cy="${size / 2}" r="${r}" fill="none" stroke="white" stroke-width="${stroke}"/>` +
+        `<circle cx="${size / 2}" cy="${size / 2}" r="${Math.max(1, r - 1)}" fill="none" stroke="black" stroke-width="1" opacity="0.7"/>` +
+        `</svg>`;
+      const encoded = encodeURIComponent(svg)
+        .replace(/'/g, "%27")
+        .replace(/\(/g, "%28")
+        .replace(/\)/g, "%29");
+      c.defaultCursor = `url("data:image/svg+xml,${encoded}") ${size / 2} ${size / 2}, crosshair`;
+    } catch {
+      try { c.defaultCursor = "crosshair"; } catch {}
+    }
+
+    // Centraliza temporariamente a imagem no canvas.
+    runSilently(() => {
+      try {
+        const p = new fabric.Point(c.getWidth() / 2, c.getHeight() / 2);
+        img.setPositionByOrigin?.(p, "center", "center");
+        img.setCoords?.();
+      } catch {}
+    });
+
+    const imageRect = (() => {
+      try {
+        const r = img.getBoundingRect?.(true, true);
+        if (r && typeof r.left === "number") return { left: r.left, top: r.top, width: r.width, height: r.height };
+      } catch {}
+      const left = Number(img.left ?? 0);
+      const top = Number(img.top ?? 0);
+      const w = Number(img.width ?? 0) * Number(img.scaleX ?? 1);
+      const h = Number(img.height ?? 0) * Number(img.scaleY ?? 1);
+      return { left, top, width: w, height: h };
+    })();
+
+    const imgHandles = makeImageScaleHandles(imageRect);
+    if (!imgHandles) return;
+
+    const overlay = new fabric.Rect({
+      left: 0,
+      top: 0,
+      width: Number(c.getWidth?.() ?? 0) || 0,
+      height: Number(c.getHeight?.() ?? 0) || 0,
+      fill: "rgba(0,0,0,0.55)",
+      selectable: false,
+      evented: false,
+      excludeFromExport: true,
+    });
+
+    const highlight = new fabric.Rect({
+      left: imageRect.left,
+      top: imageRect.top,
+      width: imageRect.width,
+      height: imageRect.height,
+      fill: "rgba(0,0,0,0)",
+      stroke: withAlpha(GIZMO_THEME.primary, 0.8),
+      strokeWidth: 2,
+      strokeDashArray: [6, 4],
+      selectable: false,
+      evented: false,
+      excludeFromExport: true,
+    });
+
+    runSilently(() => {
+      try { c.add(overlay); } catch {}
+      try { c.add(highlight); } catch {}
+      try { c.add(imgHandles.tl, imgHandles.tr, imgHandles.bl, imgHandles.br); } catch {}
+      try {
+        highlight.bringToFront?.();
+        imgHandles.tl.bringToFront?.();
+        imgHandles.tr.bringToFront?.();
+        imgHandles.bl.bringToFront?.();
+        imgHandles.br.bringToFront?.();
+      } catch {}
+    });
+
+    const session: EffectBrushSession = {
+      active: true,
+      img,
+      imgPrev,
+      canvasPrev,
+      imgOriginalCenter: originalCenter,
+      imgOriginalAngle: originalAngle,
+      imageRect,
+      highlight,
+      overlay,
+      imgHandles,
+      effectKind,
+      effectAmount,
+      brushSize,
+
+      baseSrc: originalSrc,
+      baseAdj: adj,
+      baseFx: { kind: effectKind, amount: effectAmount },
+
+      isPointerDown: false,
+    };
+
+    try {
+      const exclude = new Set<any>([img, overlay, highlight, imgHandles.tl, imgHandles.tr, imgHandles.bl, imgHandles.br]);
+      session.othersPrev = freezeOtherCanvasObjectsForCrop(exclude);
+    } catch {}
+
+    effectBrushRef.current = session;
+
+    try { emitEffectEditMode(true); } catch {}
+
+    // mask canvas (image pixel space)
+    try {
+      const w = Math.max(1, Math.round(Number(img.width ?? 1) || 1));
+      const h = Math.max(1, Math.round(Number(img.height ?? 1) || 1));
+      const mc = document.createElement("canvas");
+      mc.width = w;
+      mc.height = h;
+      const mctx = mc.getContext("2d");
+      if (mctx) {
+        mctx.clearRect(0, 0, w, h);
+        (session as any).maskCanvas = mc;
+        (session as any).maskCtx = mctx;
+      }
+    } catch {}
+
+    const preparePreviewOnce = async () => {
+      const s = effectBrushRef.current;
+      if (!s?.active) return;
+      if (s.previewPrepared) return;
+      const opId = (s.previewPrepOpId ?? 0) + 1;
+      s.previewPrepOpId = opId;
+
+      const src = s.baseSrc;
+      const adjLocal = s.baseAdj;
+      const fxLocal = s.baseFx;
+      if (!src || !adjLocal || !fxLocal) return;
+
+      try {
+        const imgEl = new Image();
+        imgEl.crossOrigin = "anonymous";
+        const loaded = await new Promise<HTMLImageElement>((resolve, reject) => {
+          imgEl.onload = () => resolve(imgEl);
+          imgEl.onerror = () => reject(new Error("Falha ao carregar a imagem"));
+          imgEl.src = src;
+        });
+
+        const w = loaded.naturalWidth;
+        const h = loaded.naturalHeight;
+
+        // A máscara precisa ter a mesma resolução (px) do preview, senão getImageData(w,h) falha e nada aparece.
+        try {
+          const s2 = effectBrushRef.current;
+          if (s2?.active && s2.maskCanvas && (s2.maskCanvas.width !== w || s2.maskCanvas.height !== h)) {
+            const nextMask = document.createElement("canvas");
+            nextMask.width = w;
+            nextMask.height = h;
+            const nextCtx = nextMask.getContext("2d");
+            if (nextCtx) {
+              nextCtx.clearRect(0, 0, w, h);
+              nextCtx.drawImage(s2.maskCanvas, 0, 0, w, h);
+              s2.maskCanvas = nextMask;
+              s2.maskCtx = nextCtx;
+            }
+          }
+        } catch {}
+
+        const canvas = document.createElement("canvas");
+        canvas.width = w;
+        canvas.height = h;
+        const ctx = canvas.getContext("2d");
+        if (!ctx) return;
+
+        const filterCss =
+          `brightness(${adjLocal.brightness}%) contrast(${adjLocal.contrast}%) saturate(${adjLocal.saturation}%) ` +
+          `sepia(${adjLocal.sepia}%) grayscale(${adjLocal.grayscale}%) hue-rotate(${adjLocal.hue}deg)`;
+        try {
+          (ctx as any).filter = filterCss;
+        } catch {}
+        ctx.drawImage(loaded, 0, 0);
+
+        // Base pixels (ajustes aplicados)
+        const baseData = ctx.getImageData(0, 0, w, h);
+        const basePixels = new Uint8ClampedArray(baseData.data);
+
+        // Efeito full (aplicado uma vez)
+        const fxData = ctx.getImageData(0, 0, w, h);
+        const data = fxData.data;
+        const kind = fxLocal.kind ?? "none";
+        const amount = typeof fxLocal.amount === "number" ? fxLocal.amount : 1;
+        const clamp255 = (n: number) => Math.max(0, Math.min(255, n));
+
+        if (!(kind === "none" || amount <= 0)) {
+          for (let i = 0; i < data.length; i += 4) {
+            let r = data[i];
+            let g = data[i + 1];
+            let b = data[i + 2];
+            const or = r,
+              og = g,
+              ob = b;
+
+            switch (kind) {
+              case "grayscale": {
+                const gray = 0.299 * r + 0.587 * g + 0.114 * b;
+                r = g = b = gray;
+                break;
+              }
+              case "sepia": {
+                const tr = 0.393 * r + 0.769 * g + 0.189 * b;
+                const tg = 0.349 * r + 0.686 * g + 0.168 * b;
+                const tb = 0.272 * r + 0.534 * g + 0.131 * b;
+                r = tr;
+                g = tg;
+                b = tb;
+                break;
+              }
+              case "invert": {
+                r = 255 - r;
+                g = 255 - g;
+                b = 255 - b;
+                break;
+              }
+              case "vintage": {
+                const tr = 0.393 * r + 0.769 * g + 0.189 * b;
+                const tg = 0.349 * r + 0.686 * g + 0.168 * b;
+                const tb = 0.272 * r + 0.534 * g + 0.131 * b;
+                r = tr * 0.9 + 25;
+                g = tg * 0.85 + 20;
+                b = tb * 0.8 + 15;
+                break;
+              }
+              case "cold": {
+                r = r * 0.9;
+                g = g * 0.95;
+                b = b * 1.1 + 10;
+                break;
+              }
+              case "warm": {
+                r = r * 1.1 + 10;
+                g = g * 1.02;
+                b = b * 0.9;
+                break;
+              }
+              case "dramatic": {
+                const gray = 0.299 * r + 0.587 * g + 0.114 * b;
+                r = r * 0.7 + gray * 0.3;
+                g = g * 0.7 + gray * 0.3;
+                b = b * 0.7 + gray * 0.3;
+                r = 128 + (r - 128) * 1.4;
+                g = 128 + (g - 128) * 1.4;
+                b = 128 + (b - 128) * 1.4;
+                break;
+              }
+              case "fade": {
+                r = r * 0.85 + 38;
+                g = g * 0.85 + 38;
+                b = b * 0.85 + 38;
+                break;
+              }
+              case "vignette":
+              case "blur":
+              case "sharpen":
+                break;
+            }
+
+            r = or + (r - or) * amount;
+            g = og + (g - og) * amount;
+            b = ob + (b - ob) * amount;
+
+            data[i] = clamp255(r);
+            data[i + 1] = clamp255(g);
+            data[i + 2] = clamp255(b);
+          }
+
+          if (kind === "vignette") {
+            const cx = w / 2;
+            const cy = h / 2;
+            const maxDist = Math.sqrt(cx * cx + cy * cy);
+            for (let yy = 0; yy < h; yy++) {
+              for (let xx = 0; xx < w; xx++) {
+                const i = (yy * w + xx) * 4;
+                const dx = xx - cx;
+                const dy = yy - cy;
+                const dist = Math.sqrt(dx * dx + dy * dy) / maxDist;
+                const factor = 1 - Math.pow(dist, 1.5) * 0.7 * amount;
+                data[i] = clamp255(data[i] * factor);
+                data[i + 1] = clamp255(data[i + 1] * factor);
+                data[i + 2] = clamp255(data[i + 2] * factor);
+              }
+            }
+          }
+
+          if (kind === "blur" && amount > 0) {
+            const radius = Math.round(amount * 5);
+            if (radius > 0) {
+              const srcData = new Uint8ClampedArray(data);
+              for (let yy = 0; yy < h; yy++) {
+                for (let xx = 0; xx < w; xx++) {
+                  let rSum = 0,
+                    gSum = 0,
+                    bSum = 0,
+                    count = 0;
+                  for (let ddy = -radius; ddy <= radius; ddy++) {
+                    const yyy = yy + ddy;
+                    if (yyy < 0 || yyy >= h) continue;
+                    for (let ddx = -radius; ddx <= radius; ddx++) {
+                      const xxx = xx + ddx;
+                      if (xxx < 0 || xxx >= w) continue;
+                      const j = (yyy * w + xxx) * 4;
+                      rSum += srcData[j];
+                      gSum += srcData[j + 1];
+                      bSum += srcData[j + 2];
+                      count++;
+                    }
+                  }
+                  const i = (yy * w + xx) * 4;
+                  data[i] = rSum / count;
+                  data[i + 1] = gSum / count;
+                  data[i + 2] = bSum / count;
+                }
+              }
+            }
+          }
+        }
+
+        const fxPixels = new Uint8ClampedArray(fxData.data);
+
+        // Confere se a sessão ainda é a mesma
+        const current = effectBrushRef.current;
+        if (!current?.active) return;
+        if (current.previewPrepOpId !== opId) return;
+
+        current.previewCanvas = canvas;
+        current.previewCtx = ctx;
+        current.previewOutData = ctx.createImageData(w, h);
+        current.previewBasePixels = basePixels;
+        current.previewFxPixels = fxPixels;
+        current.previewW = w;
+        current.previewH = h;
+        current.previewPrepared = true;
+      } catch {
+        // fallback silencioso
+      }
+    };
+
+    const schedulePreviewUpdate = () => {
+      const s = effectBrushRef.current;
+      if (!s?.active) return;
+      // throttle: se já existe timer, apenas marca pending (NÃO incremente contadores aqui,
+      // senão o callback do timer fica "stale" e nunca aplica durante o drag)
+      if (s.previewTimer != null) {
+        s.previewApplyPending = true;
+        return;
+      }
+
+      s.previewUpdateOpId = (s.previewUpdateOpId ?? 0) + 1;
+
+      const applyOnce = async () => {
+        const cur = effectBrushRef.current;
+        if (!cur?.active) return;
+
+        if (!cur.previewPrepared) {
+          await preparePreviewOnce();
+        }
+
+        const pc = cur.previewCanvas;
+        const pctx = cur.previewCtx;
+        const outData = cur.previewOutData;
+        const basePixels = cur.previewBasePixels;
+        const fxPixels = cur.previewFxPixels;
+        const w = cur.previewW;
+        const h = cur.previewH;
+        const maskCtx = cur.maskCtx;
+
+        if (!pc || !pctx || !outData || !basePixels || !fxPixels || !w || !h || !maskCtx) return;
+
+        // Evita concorrência: uma aplicação por vez. Se vier update no meio, marca pending.
+        if (cur.previewApplyInFlight) {
+          cur.previewApplyPending = true;
+          return;
+        }
+        cur.previewApplyInFlight = true;
+
+        try {
+          const mask = maskCtx.getImageData(0, 0, w, h).data;
+          const outPixels = outData.data;
+          outPixels.set(basePixels);
+          for (let i = 0; i < outPixels.length; i += 4) {
+            const a = (mask[i + 3] ?? 0) / 255;
+            if (a <= 0) continue;
+            const t = a;
+            outPixels[i] = outPixels[i] + (fxPixels[i] - outPixels[i]) * t;
+            outPixels[i + 1] = outPixels[i + 1] + (fxPixels[i + 1] - outPixels[i + 1]) * t;
+            outPixels[i + 2] = outPixels[i + 2] + (fxPixels[i + 2] - outPixels[i + 2]) * t;
+          }
+          pctx.putImageData(outData, 0, 0);
+          const dataUrl = pc.toDataURL("image/png");
+
+          await new Promise<void>((resolve) => {
+            cur.img.setSrc(
+              dataUrl,
+              () => {
+                try { c.requestRenderAll?.(); } catch {}
+                resolve();
+              },
+              { crossOrigin: "anonymous" }
+            );
+          });
+          cur.lastBakedSrc = dataUrl;
+        } catch {
+          // fallback silencioso
+        } finally {
+          cur.previewApplyInFlight = false;
+        }
+      };
+
+      s.previewTimer = window.setTimeout(async () => {
+        const cur = effectBrushRef.current;
+        if (!cur?.active) return;
+        cur.previewTimer = null;
+
+        await applyOnce();
+
+        // Se o usuário continua arrastando (ou eventos chegaram durante o timer), roda outro ciclo.
+        if (cur.previewApplyPending || cur.isPointerDown) {
+          cur.previewApplyPending = false;
+          schedulePreviewUpdate();
+        }
+      }, 45);
+    };
+
+    // Handlers para redimensionar a imagem (como no laço)
+    const refreshFromImage = () => {
+      const s = effectBrushRef.current;
+      if (!s?.active) return;
+      s.imageRect = getImageRect(s.img);
+      runSilently(() => {
+        try {
+          s.highlight.set({ left: s.imageRect.left, top: s.imageRect.top, width: s.imageRect.width, height: s.imageRect.height });
+          s.highlight.setCoords?.();
+        } catch {}
+        try {
+          const l = s.imageRect.left;
+          const t = s.imageRect.top;
+          const r = s.imageRect.left + s.imageRect.width;
+          const b = s.imageRect.top + s.imageRect.height;
+          s.imgHandles.tl.set({ left: l, top: t });
+          s.imgHandles.tr.set({ left: r, top: t });
+          s.imgHandles.bl.set({ left: l, top: b });
+          s.imgHandles.br.set({ left: r, top: b });
+          s.imgHandles.tl.setCoords?.();
+          s.imgHandles.tr.setCoords?.();
+          s.imgHandles.bl.setCoords?.();
+          s.imgHandles.br.setCoords?.();
+        } catch {}
+      });
+      try { c.requestRenderAll?.(); } catch {}
+    };
+
+    const onImgHandleMoving = (h: any) => {
+      const s = effectBrushRef.current;
+      if (!s?.active) return;
+      const p = h.getCenterPoint?.() ?? { x: Number(h.left ?? 0), y: Number(h.top ?? 0) };
+      const canvasCenter = { x: c.getWidth() / 2, y: c.getHeight() / 2 };
+      const dx = Math.abs(Number(p.x ?? 0) - canvasCenter.x);
+      const dy = Math.abs(Number(p.y ?? 0) - canvasCenter.y);
+      const desiredHalfW = Math.max(16, dx);
+      const desiredHalfH = Math.max(16, dy);
+      const baseW = Math.max(1, Number(s.img.width ?? 0) || 1);
+      const baseH = Math.max(1, Number(s.img.height ?? 0) || 1);
+      const sx = (2 * desiredHalfW) / baseW;
+      const sy = (2 * desiredHalfH) / baseH;
+      const nextScale = clamp(Math.max(sx, sy), 0.05, 20);
+      runSilently(() => {
+        try {
+          s.img.set({ scaleX: nextScale, scaleY: nextScale });
+          centerImageInCanvas(s.img);
+          s.img.setCoords?.();
+        } catch {}
+      });
+      refreshFromImage();
+    };
+
+    imgHandles.tl.on?.("moving", () => onImgHandleMoving(imgHandles.tl));
+    imgHandles.tr.on?.("moving", () => onImgHandleMoving(imgHandles.tr));
+    imgHandles.bl.on?.("moving", () => onImgHandleMoving(imgHandles.bl));
+    imgHandles.br.on?.("moving", () => onImgHandleMoving(imgHandles.br));
+
+    const getPointer = (opt: any) => {
+      try {
+        const p = c.getPointer?.(opt.e);
+        if (p && typeof p.x === "number" && typeof p.y === "number") return { x: p.x, y: p.y };
+      } catch {}
+      return { x: 0, y: 0 };
+    };
+
+    const canvasToImagePixel = (pCanvas: { x: number; y: number }) => {
+      // Prefer: invert object transform matrix. This stays aligned under zoom/pan/scale/rotation.
+      try {
+        const w = Math.max(1, Number(img.width ?? 0) || 1);
+        const h = Math.max(1, Number(img.height ?? 0) || 1);
+        const pt = new fabric.Point(pCanvas.x, pCanvas.y);
+
+        if (fabric?.util?.invertTransform && fabric?.util?.transformPoint && typeof img?.calcTransformMatrix === "function") {
+          const inv = fabric.util.invertTransform(img.calcTransformMatrix());
+          const local = fabric.util.transformPoint(pt, inv);
+          // Fabric's object plane is centered at (0,0). Convert to top-left pixel space.
+          return { x: Number(local.x ?? 0) + w / 2, y: Number(local.y ?? 0) + h / 2 };
+        }
+      } catch {}
+
+      // Fallback: normalize within bounding rect (works best when not rotated)
+      const r = getImageRect(img);
+      const u = (pCanvas.x - r.left) / Math.max(1e-6, r.width);
+      const v = (pCanvas.y - r.top) / Math.max(1e-6, r.height);
+      return { x: u * Number(img.width ?? 1), y: v * Number(img.height ?? 1) };
+    };
+
+    const drawBrush = (pCanvas: { x: number; y: number }) => {
+      const s = effectBrushRef.current;
+      if (!s?.active) return;
+      const mctx = s.maskCtx;
+      const mc = s.maskCanvas;
+      if (!mctx || !mc) return;
+      const pObj = canvasToImagePixel(pCanvas);
+      const objW = Math.max(1e-6, Number(img.width ?? 1) || 1);
+      const objH = Math.max(1e-6, Number(img.height ?? 1) || 1);
+      // Remapeia coord do objeto (px) para coord da máscara (px)
+      const p = {
+        x: (pObj.x / objW) * mc.width,
+        y: (pObj.y / objH) * mc.height,
+      };
+      const w = mc.width;
+      const h = mc.height;
+      if (p.x < 0 || p.y < 0 || p.x > w || p.y > h) return;
+      const scale = Math.max(1e-6, Number(img.scaleX ?? 1) || 1);
+      // raio em px do objeto -> px da máscara
+      const radiusObj = Math.max(1, (s.brushSize / 2) / scale);
+      const radius = radiusObj * (mc.width / objW);
+      mctx.fillStyle = "rgba(255,255,255,1)";
+      mctx.beginPath();
+      mctx.arc(p.x, p.y, radius, 0, Math.PI * 2);
+      mctx.fill();
+    };
+
+    const drawBrushLine = (from: { x: number; y: number }, to: { x: number; y: number }) => {
+      const s = effectBrushRef.current;
+      if (!s?.active) return;
+      const dx = to.x - from.x;
+      const dy = to.y - from.y;
+      const dist = Math.sqrt(dx * dx + dy * dy);
+      const step = Math.max(2, s.brushSize * 0.25);
+      const n = Math.max(1, Math.ceil(dist / step));
+      for (let i = 0; i <= n; i++) {
+        const t = i / n;
+        drawBrush({ x: from.x + dx * t, y: from.y + dy * t });
+      }
+    };
+
+    const commitMaskToImage = async () => {
+      const s = effectBrushRef.current;
+      if (!s?.active) return;
+      // No modo novo, o preview já aplica o resultado ao vivo. No mouseup, só garantimos uma última atualização e registramos histórico.
+      try {
+        await preparePreviewOnce();
+
+        // força 1 update imediato (sem depender do throttle)
+        const cur = effectBrushRef.current;
+        const pc = cur?.previewCanvas;
+        const pctx = cur?.previewCtx;
+        const outData = cur?.previewOutData;
+        const basePixels = cur?.previewBasePixels;
+        const fxPixels = cur?.previewFxPixels;
+        const w = cur?.previewW;
+        const h = cur?.previewH;
+        const maskCtx = cur?.maskCtx;
+
+        if (cur?.active && pc && pctx && outData && basePixels && fxPixels && w && h && maskCtx) {
+          try {
+            const mask = maskCtx.getImageData(0, 0, w, h).data;
+            const outPixels = outData.data;
+            outPixels.set(basePixels);
+            for (let i = 0; i < outPixels.length; i += 4) {
+              const a = (mask[i + 3] ?? 0) / 255;
+              if (a <= 0) continue;
+              const t = a;
+              outPixels[i] = outPixels[i] + (fxPixels[i] - outPixels[i]) * t;
+              outPixels[i + 1] = outPixels[i + 1] + (fxPixels[i + 1] - outPixels[i + 1]) * t;
+              outPixels[i + 2] = outPixels[i + 2] + (fxPixels[i + 2] - outPixels[i + 2]) * t;
+            }
+            pctx.putImageData(outData, 0, 0);
+            const dataUrl = pc.toDataURL("image/png");
+            await new Promise<void>((resolve) => {
+              cur.img.setSrc(
+                dataUrl,
+                () => {
+                  try { c.requestRenderAll?.(); } catch {}
+                  resolve();
+                },
+                { crossOrigin: "anonymous" }
+              );
+            });
+            cur.lastBakedSrc = dataUrl;
+          } catch {
+            // se falhar, tenta pelo caminho normal do throttle
+            schedulePreviewUpdate();
+          }
+        } else {
+          schedulePreviewUpdate();
+        }
+      } catch {}
+
+      if (shouldRecordHistory()) {
+        historyRef.current?.push("image-effect-brush");
+        emitHistory();
+      }
+    };
+
+    (session as any).onMouseDown = (opt: any) => {
+      const s = effectBrushRef.current;
+      if (!s?.active) return;
+      const t = (opt as any)?.target;
+      if (t && (t as any).__moldaImageScaleCorner != null) return;
+      try { opt?.e?.preventDefault?.(); } catch {}
+      try { opt?.e?.stopPropagation?.(); } catch {}
+      s.isPointerDown = true;
+      const p = getPointer(opt);
+      s.lastPoint = p;
+      drawBrush(p);
+      // começa a preparar o preview o quanto antes
+      try { void preparePreviewOnce(); } catch {}
+      schedulePreviewUpdate();
+      try { c.requestRenderAll?.(); } catch {}
+    };
+
+    (session as any).onMouseMove = (opt: any) => {
+      const s = effectBrushRef.current;
+      if (!s?.active || !s.isPointerDown) return;
+      const t = (opt as any)?.target;
+      if (t && (t as any).__moldaImageScaleCorner != null) return;
+      try { opt?.e?.preventDefault?.(); } catch {}
+      try { opt?.e?.stopPropagation?.(); } catch {}
+      const p = getPointer(opt);
+      const last = s.lastPoint;
+      if (last) drawBrushLine(last, p);
+      s.lastPoint = p;
+      schedulePreviewUpdate();
+    };
+
+    (session as any).onMouseUp = async (opt: any) => {
+      const s = effectBrushRef.current;
+      if (!s?.active) return;
+      const t = (opt as any)?.target;
+      if (t && (t as any).__moldaImageScaleCorner != null) return;
+      try { opt?.e?.preventDefault?.(); } catch {}
+      try { opt?.e?.stopPropagation?.(); } catch {}
+      if (!s.isPointerDown) return;
+      s.isPointerDown = false;
+      s.lastPoint = undefined;
+      await commitMaskToImage();
+    };
+
+    try {
+      c.on?.("mouse:down", (session as any).onMouseDown);
+      c.on?.("mouse:move", (session as any).onMouseMove);
+      c.on?.("mouse:up", (session as any).onMouseUp);
+    } catch {}
+
+    // Garante commit mesmo se soltar o mouse fora do canvas.
+    try {
+      const onWindowMouseUp = async () => {
+        const s = effectBrushRef.current;
+        if (!s?.active || !s.isPointerDown) return;
+        s.isPointerDown = false;
+        s.lastPoint = undefined;
+        await commitMaskToImage();
+      };
+      session.onWindowMouseUp = onWindowMouseUp;
+      window.addEventListener("mouseup", onWindowMouseUp);
+    } catch {}
+
+    try { c.requestRenderAll?.(); } catch {}
+  };
+
+  const cancelEffectBrush = () => {
+    cleanupEffectBrush({ restoreImage: true });
+  };
+
+  const isEffectBrushActive = (): boolean => {
+    return !!effectBrushRef.current?.active;
+  };
+
+  const startEffectLasso = (effectKind: ImageEffectKind, effectAmount: number) => {
+    const c: any = canvasRef.current;
+    const fabric: any = fabricRef.current;
+    if (!c || !fabric) return;
+
+    const existingImg = effectBrushRef.current?.img || effectLassoRef.current?.img;
+
+    cleanupSquareCropPreview({ restoreImage: true });
+    cleanupLassoCropPreview({ restoreImage: true });
+    cleanupEffectBrush({ restoreImage: true });
+    cleanupEffectLasso({ restoreImage: true });
+
+    const img = existingImg ?? getActiveSingleImageForCrop();
+    if (!img) return;
+
+    const originalCenter = (() => {
+      try {
+        const p = img.getCenterPoint?.();
+        if (p && typeof p.x === "number" && typeof p.y === "number") return { x: p.x, y: p.y };
+      } catch {}
+      return { x: (c.getWidth?.() ?? 0) / 2, y: (c.getHeight?.() ?? 0) / 2 };
+    })();
+    const originalAngle = Number(img.angle ?? 0);
+
+    const imgPrev = freezeImageForCrop(img);
+    const canvasPrev = { selection: !!c.selection, defaultCursor: String(c.defaultCursor ?? "") };
+    try { c.selection = false; } catch {}
+    try { c.defaultCursor = "crosshair"; } catch {}
+
+    runSilently(() => {
+      try {
+        const p = new fabric.Point(c.getWidth() / 2, c.getHeight() / 2);
+        img.setPositionByOrigin?.(p, "center", "center");
+        img.setCoords?.();
+      } catch {}
+    });
+
+    const imageRect = getImageRect(img);
+    const imgHandles = makeImageScaleHandles(imageRect);
+    if (!imgHandles) return;
+
+    const overlay = new fabric.Rect({
+      left: 0,
+      top: 0,
+      width: Number(c.getWidth?.() ?? 0) || 0,
+      height: Number(c.getHeight?.() ?? 0) || 0,
+      fill: "rgba(0,0,0,0.55)",
+      selectable: false,
+      evented: false,
+      excludeFromExport: true,
+    });
+
+    const highlight = new fabric.Rect({
+      left: imageRect.left,
+      top: imageRect.top,
+      width: imageRect.width,
+      height: imageRect.height,
+      fill: "rgba(0,0,0,0)",
+      stroke: withAlpha(GIZMO_THEME.primary, 0.8),
+      strokeWidth: 2,
+      strokeDashArray: [6, 4],
+      selectable: false,
+      evented: false,
+      excludeFromExport: true,
+    });
+
+    const stroke = new fabric.Polyline([], {
+      left: 0,
+      top: 0,
+      originX: "left",
+      originY: "top",
+      stroke: GIZMO_THEME.primary,
+      strokeWidth: 2,
+      fill: "rgba(0,0,0,0)",
+      objectCaching: false,
+      selectable: false,
+      evented: false,
+      excludeFromExport: true,
+    });
+
+    runSilently(() => {
+      try { c.add(overlay); } catch {}
+      try { c.add(highlight); } catch {}
+      try { c.add(imgHandles.tl, imgHandles.tr, imgHandles.bl, imgHandles.br); } catch {}
+      try { c.add(stroke); } catch {}
+      try {
+        highlight.bringToFront?.();
+        imgHandles.tl.bringToFront?.();
+        imgHandles.tr.bringToFront?.();
+        imgHandles.bl.bringToFront?.();
+        imgHandles.br.bringToFront?.();
+        stroke.bringToFront?.();
+      } catch {}
+    });
+
+    const session: EffectLassoSession = {
+      active: true,
+      img,
+      imgPrev,
+      canvasPrev,
+      imgOriginalCenter: originalCenter,
+      imgOriginalAngle: originalAngle,
+      imageRect,
+      highlight,
+      overlay,
+      stroke,
+      imgHandles,
+      effectKind,
+      effectAmount,
+      points: [],
+      closed: false,
+      isPointerDown: false,
+      isDragging: false,
+    };
+
+    try {
+      const exclude = new Set<any>([img, overlay, highlight, stroke, imgHandles.tl, imgHandles.tr, imgHandles.bl, imgHandles.br]);
+      session.othersPrev = freezeOtherCanvasObjectsForCrop(exclude);
+    } catch {}
+
+    effectLassoRef.current = session;
+
+    try { emitEffectEditMode(true); } catch {}
+
+    const getPointer = (opt: any) => {
+      try {
+        const p = c.getPointer?.(opt.e);
+        if (p && typeof p.x === "number" && typeof p.y === "number") return { x: p.x, y: p.y };
+      } catch {}
+      return { x: 0, y: 0 };
+    };
+
+    const dist2 = (a: { x: number; y: number }, b: { x: number; y: number }) => {
+      const dx = a.x - b.x;
+      const dy = a.y - b.y;
+      return dx * dx + dy * dy;
+    };
+    const isNear = (a: { x: number; y: number }, b: { x: number; y: number }, radius: number) => dist2(a, b) <= radius * radius;
+
+    const updateEffectLassoGraphics = () => {
+      const s = effectLassoRef.current;
+      if (!s?.active) return;
+      const pts = s.points;
+      const basePts = pts.map((p) => lassoPointToCanvas(s, p));
+      const strokePts: Array<{ x: number; y: number }> = (() => {
+        if (s.isPointerDown && s.isDragging && s.dragPoint) {
+          const base = basePts.slice();
+          if (base.length === 0 && s.downPoint) base.push(lassoPointToCanvas(s, s.downPoint));
+          const d = lassoPointToCanvas(s, s.dragPoint);
+          base.push({ x: d.x, y: d.y });
+          if (s.closed && base.length >= 3) base.push(base[0]);
+          return base;
+        }
+        const base = basePts.slice();
+        if (s.closed && base.length >= 3) base.push(base[0]);
+        return base;
+      })();
+      runSilently(() => {
+        try { s.stroke.set({ points: strokePts }); } catch {}
+        try { s.stroke.setCoords?.(); } catch {}
+      });
+      try { c.requestRenderAll?.(); } catch {}
+    };
+
+    const confirmEffectLasso = async () => {
+      const s = effectLassoRef.current;
+      if (!s?.active) return;
+      if (!s.closed || s.points.length < 3) return;
+
+      // mask canvas in image pixel space
+      const w = Math.max(1, Math.round(Number(s.img.width ?? 1) || 1));
+      const h = Math.max(1, Math.round(Number(s.img.height ?? 1) || 1));
+      const mc = document.createElement("canvas");
+      mc.width = w;
+      mc.height = h;
+      const mctx = mc.getContext("2d");
+      if (!mctx) return;
+      mctx.clearRect(0, 0, w, h);
+
+      // pontos normalizados (0..1) -> pixels (assumindo imagem não-rotacionada durante edição)
+      const poly = s.points.map((p) => ({ x: clamp(p.x, 0, 1) * w, y: clamp(p.y, 0, 1) * h }));
+      mctx.fillStyle = "rgba(255,255,255,1)";
+      mctx.beginPath();
+      mctx.moveTo(poly[0].x, poly[0].y);
+      for (let i = 1; i < poly.length; i++) mctx.lineTo(poly[i].x, poly[i].y);
+      mctx.closePath();
+      mctx.fill();
+
+      const originalSrc: string | undefined =
+        (s.img as any).__moldaOriginalSrc || s.img?._originalElement?.src || s.img?._element?.src;
+      if (!originalSrc) return;
+
+      const adj: ImageAdjustments = (() => {
+        const saved = (s.img as any).__moldaImageAdjustments as ImageAdjustments | undefined;
+        return saved ? { ...DEFAULT_IMAGE_ADJ, ...saved } : { ...DEFAULT_IMAGE_ADJ };
+      })();
+
+      try {
+        const dataUrl = await exportImageWithEffectsMaskedToDataUrl(
+          originalSrc,
+          adj,
+          { kind: s.effectKind, amount: s.effectAmount },
+          mc
+        );
+
+        await new Promise<void>((resolve) => {
+          s.img.setSrc(
+            dataUrl,
+            () => {
+              try { c.requestRenderAll?.(); } catch {}
+              resolve();
+            },
+            { crossOrigin: "anonymous" }
+          );
+        });
+
+        try { (s.img as any).__moldaOriginalSrc = dataUrl; } catch {}
+        try { delete (s.img as any).__moldaImageEffects; } catch {}
+      } catch {}
+
+      if (shouldRecordHistory()) {
+        historyRef.current?.push("image-effect-lasso");
+        emitHistory();
+      }
+
+      cleanupEffectLasso({ restoreImage: true });
+    };
+
+    const refreshFromImage = () => {
+      const s = effectLassoRef.current;
+      if (!s?.active) return;
+      s.imageRect = getImageRect(s.img);
+      runSilently(() => {
+        try {
+          s.highlight.set({ left: s.imageRect.left, top: s.imageRect.top, width: s.imageRect.width, height: s.imageRect.height });
+          s.highlight.setCoords?.();
+        } catch {}
+        try {
+          const l = s.imageRect.left;
+          const t = s.imageRect.top;
+          const r = s.imageRect.left + s.imageRect.width;
+          const b = s.imageRect.top + s.imageRect.height;
+          s.imgHandles.tl.set({ left: l, top: t });
+          s.imgHandles.tr.set({ left: r, top: t });
+          s.imgHandles.bl.set({ left: l, top: b });
+          s.imgHandles.br.set({ left: r, top: b });
+          s.imgHandles.tl.setCoords?.();
+          s.imgHandles.tr.setCoords?.();
+          s.imgHandles.bl.setCoords?.();
+          s.imgHandles.br.setCoords?.();
+        } catch {}
+      });
+      updateEffectLassoGraphics();
+    };
+
+    const onImgHandleMoving = (h: any) => {
+      const s = effectLassoRef.current;
+      if (!s?.active) return;
+      const p = h.getCenterPoint?.() ?? { x: Number(h.left ?? 0), y: Number(h.top ?? 0) };
+      const canvasCenter = { x: c.getWidth() / 2, y: c.getHeight() / 2 };
+      const dx = Math.abs(Number(p.x ?? 0) - canvasCenter.x);
+      const dy = Math.abs(Number(p.y ?? 0) - canvasCenter.y);
+      const desiredHalfW = Math.max(16, dx);
+      const desiredHalfH = Math.max(16, dy);
+      const baseW = Math.max(1, Number(s.img.width ?? 0) || 1);
+      const baseH = Math.max(1, Number(s.img.height ?? 0) || 1);
+      const sx = (2 * desiredHalfW) / baseW;
+      const sy = (2 * desiredHalfH) / baseH;
+      const nextScale = clamp(Math.max(sx, sy), 0.05, 20);
+      runSilently(() => {
+        try {
+          s.img.set({ scaleX: nextScale, scaleY: nextScale });
+          centerImageInCanvas(s.img);
+          s.img.setCoords?.();
+        } catch {}
+      });
+      refreshFromImage();
+    };
+
+    imgHandles.tl.on?.("moving", () => onImgHandleMoving(imgHandles.tl));
+    imgHandles.tr.on?.("moving", () => onImgHandleMoving(imgHandles.tr));
+    imgHandles.bl.on?.("moving", () => onImgHandleMoving(imgHandles.bl));
+    imgHandles.br.on?.("moving", () => onImgHandleMoving(imgHandles.br));
+
+    const isImageScaleHandleTarget = (opt: any) => {
+      const t = (opt as any)?.target;
+      return !!t && (t as any).__moldaImageScaleCorner != null;
+    };
+
+    session.onMouseDown = (opt: any) => {
+      const s = effectLassoRef.current;
+      if (!s?.active) return;
+      if (isImageScaleHandleTarget(opt)) return;
+      if (s.closed) return;
+      try { opt?.e?.preventDefault?.(); } catch {}
+      try { opt?.e?.stopPropagation?.(); } catch {}
+      s.isPointerDown = true;
+      s.isDragging = false;
+      const p0c = clampPointToRect(getPointer(opt), s.imageRect);
+      const p0 = canvasPointToLasso(s, p0c);
+      s.downPoint = p0;
+      s.lastSample = p0;
+      s.dragPoint = p0;
+    };
+
+    session.onMouseMove = (opt: any) => {
+      const s = effectLassoRef.current;
+      if (!s?.active) return;
+      if (isImageScaleHandleTarget(opt)) return;
+      if (!s.isPointerDown) return;
+      if (s.closed) return;
+      try { opt?.e?.preventDefault?.(); } catch {}
+      try { opt?.e?.stopPropagation?.(); } catch {}
+      const pc = clampPointToRect(getPointer(opt), s.imageRect);
+      const p = canvasPointToLasso(s, pc);
+      const down = s.downPoint;
+      if (!down) return;
+
+      s.dragPoint = p;
+      const DRAG_START_DIST2 = 4;
+      const SAMPLE_DIST2 = 36;
+      const dist2Canvas = (a: any, b: any) => {
+        const ac = lassoPointToCanvas(s, a);
+        const bc = lassoPointToCanvas(s, b);
+        const dx = ac.x - bc.x;
+        const dy = ac.y - bc.y;
+        return dx * dx + dy * dy;
+      };
+
+      if (!s.isDragging && dist2Canvas(p, down) > DRAG_START_DIST2) {
+        s.isDragging = true;
+        const last = s.points[s.points.length - 1];
+        if (!last || dist2Canvas(last, down) > 0.25) {
+          s.points = [...s.points, { x: down.x, y: down.y, kind: "drag" }];
+        }
+        s.lastSample = down;
+      }
+
+      if (s.isDragging) {
+        const first = s.points[0];
+        if (first && s.points.length >= 3 && isNear(lassoPointToCanvas(s, p), lassoPointToCanvas(s, first), 12)) {
+          s.closed = true;
+          s.isPointerDown = false;
+          s.isDragging = false;
+          s.dragPoint = undefined;
+          s.downPoint = undefined;
+          s.lastSample = undefined;
+          updateEffectLassoGraphics();
+          return;
+        }
+
+        const last = s.lastSample ?? s.points[s.points.length - 1] ?? down;
+        if (dist2Canvas(p, last) >= SAMPLE_DIST2) {
+          s.points = [...s.points, { x: p.x, y: p.y, kind: "drag" }];
+          s.lastSample = p;
+        }
+      }
+      updateEffectLassoGraphics();
+    };
+
+    session.onMouseUp = (opt: any) => {
+      const s = effectLassoRef.current;
+      if (!s?.active) return;
+      if (isImageScaleHandleTarget(opt)) return;
+      try { opt?.e?.preventDefault?.(); } catch {}
+      try { opt?.e?.stopPropagation?.(); } catch {}
+      const pc = clampPointToRect(getPointer(opt), s.imageRect);
+      const p = canvasPointToLasso(s, pc);
+      const down = s.downPoint;
+      s.isPointerDown = false;
+
+      const ptsNow = s.points;
+      const first = ptsNow[0];
+
+      const clickLike = (() => {
+        if (!down) return false;
+        const a = lassoPointToCanvas(s, p);
+        const b = lassoPointToCanvas(s, down);
+        const dx = a.x - b.x;
+        const dy = a.y - b.y;
+        return dx * dx + dy * dy <= 36;
+      })();
+
+      if (clickLike && first && ptsNow.length >= 3 && isNear(lassoPointToCanvas(s, p), lassoPointToCanvas(s, first), 12)) {
+        s.isDragging = false;
+        s.dragPoint = undefined;
+        s.downPoint = undefined;
+        s.lastSample = undefined;
+
+        if (!s.closed) {
+          s.closed = true;
+          updateEffectLassoGraphics();
+          return;
+        }
+        void confirmEffectLasso();
+        return;
+      }
+
+      // clique simples adiciona ponto
+      if (!s.isDragging) {
+        s.points = [...s.points, { x: p.x, y: p.y, kind: "click" }];
+        updateEffectLassoGraphics();
+      }
+
+      s.isDragging = false;
+      s.dragPoint = undefined;
+      s.downPoint = undefined;
+      s.lastSample = undefined;
+    };
+
+    try {
+      c.on?.("mouse:down", session.onMouseDown);
+      c.on?.("mouse:move", session.onMouseMove);
+      c.on?.("mouse:up", session.onMouseUp);
+    } catch {}
+
+    try { c.requestRenderAll?.(); } catch {}
+  };
+
+  const cancelEffectLasso = () => {
+    cleanupEffectLasso({ restoreImage: true });
+  };
+
+  const isEffectLassoActive = (): boolean => {
+    return !!effectLassoRef.current?.active;
   };
 
   const updateLassoGraphics = () => {
@@ -3530,6 +5182,7 @@ const Editor2D = forwardRef<Editor2DHandle, Props>(function Editor2D(
         "__lineMeta",
         "__curveMeta",
         "__moldaImageAdjustments",
+        "__moldaImageEffects",
         "__moldaOriginalSrc",
         "__moldaHasPattern",
         "__moldaPatternTarget",
@@ -5639,6 +7292,293 @@ const Editor2D = forwardRef<Editor2DHandle, Props>(function Editor2D(
     }
   };
 
+  // ===== Efeitos de imagem =====
+  const DEFAULT_IMAGE_FX: ImageEffects = { kind: "none", amount: 1 };
+
+  const getActiveImageEffects = (): ImageEffects | null => {
+    const imgs = getSelectedImageObjects();
+    if (imgs.length !== 1) return null;
+    const img = imgs[0];
+    const saved = (img as any).__moldaImageEffects as ImageEffects | undefined;
+    return saved ? { ...DEFAULT_IMAGE_FX, ...saved } : { ...DEFAULT_IMAGE_FX };
+  };
+
+  const exportImageWithEffectsToDataUrl = async (
+    src: string,
+    adj: ImageAdjustments,
+    fx: ImageEffects
+  ): Promise<string> =>
+    new Promise((resolve, reject) => {
+      const imgEl = new Image();
+      imgEl.crossOrigin = "anonymous";
+      imgEl.onload = () => {
+        try {
+          const canvas = document.createElement("canvas");
+          canvas.width = imgEl.naturalWidth;
+          canvas.height = imgEl.naturalHeight;
+          const ctx = canvas.getContext("2d");
+          if (!ctx) return reject(new Error("Canvas 2D não disponível"));
+
+          // Primeiro aplica níveis (adjustments)
+          const filterCss =
+            `brightness(${adj.brightness}%) contrast(${adj.contrast}%) saturate(${adj.saturation}%) ` +
+            `sepia(${adj.sepia}%) grayscale(${adj.grayscale}%) hue-rotate(${adj.hue}deg)`;
+
+          try {
+            (ctx as any).filter = filterCss;
+          } catch {}
+
+          ctx.drawImage(imgEl, 0, 0);
+
+          // Aplica efeito por pixels
+          const kind = fx.kind ?? "none";
+          const amount = typeof fx.amount === "number" ? fx.amount : 1;
+
+          if (kind !== "none" && amount > 0) {
+            const w = canvas.width;
+            const h = canvas.height;
+            const imageData = ctx.getImageData(0, 0, w, h);
+            const data = imageData.data;
+            const clamp255 = (n: number) => Math.max(0, Math.min(255, n));
+
+            for (let i = 0; i < data.length; i += 4) {
+              let r = data[i];
+              let g = data[i + 1];
+              let b = data[i + 2];
+
+              // Salva original para blend
+              const or = r, og = g, ob = b;
+
+              switch (kind) {
+                case "grayscale": {
+                  const gray = 0.299 * r + 0.587 * g + 0.114 * b;
+                  r = g = b = gray;
+                  break;
+                }
+                case "sepia": {
+                  const tr = 0.393 * r + 0.769 * g + 0.189 * b;
+                  const tg = 0.349 * r + 0.686 * g + 0.168 * b;
+                  const tb = 0.272 * r + 0.534 * g + 0.131 * b;
+                  r = tr;
+                  g = tg;
+                  b = tb;
+                  break;
+                }
+                case "invert": {
+                  r = 255 - r;
+                  g = 255 - g;
+                  b = 255 - b;
+                  break;
+                }
+                case "vintage": {
+                  // Sepia + leve fade
+                  const tr = 0.393 * r + 0.769 * g + 0.189 * b;
+                  const tg = 0.349 * r + 0.686 * g + 0.168 * b;
+                  const tb = 0.272 * r + 0.534 * g + 0.131 * b;
+                  r = tr * 0.9 + 25;
+                  g = tg * 0.85 + 20;
+                  b = tb * 0.8 + 15;
+                  break;
+                }
+                case "cold": {
+                  r = r * 0.9;
+                  g = g * 0.95;
+                  b = b * 1.1 + 10;
+                  break;
+                }
+                case "warm": {
+                  r = r * 1.1 + 10;
+                  g = g * 1.02;
+                  b = b * 0.9;
+                  break;
+                }
+                case "dramatic": {
+                  // Alto contraste + leve dessaturação
+                  const gray = 0.299 * r + 0.587 * g + 0.114 * b;
+                  r = r * 0.7 + gray * 0.3;
+                  g = g * 0.7 + gray * 0.3;
+                  b = b * 0.7 + gray * 0.3;
+                  // Contraste
+                  r = 128 + (r - 128) * 1.4;
+                  g = 128 + (g - 128) * 1.4;
+                  b = 128 + (b - 128) * 1.4;
+                  break;
+                }
+                case "fade": {
+                  r = r * 0.85 + 38;
+                  g = g * 0.85 + 38;
+                  b = b * 0.85 + 38;
+                  break;
+                }
+                case "blur":
+                case "sharpen":
+                  // Estes seriam aplicados via convolução separada, por agora deixamos passar
+                  break;
+                case "vignette":
+                  // Vinheta é aplicada via gradiente radial, não por pixel direto
+                  break;
+              }
+
+              // Blend com intensidade (amount)
+              r = or + (r - or) * amount;
+              g = og + (g - og) * amount;
+              b = ob + (b - ob) * amount;
+
+              data[i] = clamp255(r);
+              data[i + 1] = clamp255(g);
+              data[i + 2] = clamp255(b);
+            }
+
+            // Vinheta (radial)
+            if (kind === "vignette") {
+              const cx = w / 2;
+              const cy = h / 2;
+              const maxDist = Math.sqrt(cx * cx + cy * cy);
+              for (let y = 0; y < h; y++) {
+                for (let x = 0; x < w; x++) {
+                  const i = (y * w + x) * 4;
+                  const dx = x - cx;
+                  const dy = y - cy;
+                  const dist = Math.sqrt(dx * dx + dy * dy) / maxDist;
+                  const factor = 1 - Math.pow(dist, 1.5) * 0.7 * amount;
+                  data[i] = clamp255(data[i] * factor);
+                  data[i + 1] = clamp255(data[i + 1] * factor);
+                  data[i + 2] = clamp255(data[i + 2] * factor);
+                }
+              }
+            }
+
+            // Blur (box blur simples)
+            if (kind === "blur" && amount > 0) {
+              const radius = Math.round(amount * 5);
+              if (radius > 0) {
+                const srcData = new Uint8ClampedArray(data);
+                for (let y = 0; y < h; y++) {
+                  for (let x = 0; x < w; x++) {
+                    let rSum = 0, gSum = 0, bSum = 0, count = 0;
+                    for (let dy = -radius; dy <= radius; dy++) {
+                      const yy = y + dy;
+                      if (yy < 0 || yy >= h) continue;
+                      for (let dx = -radius; dx <= radius; dx++) {
+                        const xx = x + dx;
+                        if (xx < 0 || xx >= w) continue;
+                        const j = (yy * w + xx) * 4;
+                        rSum += srcData[j];
+                        gSum += srcData[j + 1];
+                        bSum += srcData[j + 2];
+                        count++;
+                      }
+                    }
+                    const i = (y * w + x) * 4;
+                    data[i] = rSum / count;
+                    data[i + 1] = gSum / count;
+                    data[i + 2] = bSum / count;
+                  }
+                }
+              }
+            }
+
+            ctx.putImageData(imageData, 0, 0);
+          }
+
+          resolve(canvas.toDataURL("image/png"));
+        } catch (err) {
+          reject(err);
+        }
+      };
+      imgEl.onerror = () => reject(new Error("Falha ao carregar a imagem"));
+      imgEl.src = src;
+    });
+
+  const processActiveImageEffects = async (fx: ImageEffects) => {
+    const c = canvasRef.current as any;
+    if (!c) return;
+
+    const opId = ++imageAdjOpIdRef.current;
+    const imgs = getSelectedImageObjects();
+    if (imgs.length === 0) return;
+
+    const scheduleHistoryCommit = () => {
+      if (isRestoringRef.current || isLoadingRef.current) return;
+      if (imageAdjCommitTimerRef.current) {
+        window.clearTimeout(imageAdjCommitTimerRef.current);
+      }
+      imageAdjCommitTimerRef.current = window.setTimeout(() => {
+        if (imageAdjOpIdRef.current !== opId) return;
+        imageAdjCommitTimerRef.current = null;
+        if (shouldRecordHistory()) {
+          historyRef.current?.push("image-effect");
+          emitHistory();
+        }
+      }, 250);
+    };
+
+    for (const img of imgs) {
+      try {
+        (img as any).__moldaImageEffects = { ...fx };
+      } catch {}
+
+      const kind = fx.kind ?? "none";
+      const amount = typeof fx.amount === "number" ? fx.amount : 1;
+
+      // Se efeito é "none" ou amount é 0, volta para níveis (ou original)
+      if (kind === "none" || amount <= 0) {
+        const adj: ImageAdjustments = (() => {
+          const saved = (img as any).__moldaImageAdjustments as ImageAdjustments | undefined;
+          return saved ? { ...DEFAULT_IMAGE_ADJ, ...saved } : { ...DEFAULT_IMAGE_ADJ };
+        })();
+        const originalSrc: string | undefined =
+          (img as any).__moldaOriginalSrc || img?._originalElement?.src || img?._element?.src;
+        if (originalSrc && typeof img?.setSrc === "function") {
+          try {
+            const dataUrl = await exportImageWithAdjustmentsToDataUrl(originalSrc, adj);
+            await new Promise<void>((resolve) => {
+              img.setSrc(dataUrl, () => {
+                try { c.requestRenderAll?.(); } catch {}
+                resolve();
+              }, { crossOrigin: "anonymous" });
+            });
+          } catch {}
+        }
+        scheduleHistoryCommit();
+        continue;
+      }
+
+      const adj: ImageAdjustments = (() => {
+        const saved = (img as any).__moldaImageAdjustments as ImageAdjustments | undefined;
+        return saved ? { ...DEFAULT_IMAGE_ADJ, ...saved } : { ...DEFAULT_IMAGE_ADJ };
+      })();
+
+      const originalSrc: string | undefined =
+        (img as any).__moldaOriginalSrc || img?._originalElement?.src || img?._element?.src;
+      if (!originalSrc) {
+        scheduleHistoryCommit();
+        continue;
+      }
+
+      try {
+        const dataUrl = await exportImageWithEffectsToDataUrl(originalSrc, adj, fx);
+        await new Promise<void>((resolve) => {
+          if (typeof img?.setSrc === "function") {
+            img.setSrc(dataUrl, () => {
+              try { c.requestRenderAll?.(); } catch {}
+              resolve();
+            }, { crossOrigin: "anonymous" });
+            return;
+          }
+          resolve();
+        });
+      } catch {}
+
+      scheduleHistoryCommit();
+    }
+  };
+
+  const applyActiveImageEffects = async (fx: ImageEffects) => {
+    imageAdjPendingRef.current = null; // clear adjustments queue
+    await processActiveImageEffects(fx);
+  };
+
   // ===== Context Menu Functions =====
   const getSelectionInfo = (): SelectionInfo | null => {
     const c = canvasRef.current;
@@ -5696,6 +7636,7 @@ const Editor2D = forwardRef<Editor2DHandle, Props>(function Editor2D(
       "group",
       "activeSelection",
     ]);
+    
     const baseType = String(activeObject?.type || "").toLowerCase();
     const canApplyPattern = compatibleTypes.has(baseType);
 
@@ -6366,6 +8307,14 @@ const Editor2D = forwardRef<Editor2DHandle, Props>(function Editor2D(
     applyTextStyle,
     getActiveImageAdjustments,
     applyActiveImageAdjustments,
+    getActiveImageEffects,
+    applyActiveImageEffects,
+    startEffectBrush,
+    cancelEffectBrush,
+    isEffectBrushActive,
+    startEffectLasso,
+    cancelEffectLasso,
+    isEffectLassoActive,
     startSquareCrop,
     cancelSquareCrop,
     startLassoCrop,
@@ -6384,6 +8333,9 @@ const Editor2D = forwardRef<Editor2DHandle, Props>(function Editor2D(
     canRedoSquareCropStep,
     onCropModeChange: (cb) => {
       cropModeListenersRef.current.add(cb);
+    },
+    onEffectEditModeChange: (cb) => {
+      effectEditModeListenersRef.current.add(cb);
     },
     onSelectionChange: (cb) => {
       selectionListenersRef.current.add(cb);
@@ -6783,11 +8735,20 @@ const Editor2D = forwardRef<Editor2DHandle, Props>(function Editor2D(
           // Crop tools: wheel zoom behaves differently (zoom to cursor; zoom out recenters).
           const cropSession = squareCropRef.current;
           const lassoSession = lassoCropRef.current;
+          const effectSession = effectBrushRef.current;
+          const effectLassoSession = effectLassoRef.current;
           const isSquareCropActive = !!cropSession?.active;
           const isLassoCropActive = !!lassoSession?.active;
+          const isEffectBrushActive = !!effectSession?.active;
 
-          if (isSquareCropActive || isLassoCropActive) {
-            const s: any = isSquareCropActive ? cropSession : lassoSession;
+          const isEffectLassoActive = !!effectLassoSession?.active;
+
+          if (isSquareCropActive || isLassoCropActive || isEffectBrushActive || isEffectLassoActive) {
+            const s: any = isSquareCropActive
+              ? cropSession
+              : (isLassoCropActive
+                ? lassoSession
+                : (isEffectBrushActive ? effectSession : effectLassoSession));
             const img: any = s?.img;
             if (!img) return;
 
@@ -6952,7 +8913,7 @@ const Editor2D = forwardRef<Editor2DHandle, Props>(function Editor2D(
                   ss.lastRecorded = normalizeSquareCropSnapshot(getSquareCropSnapshot(ss));
                 } catch {}
               }, 250);
-            } else {
+            } else if (isLassoCropActive) {
               // Lasso crop UI refresh.
               try {
                 runSilently(() => {
@@ -6979,6 +8940,30 @@ const Editor2D = forwardRef<Editor2DHandle, Props>(function Editor2D(
 
               // Pontos do laço precisam acompanhar a imagem após zoom/move.
               try { updateLassoGraphics(); } catch {}
+            } else if (isEffectBrushActive || isEffectLassoActive) {
+              // Effect brush UI refresh.
+              try {
+                runSilently(() => {
+                  try {
+                    s.highlight.set({ left: s.imageRect.left, top: s.imageRect.top, width: s.imageRect.width, height: s.imageRect.height });
+                    s.highlight.setCoords?.();
+                  } catch {}
+                  try {
+                    const l = s.imageRect.left;
+                    const t = s.imageRect.top;
+                    const r = s.imageRect.left + s.imageRect.width;
+                    const b = s.imageRect.top + s.imageRect.height;
+                    s.imgHandles.tl.set({ left: l, top: t });
+                    s.imgHandles.tr.set({ left: r, top: t });
+                    s.imgHandles.bl.set({ left: l, top: b });
+                    s.imgHandles.br.set({ left: r, top: b });
+                    s.imgHandles.tl.setCoords?.();
+                    s.imgHandles.tr.setCoords?.();
+                    s.imgHandles.bl.setCoords?.();
+                    s.imgHandles.br.setCoords?.();
+                  } catch {}
+                });
+              } catch {}
             }
 
             try { c.requestRenderAll?.(); } catch {}

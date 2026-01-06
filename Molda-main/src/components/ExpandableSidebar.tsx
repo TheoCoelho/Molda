@@ -30,6 +30,7 @@ import {
 import { Wrench } from "lucide-react";
 import FontPicker from "../components/FontPicker";
 import { FONT_LIBRARY } from "../fonts/library";
+import { generateCreativeName } from "../lib/creativeNames";
 
 import {
   generateBlobSvgDataUrl,
@@ -45,6 +46,7 @@ import type { BrushVariant } from "./Editor2D";
 
 interface ExpandableSidebarProps {
   // dados do projeto
+  projectId?: string | null;
   projectName: string;
   setProjectName: (value: string) => void;
   baseColor: string;
@@ -102,6 +104,7 @@ type SectionId = "settings" | "upload" | "brush" | "image" | "cut";
 
 const ExpandableSidebar: React.FC<ExpandableSidebarProps> = (props) => {
   const {
+    projectId,
     projectName,
     setProjectName,
     baseColor,
@@ -199,6 +202,7 @@ const ExpandableSidebar: React.FC<ExpandableSidebarProps> = (props) => {
           <div className={activeSection === "brush" ? "flex h-full flex-1 min-h-0 max-h-full flex-col px-2" : "flex-1 overflow-y-auto rounded-2xl p-6"}>
             {activeSection === "settings" && (
               <SettingsContent
+                projectId={projectId}
                 projectName={projectName}
                 setProjectName={setProjectName}
                 baseColor={baseColor}
@@ -254,6 +258,7 @@ const ExpandableSidebar: React.FC<ExpandableSidebarProps> = (props) => {
 };
 
 function SettingsContent(props: {
+  projectId?: string | null;
   projectName: string;
   setProjectName: (v: string) => void;
   baseColor: string;
@@ -263,13 +268,14 @@ function SettingsContent(props: {
   fabric: string;
   setFabric: (v: string) => void;
 }) {
-  const { projectName, setProjectName, baseColor, setBaseColor, size, setSize, fabric, setFabric } = props;
+  const { projectId, projectName, setProjectName, baseColor, setBaseColor, size, setSize, fabric, setFabric } = props;
+  const placeholderName = generateCreativeName(projectId ?? undefined);
   return (
   <div className="space-y-4">
       <h3 className="text-lg font-semibold text-gray-800">Configurações</h3>
       <div>
         <Label htmlFor="project-name">Nome do Projeto</Label>
-        <Input id="project-name" value={projectName} onChange={(e) => setProjectName(e.target.value)} placeholder="Minha criação" />
+        <Input id="project-name" value={projectName} onChange={(e) => setProjectName(e.target.value)} placeholder={placeholderName} />
       </div>
       <div>
         <Label htmlFor="base-color">Cor base</Label>

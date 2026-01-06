@@ -122,6 +122,7 @@ const Creation = () => {
   const skipInitialLoadRef = useRef<boolean>(Boolean(navigationState.startFresh));
   const draftKeyRef = useRef<string | null>(navigationState.draftKey ?? navigationState.projectKey ?? null);
   const draftIdRef = useRef<string | null>(navigationState.draftId ?? null);
+  const [draftId, setDraftId] = useState<string | null>(navigationState.draftId ?? null);
   const initialDraftSavedRef = useRef(false);
   const isDraftPermanentRef = useRef<boolean>(false);
   const [isDraftPermanent, setIsDraftPermanent] = useState<boolean>(false);
@@ -146,7 +147,7 @@ const Creation = () => {
   const type = searchParams.get("type");
   const subtype = searchParams.get("subtype");
 
-  const [projectName, setProjectName] = useState("Meu Projeto");
+  const [projectName, setProjectName] = useState("");
   const [baseColor, setBaseColor] = useState("#ffffff");
   const [size, setSize] = useState("M");
   const [fabric, setFabric] = useState("Algodão");
@@ -373,6 +374,7 @@ const Creation = () => {
     if (skipInitialLoadRef.current) {
       draftKeyRef.current = null;
       draftIdRef.current = null;
+      setDraftId(null);
       isDraftPermanentRef.current = false;
       setIsDraftPermanent(false);
       try {
@@ -392,8 +394,14 @@ const Creation = () => {
         if (!draftKeyRef.current && typeof parsed.draftKey === "string") draftKeyRef.current = parsed.draftKey;
         if (!draftKeyRef.current && typeof parsed.projectKey === "string") draftKeyRef.current = parsed.projectKey;
         if (!draftIdRef.current) {
-          if (typeof parsed.draftId === "string") draftIdRef.current = parsed.draftId;
-          else if (typeof parsed.draftId === "number") draftIdRef.current = String(parsed.draftId);
+          if (typeof parsed.draftId === "string") {
+            draftIdRef.current = parsed.draftId;
+            setDraftId(parsed.draftId);
+          }
+          else if (typeof parsed.draftId === "number") {
+            draftIdRef.current = String(parsed.draftId);
+            setDraftId(String(parsed.draftId));
+          }
         }
       } catch {}
     };
@@ -452,7 +460,10 @@ const Creation = () => {
         if (response.id && typeof payload.draftId !== "string") payload.draftId = String(response.id);
 
         if (typeof payload.draftKey === "string") draftKeyRef.current = payload.draftKey;
-        if (typeof payload.draftId === "string") draftIdRef.current = payload.draftId;
+        if (typeof payload.draftId === "string") {
+          draftIdRef.current = payload.draftId;
+          setDraftId(payload.draftId);
+        }
 
         applyDraftPayload(payload);
         remoteApplied = true;
@@ -476,8 +487,14 @@ const Creation = () => {
         if (typeof project.draftKey === "string" && !draftKeyRef.current) draftKeyRef.current = project.draftKey;
         if (typeof project.projectKey === "string" && !draftKeyRef.current) draftKeyRef.current = project.projectKey;
         if (!draftIdRef.current) {
-          if (typeof project.draftId === "string") draftIdRef.current = project.draftId;
-          else if (typeof project.draftId === "number") draftIdRef.current = String(project.draftId);
+          if (typeof project.draftId === "string") {
+            draftIdRef.current = project.draftId;
+            setDraftId(project.draftId);
+          }
+          else if (typeof project.draftId === "number") {
+            draftIdRef.current = String(project.draftId);
+            setDraftId(String(project.draftId));
+          }
         }
 
         const isVeryDifferentProject =
@@ -487,6 +504,7 @@ const Creation = () => {
         if (isVeryDifferentProject) {
           draftKeyRef.current = null;
           draftIdRef.current = null;
+          setDraftId(null);
           localStorage.removeItem("currentProject");
           return;
         }
@@ -520,7 +538,9 @@ const Creation = () => {
   const [selectionKind, setSelectionKind] = useState<SelectionKind>("none");
   const [selectionInfo, setSelectionInfo] = useState<SelectionInfo | null>(null);
   const [cropModeActive, setCropModeActive] = useState(false);
+  const [effectsEditModeActive, setEffectsEditModeActive] = useState(false);
   const cropListenerGuard = useRef<WeakSet<Editor2DHandle>>(new WeakSet());
+  const effectsListenerGuard = useRef<WeakSet<Editor2DHandle>>(new WeakSet());
 
   const updateSelectionInfo = useCallback(() => {
     const inst = editorRefs.current[activeCanvasTab];
@@ -785,7 +805,10 @@ const Creation = () => {
         console.error("Falha ao salvar rascunho remoto:", error);
       } else if (upserted && upserted.length) {
         const first = upserted[0] as { id?: string; project_key?: string };
-        if (first?.id) draftIdRef.current = String(first.id);
+        if (first?.id) {
+          draftIdRef.current = String(first.id);
+          setDraftId(String(first.id));
+        }
         if (first?.project_key) draftKeyRef.current = first.project_key;
       }
     } catch (err) {
@@ -1016,6 +1039,7 @@ const Creation = () => {
           {/* Sidebar toma 100% da altura do grid */}
           <div className="h-full min-h-0 overflow-hidden">
             <ExpandableSidebar
+              projectId={draftId}
               projectName={projectName}
               setProjectName={setProjectName}
               baseColor={baseColor}
@@ -1318,9 +1342,17 @@ const Creation = () => {
                                   cropListenerGuard.current.add(inst);
                                 }
 
+                                if (!effectsListenerGuard.current.has(inst)) {
+                                  inst.onEffectEditModeChange?.((active) => {
+                                    if (tab.id === activeCanvasTab) setEffectsEditModeActive(active);
+                                  });
+                                  effectsListenerGuard.current.add(inst);
+                                }
+
                                 // sincroniza o estado imediatamente ao montar/reativar
                                 if (tab.id === activeCanvasTab) {
                                   setCropModeActive(!!inst.isCropActive?.());
+                                  setEffectsEditModeActive(!!inst.isEffectBrushActive?.() || !!inst.isEffectLassoActive?.());
                                 }
                               }}
                               isActive={activeIs2D && tab.id === activeCanvasTab}
@@ -1388,7 +1420,7 @@ const Creation = () => {
                         </div>
                       )}
 
-                      {!cropModeActive && selectionKind === "text" && (
+                      {!cropModeActive && !effectsEditModeActive && selectionKind === "text" && (
                         <div className="absolute left-1/2 bottom-6 z-10 max-w-[95%] -translate-x-1/2">
                           <TextToolbar
                             editor={{ current: editorRefs.current[activeCanvasTab] as Editor2DHandle }}
@@ -1398,17 +1430,17 @@ const Creation = () => {
                         </div>
                       )}
 
-                      {!cropModeActive && selectionKind === "image" && (
+                      {!cropModeActive && (effectsEditModeActive || selectionKind === "image") && (
                         <div className="absolute left-1/2 bottom-6 z-10 max-w-[95%] -translate-x-1/2">
                           <ImageToolbar
                             editor={{ current: editorRefs.current[activeCanvasTab] as Editor2DHandle }}
-                            visible={activeIs2D && selectionKind === "image"}
+                            visible={activeIs2D && (effectsEditModeActive || selectionKind === "image")}
                             position="inline"
                           />
                         </div>
                       )}
 
-                      {!cropModeActive && selectionKind !== "text" && selectionKind !== "image" && (
+                      {!cropModeActive && !effectsEditModeActive && selectionKind !== "text" && selectionKind !== "image" && (
                         <div className="absolute left-1/2 bottom-6 z-10 max-w-[95%] -translate-x-1/2">
                           <FloatingEditorToolbar
                             strokeColor={strokeColor}

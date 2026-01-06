@@ -17,8 +17,10 @@ import {
   CircleDot,
   ChevronLeft,
   ChevronRight,
+  PaintBucket,
+  Paintbrush,
 } from "lucide-react";
-import type { Editor2DHandle, ImageAdjustments } from "../components/Editor2D";
+import type { Editor2DHandle, ImageAdjustments, ImageEffects, ImageEffectKind } from "../components/Editor2D";
 import { Slider } from "../components/ui/slider";
 
 type Props = {
@@ -121,6 +123,159 @@ export default function ImageToolbar({ visible, editor, position = "bottom" }: P
   const [warmth, setWarmth] = useState(0);
   const [tint, setTint] = useState(0);
 
+  // === Estado de Efeitos ===
+  const effectsAreaRef = useRef<HTMLDivElement>(null);
+  const effectsScrollRef = useRef<HTMLDivElement>(null);
+  const [effectsOpen, setEffectsOpen] = useState(false);
+  const [effectsPinned, setEffectsPinned] = useState(false);
+  const [effectKind, setEffectKind] = useState<ImageEffectKind>("none");
+  const [effectAmount, setEffectAmount] = useState(100); // 0-100 (será convertido para 0-1)
+  const [effectMode, setEffectMode] = useState<"bucket" | "brush">("bucket");
+  const [effectEditTool, setEffectEditTool] = useState<"brush" | "lasso">("brush");
+  const [effectBrushSize, setEffectBrushSize] = useState(40);
+  const [canScrollEffectsLeft, setCanScrollEffectsLeft] = useState(false);
+  const [canScrollEffectsRight, setCanScrollEffectsRight] = useState(false);
+  const effectsCloseTimerRef = useRef<number | null>(null);
+
+  const cancelEffectsClose = () => {
+    if (effectsCloseTimerRef.current) {
+      window.clearTimeout(effectsCloseTimerRef.current);
+      effectsCloseTimerRef.current = null;
+    }
+  };
+  const scheduleEffectsClose = (delayMs = 180) => {
+    cancelEffectsClose();
+    effectsCloseTimerRef.current = window.setTimeout(() => {
+      effectsCloseTimerRef.current = null;
+      if (!effectsPinned) setEffectsOpen(false);
+    }, delayMs);
+  };
+
+  const updateEffectsScrollState = () => {
+    const el = effectsScrollRef.current;
+    if (!el) return;
+    const max = el.scrollWidth - el.clientWidth;
+    const left = el.scrollLeft;
+    setCanScrollEffectsLeft(left > 1);
+    setCanScrollEffectsRight(left < max - 1);
+  };
+
+  const getEffectsMask = React.useCallback(() => {
+    const e = 56;
+    const s0 = 0;
+    const s1 = 2;
+    const s2 = Math.round(e * 0.18);
+    const s3 = Math.round(e * 0.38);
+    const s4 = Math.round(e * 0.62);
+    const s5 = Math.round(e * 0.82);
+    const s6 = e;
+    return (
+      `linear-gradient(to right, ` +
+      `rgba(0,0,0,0) ${s0}px, ` +
+      `rgba(0,0,0,0) ${s1}px, ` +
+      `rgba(0,0,0,0.12) ${s2}px, ` +
+      `rgba(0,0,0,0.35) ${s3}px, ` +
+      `rgba(0,0,0,0.65) ${s4}px, ` +
+      `rgba(0,0,0,0.88) ${s5}px, ` +
+      `rgba(0,0,0,1) ${s6}px, ` +
+      `rgba(0,0,0,1) calc(100% - ${s6}px), ` +
+      `rgba(0,0,0,0.88) calc(100% - ${s5}px), ` +
+      `rgba(0,0,0,0.65) calc(100% - ${s4}px), ` +
+      `rgba(0,0,0,0.35) calc(100% - ${s3}px), ` +
+      `rgba(0,0,0,0.12) calc(100% - ${s2}px), ` +
+      `rgba(0,0,0,0) calc(100% - ${s1}px), ` +
+      `rgba(0,0,0,0) 100%)`
+    );
+  }, []);
+
+  const EFFECT_PRESETS: { kind: ImageEffectKind; label: string; icon: string }[] = [
+    { kind: "none", label: "Original", icon: "⊘" },
+    { kind: "grayscale", label: "P&B", icon: "◐" },
+    { kind: "sepia", label: "Sépia", icon: "🟤" },
+    { kind: "vintage", label: "Vintage", icon: "📷" },
+    { kind: "warm", label: "Quente", icon: "🔥" },
+    { kind: "cold", label: "Frio", icon: "❄️" },
+    { kind: "dramatic", label: "Dramático", icon: "🎭" },
+    { kind: "fade", label: "Desbotado", icon: "☁️" },
+    { kind: "invert", label: "Inverter", icon: "◑" },
+    { kind: "vignette", label: "Vinheta", icon: "⬤" },
+    { kind: "blur", label: "Desfoque", icon: "💧" },
+  ];
+
+  const applyEffect = (kind: ImageEffectKind, amount: number) => {
+    const fx: ImageEffects = { kind, amount: amount / 100 };
+    editor?.current?.applyActiveImageEffects?.(fx);
+  };
+
+  const handleEffectKindChange = (kind: ImageEffectKind) => {
+    setEffectKind(kind);
+    
+    // Se está no modo brush e selecionou um efeito (não "none"), inicia o modo de edição
+    if (effectMode === "brush" && kind !== "none") {
+      if (effectEditTool === "brush") {
+        editor?.current?.startEffectBrush?.(kind, effectAmount / 100, effectBrushSize);
+      } else {
+        editor?.current?.startEffectLasso?.(kind, effectAmount / 100);
+      }
+    } else if (effectMode === "brush" && kind === "none") {
+      // Se selecionou "none" no modo brush, cancela o modo de edição
+      editor?.current?.cancelEffectBrush?.();
+      editor?.current?.cancelEffectLasso?.();
+    }
+    
+    // No modo bucket, aplica diretamente
+    if (effectMode === "bucket") {
+      applyEffect(kind, effectAmount);
+    }
+  };
+
+  const handleEffectAmountChange = (val: number) => {
+    setEffectAmount(val);
+    applyEffect(effectKind, val);
+  };
+
+  // Sincroniza efeitos com a imagem selecionada ao abrir
+  useEffect(() => {
+    if (!visible || !effectsOpen) return;
+    const current = editor?.current?.getActiveImageEffects?.();
+    if (!current) return;
+    setEffectKind(current.kind ?? "none");
+    setEffectAmount(Math.round((current.amount ?? 1) * 100));
+    // Atualiza scroll state
+    requestAnimationFrame(updateEffectsScrollState);
+  }, [visible, effectsOpen, editor]);
+
+  // Resize listener para efeitos
+  useEffect(() => {
+    if (!effectsOpen) return;
+    const onResize = () => updateEffectsScrollState();
+    window.addEventListener("resize", onResize);
+    return () => window.removeEventListener("resize", onResize);
+  }, [effectsOpen]);
+
+  // Fecha ao clicar fora quando pinned
+  useEffect(() => {
+    if (!effectsPinned) return;
+    const onPointerDown = (ev: PointerEvent) => {
+      const target = ev.target as Node | null;
+      if (!target) return;
+      if (effectsAreaRef.current && effectsAreaRef.current.contains(target)) return;
+      setEffectsPinned(false);
+      setEffectsOpen(false);
+    };
+    const onKeyDown = (ev: KeyboardEvent) => {
+      if (ev.key !== "Escape") return;
+      setEffectsPinned(false);
+      setEffectsOpen(false);
+    };
+    window.addEventListener("pointerdown", onPointerDown);
+    window.addEventListener("keydown", onKeyDown);
+    return () => {
+      window.removeEventListener("pointerdown", onPointerDown);
+      window.removeEventListener("keydown", onKeyDown);
+    };
+  }, [effectsPinned]);
+
   const [activeSliderTip, setActiveSliderTip] = useState<
     | null
     | "brightness"
@@ -136,6 +291,8 @@ export default function ImageToolbar({ visible, editor, position = "bottom" }: P
     | "blackPoint"
     | "warmth"
     | "tint"
+    | "effectAmount"
+    | "effectBrushSize"
   >(null);
 
   useEffect(() => {
@@ -980,9 +1137,254 @@ export default function ImageToolbar({ visible, editor, position = "bottom" }: P
         )}
       </div>
 
-      <IconBtn title="Efeitos">
-        <Sparkles className="h-4 w-4" />
-      </IconBtn>
+      {/* Botão Efeitos com menu horizontal */}
+      <div
+        ref={effectsAreaRef}
+        className="relative"
+        onMouseEnter={() => {
+          cancelEffectsClose();
+          setEffectsOpen(true);
+        }}
+        onMouseLeave={() => scheduleEffectsClose(520)}
+      >
+        <button
+          type="button"
+          title="Efeitos"
+          aria-label="Efeitos"
+          className={`h-9 w-9 grid place-items-center rounded-xl border transition ${
+            effectsOpen || effectKind !== "none"
+              ? "border-violet-400 bg-violet-50 dark:bg-violet-900/30 shadow"
+              : "border-black/5 dark:border-white/10 bg-white/80 dark:bg-neutral-900/70 hover:bg-white hover:shadow"
+          }`}
+          onClick={() => {
+            setEffectsOpen((v) => !v);
+            setEffectsPinned((p) => !p);
+          }}
+        >
+          <Sparkles className="h-4 w-4" />
+        </button>
+
+        {effectsOpen && (
+          <div
+            className="absolute bottom-full left-1/2 -translate-x-1/2 mb-2 z-50"
+            onMouseEnter={cancelEffectsClose}
+            onMouseLeave={() => scheduleEffectsClose(520)}
+          >
+            <div className="bg-white/95 dark:bg-neutral-900/95 backdrop-blur-md rounded-xl shadow-xl border border-black/10 dark:border-white/10 p-3">
+              {/* Header com título e toggle bucket/brush */}
+              <div className="flex items-center justify-between mb-2 px-1">
+                <div className="text-xs font-medium text-muted-foreground">Efeitos</div>
+                <div className="flex items-center gap-1 bg-black/5 dark:bg-white/5 rounded-lg p-0.5">
+                  <button
+                    type="button"
+                    title="Balde (aplicar em toda imagem)"
+                    className={`h-7 w-7 grid place-items-center rounded-md transition ${
+                      effectMode === "bucket"
+                        ? "bg-white dark:bg-neutral-800 shadow-sm"
+                        : "hover:bg-white/50 dark:hover:bg-white/10"
+                    }`}
+                    onClick={() => {
+                      setEffectMode("bucket");
+                      // Cancela o modo brush se estiver ativo
+                      editor?.current?.cancelEffectBrush?.();
+                      editor?.current?.cancelEffectLasso?.();
+                    }}
+                  >
+                    <PaintBucket className="h-3.5 w-3.5" />
+                  </button>
+                  <button
+                    type="button"
+                    title="Pincel (aplicar por área)"
+                    className={`h-7 w-7 grid place-items-center rounded-md transition ${
+                      effectMode === "brush"
+                        ? "bg-white dark:bg-neutral-800 shadow-sm"
+                        : "hover:bg-white/50 dark:hover:bg-white/10"
+                    }`}
+                    onClick={() => {
+                      setEffectMode("brush");
+                      // Se já tem um efeito selecionado, inicia o modo de edição
+                      if (effectKind !== "none") {
+                        if (effectEditTool === "brush") {
+                          editor?.current?.startEffectBrush?.(effectKind, effectAmount / 100, effectBrushSize);
+                        } else {
+                          editor?.current?.startEffectLasso?.(effectKind, effectAmount / 100);
+                        }
+                      }
+                    }}
+                  >
+                    <Paintbrush className="h-3.5 w-3.5" />
+                  </button>
+                </div>
+              </div>
+
+              {/* Sub-ferramentas do modo de edição (brush / laço) */}
+              {effectMode === "brush" && effectKind !== "none" && (
+                <div className="flex items-center justify-between mb-2 px-1">
+                  <div className="text-xs text-muted-foreground">Ferramenta</div>
+                  <div className="flex items-center gap-1 bg-black/5 dark:bg-white/5 rounded-lg p-0.5">
+                    <button
+                      type="button"
+                      title="Pincel"
+                      className={`h-7 w-7 grid place-items-center rounded-md transition ${
+                        effectEditTool === "brush"
+                          ? "bg-white dark:bg-neutral-800 shadow-sm"
+                          : "hover:bg-white/50 dark:hover:bg-white/10"
+                      }`}
+                      onClick={() => {
+                        setEffectEditTool("brush");
+                        editor?.current?.cancelEffectLasso?.();
+                        editor?.current?.startEffectBrush?.(effectKind, effectAmount / 100, effectBrushSize);
+                      }}
+                    >
+                      <Paintbrush className="h-3.5 w-3.5" />
+                    </button>
+                    <button
+                      type="button"
+                      title="Laço (aplicar efeito na área)"
+                      className={`h-7 w-7 grid place-items-center rounded-md transition ${
+                        effectEditTool === "lasso"
+                          ? "bg-white dark:bg-neutral-800 shadow-sm"
+                          : "hover:bg-white/50 dark:hover:bg-white/10"
+                      }`}
+                      onClick={() => {
+                        setEffectEditTool("lasso");
+                        editor?.current?.cancelEffectBrush?.();
+                        editor?.current?.startEffectLasso?.(effectKind, effectAmount / 100);
+                      }}
+                    >
+                      <Lasso className="h-3.5 w-3.5" />
+                    </button>
+                  </div>
+                </div>
+              )}
+
+              {/* Container horizontal com scroll */}
+              <div className="relative">
+                {/* Seta esquerda */}
+                {canScrollEffectsLeft && (
+                  <button
+                    type="button"
+                    className="absolute left-0 top-1/2 -translate-y-1/2 z-10 h-8 w-8 grid place-items-center rounded-full bg-white/90 dark:bg-neutral-800/90 shadow border border-black/10 dark:border-white/10"
+                    onClick={() => {
+                      const el = effectsScrollRef.current;
+                      if (el) {
+                        el.scrollBy({ left: -160, behavior: "smooth" });
+                        setTimeout(updateEffectsScrollState, 200);
+                      }
+                    }}
+                  >
+                    <ChevronLeft className="h-4 w-4" />
+                  </button>
+                )}
+                {/* Seta direita */}
+                {canScrollEffectsRight && (
+                  <button
+                    type="button"
+                    className="absolute right-0 top-1/2 -translate-y-1/2 z-10 h-8 w-8 grid place-items-center rounded-full bg-white/90 dark:bg-neutral-800/90 shadow border border-black/10 dark:border-white/10"
+                    onClick={() => {
+                      const el = effectsScrollRef.current;
+                      if (el) {
+                        el.scrollBy({ left: 160, behavior: "smooth" });
+                        setTimeout(updateEffectsScrollState, 200);
+                      }
+                    }}
+                  >
+                    <ChevronRight className="h-4 w-4" />
+                  </button>
+                )}
+
+                {/* Scroll horizontal de presets */}
+                <div
+                  ref={effectsScrollRef}
+                  className="flex gap-2 overflow-x-auto scrollbar-hide px-1 py-1"
+                  style={{
+                    maskImage: getEffectsMask(),
+                    WebkitMaskImage: getEffectsMask(),
+                    maxWidth: "min(600px, 80vw)",
+                  }}
+                  onScroll={updateEffectsScrollState}
+                  onLoad={() => requestAnimationFrame(updateEffectsScrollState)}
+                >
+                  {EFFECT_PRESETS.map((preset) => (
+                    <button
+                      key={preset.kind}
+                      type="button"
+                      title={preset.label}
+                      className={`shrink-0 flex flex-col items-center justify-center gap-1 w-[72px] py-2 rounded-xl border transition ${
+                        effectKind === preset.kind
+                          ? "border-violet-400 bg-violet-50 dark:bg-violet-900/30 ring-1 ring-violet-400"
+                          : "border-black/10 dark:border-white/10 bg-white/70 dark:bg-neutral-900/70 hover:bg-white dark:hover:bg-neutral-800"
+                      }`}
+                      onClick={() => handleEffectKindChange(preset.kind)}
+                    >
+                      <span className="text-xl">{preset.icon}</span>
+                      <span className="text-[10px] text-muted-foreground">{preset.label}</span>
+                    </button>
+                  ))}
+                </div>
+              </div>
+
+              {/* Slider de intensidade */}
+              {effectKind !== "none" && (
+                <div className="mt-3 px-1">
+                  <div className="flex items-center gap-3">
+                    <div className="flex items-center gap-2 shrink-0">
+                      <Sparkles className="h-4 w-4 opacity-60" />
+                      <span className="text-xs text-muted-foreground">Intensidade</span>
+                    </div>
+                    <div className="flex-1 relative">
+                      <Tip
+                        show={activeSliderTip === "effectAmount"}
+                        leftPercent={effectAmount}
+                        text={`${effectAmount}%`}
+                      />
+                      <Slider
+                        min={0}
+                        max={100}
+                        step={1}
+                        value={[effectAmount]}
+                        onValueChange={([val]) => handleEffectAmountChange(val)}
+                        onPointerDownCapture={() => setActiveSliderTip("effectAmount")}
+                        className="w-full"
+                      />
+                    </div>
+                    <span className="text-xs text-muted-foreground w-8 text-right">{effectAmount}%</span>
+                  </div>
+                </div>
+              )}
+
+              {/* Slider de tamanho do pincel (apenas no modo brush) */}
+              {effectMode === "brush" && (
+                <div className="mt-3 px-1">
+                  <div className="flex items-center gap-3">
+                    <div className="flex items-center gap-2 shrink-0">
+                      <Paintbrush className="h-4 w-4 opacity-60" />
+                      <span className="text-xs text-muted-foreground">Tamanho</span>
+                    </div>
+                    <div className="flex-1 relative">
+                      <Tip
+                        show={activeSliderTip === "effectBrushSize"}
+                        leftPercent={tipLeftPercent(effectBrushSize, 5, 200)}
+                        text={`${effectBrushSize}px`}
+                      />
+                      <Slider
+                        min={5}
+                        max={200}
+                        step={1}
+                        value={[effectBrushSize]}
+                        onValueChange={([val]) => setEffectBrushSize(val)}
+                        onPointerDownCapture={() => setActiveSliderTip("effectBrushSize")}
+                        className="w-full"
+                      />
+                    </div>
+                    <span className="text-xs text-muted-foreground w-10 text-right">{effectBrushSize}px</span>
+                  </div>
+                </div>
+              )}
+            </div>
+          </div>
+        )}
+      </div>
 
       <IconBtn title="Transformação unificada">
         <Move className="h-4 w-4" />
