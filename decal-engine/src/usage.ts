@@ -15,18 +15,25 @@ export type ExternalDecalPayload = {
   height?: number;
   depth?: number;
   angle?: number;
+  position?: THREE.Vector3Like;
+  normal?: THREE.Vector3Like;
 };
 
 export type DecalDemoHandle = {
   upsertExternalDecal: (payload: ExternalDecalPayload) => void;
   removeExternalDecal: (id: string) => void;
   subscribe: (listener: (state: any) => void) => () => void;
+  destroy: () => void;
 };
 
 export type InitDecalDemoOptions = {
   interactive?: boolean;
   background?: THREE.ColorRepresentation | null;
   gizmoTheme?: Partial<GizmoTheme>;
+  model?: string;
+  hideMenu?: boolean;
+  /** Multiplier for camera distance (lower = closer). Defaults to 1.0 (normal) or 0.55 when non-interactive. */
+  zoomMultiplier?: number;
 };
 
 const DEFAULT_BACKGROUND_COLOR: THREE.ColorRepresentation = 0x111111;
@@ -34,8 +41,10 @@ const DEFAULT_BACKGROUND_COLOR: THREE.ColorRepresentation = 0x111111;
 export async function initDecalDemo(container: HTMLElement, opts?: InitDecalDemoOptions): Promise<DecalDemoHandle> {
   // ---------------- MENU ----------------
   const params0 = new URLSearchParams(window.location.search);
-  const hideMenu = params0.get("hideMenu") === "1" || params0.get("hideMenu") === "true";
-  const showGallery = !hideMenu;
+  const isInteractive = opts?.interactive !== false;
+  const hideMenu =
+    opts?.hideMenu ?? (params0.get("hideMenu") === "1" || params0.get("hideMenu") === "true");
+  const showGallery = isInteractive && !hideMenu;
   const theme = resolveGizmoTheme(opts?.gizmoTheme);
   if (!hideMenu) {
   const models = [
@@ -225,6 +234,7 @@ export async function initDecalDemo(container: HTMLElement, opts?: InitDecalDemo
   const decals = new Map<string, DecalRecord>();
   let activeDecalId: string | null = null;
   const pendingExternalDecals = new Set<string>();
+  const pendingExternalPayloads = new Map<string, ExternalDecalPayload>();
 
   const depthMultiplier = 1.0;
   const GIZMO_EXTENT_SCALE = 1.18; // margem extra para reduzir clipping nas bordas
@@ -270,17 +280,39 @@ export async function initDecalDemo(container: HTMLElement, opts?: InitDecalDemo
 
   const decalRaycaster = new THREE.Raycaster();
 
+  // Ajustes voltados para reduzir deformação em relevos (curvatura alta):
+  // - mais clamp angular (evita “virar quina”)
+  // - profundidade máxima menor (reduz wrap em dobras)
+  // - z-band mais curto (mantém só a camada frontal)
+  // - limites de shear/skew (reduz estiramento)
   const projectorOptions = {
-    angleClampDeg: 92,
+    // Mais permissivo para reduzir “cortes”, mas ainda limita deformação em relevos.
+    angleClampDeg: 86,
     depthFromSizeScale: 0.2,
+    maxDepthScale: 0.45,
+
     frontOnly: true,
+    // Evita sumir partes do decal em dobras/curvas (o filtro de zBand já ajuda a não pegar o verso)
     frontHalfOnly: false,
+
     sliverAspectMin: 0.001,
     areaMin: 1e-8,
-    zBandFraction: 0.6,
-    zBandMin: 0.015,
+
+    // Banda mais larga = menos buracos, ainda mantém preferência pela camada frontal
+    zBandFraction: 0.4,
+    zBandMin: 0.012,
+    zBandPadding: 0.012,
+
     maxRadiusFraction: 1.0,
-    maxDepthScale: 1.0,
+
+    // Filtros anti-estiramento mais suaves (menos descarte -> menos cortes)
+    normalAlignmentMin: 0.0,
+    maxShearRatio: 5.0,
+    maxDepthSkew: 0.6,
+
+    adaptiveDepth: true,
+    adaptiveDepthStrength: 0.7,
+    adaptiveDepthMinScale: 0.4,
   };
 
   function getGalleryItemById(id: string): GalleryItem | null {
@@ -350,7 +382,6 @@ export async function initDecalDemo(container: HTMLElement, opts?: InitDecalDemo
     tex.minFilter = THREE.LinearMipmapLinearFilter;
     tex.magFilter = THREE.LinearFilter;
     if ("colorSpace" in (tex as any)) (tex as any).colorSpace = (THREE as any).SRGBColorSpace;
-    else (tex as any).encoding = (THREE as any).sRGBEncoding;
   }
 
   function ensureTexture(item: GalleryItem, onReady: (texture: THREE.Texture) => void) {
@@ -379,10 +410,20 @@ export async function initDecalDemo(container: HTMLElement, opts?: InitDecalDemo
       if (!root) return;
       const center = defaultCenter.clone();
       const normal = defaultNormal.clone();
-      const width = defaultWidth;
-      const height = defaultHeight;
-      const depth = defaultDepth;
-      const angle = 0;
+      let width = defaultWidth;
+      let height = defaultHeight;
+      let depth = defaultDepth;
+      let angle = 0;
+
+      const ext = pendingExternalPayloads.get(item.id);
+      if (ext) {
+        if (typeof ext.width === "number") width = ext.width;
+        if (typeof ext.height === "number") height = ext.height;
+        if (typeof ext.depth === "number") depth = ext.depth;
+        if (typeof ext.angle === "number") angle = ext.angle;
+        if (ext.position) center.set(ext.position.x, ext.position.y, ext.position.z);
+        if (ext.normal) normal.set(ext.normal.x, ext.normal.y, ext.normal.z).normalize();
+      }
       const adapter = new MeshDecalAdapter(scene, texture, projectorOptions) as unknown as ProjectorLike;
       adapter.attachTo(root);
   applyScaledTransform(adapter, center, normal, width, height, depth, angle);
@@ -408,6 +449,7 @@ export async function initDecalDemo(container: HTMLElement, opts?: InitDecalDemo
       pendingExternalDecals.delete(item.id);
       if (makeActive) setActiveDecal(item.id);
       renderGallery();
+      emitDecalState();
     });
   }
 
@@ -423,11 +465,13 @@ export async function initDecalDemo(container: HTMLElement, opts?: InitDecalDemo
       selected = false;
       showOverlay(false);
     }
+    emitDecalState();
   }
 
   function upsertExternalDecal(payload: ExternalDecalPayload) {
     const id = payload.id;
     if (!id) return;
+    pendingExternalPayloads.set(id, payload);
     const label = payload.label ?? "Canvas";
     let item = getGalleryItemById(id);
     if (!item) {
@@ -454,8 +498,20 @@ export async function initDecalDemo(container: HTMLElement, opts?: InitDecalDemo
         if (payload.height) record.height = payload.height;
         if (payload.depth) record.depth = payload.depth;
         if (typeof payload.angle === "number") record.angle = payload.angle;
+        if (payload.position) record.center.set(payload.position.x, payload.position.y, payload.position.z);
+        if (payload.normal) record.normal.set(payload.normal.x, payload.normal.y, payload.normal.z).normalize();
         record.projector.updateTexture?.(texture);
+        applyScaledTransform(
+          record.projector,
+          record.center,
+          record.normal,
+          record.width,
+          record.height,
+          record.depth,
+          record.angle
+        );
         pendingExternalDecals.delete(id);
+        emitDecalState();
       } else {
         if (!root) {
           pendingExternalDecals.add(id);
@@ -469,6 +525,7 @@ export async function initDecalDemo(container: HTMLElement, opts?: InitDecalDemo
 
   function removeExternalDecal(id: string) {
     pendingExternalDecals.delete(id);
+    pendingExternalPayloads.delete(id);
     removeDecalForGalleryItem(id);
     const idx = galleryState.items.findIndex((g) => g.id === id);
     if (idx >= 0) {
@@ -532,6 +589,7 @@ export async function initDecalDemo(container: HTMLElement, opts?: InitDecalDemo
         (mesh.userData as Record<string, unknown>).__decalId = record.id;
       }
     }
+    emitDecalState();
   }
 
   function ensureAllSelectedDecals() {
@@ -709,6 +767,10 @@ export async function initDecalDemo(container: HTMLElement, opts?: InitDecalDemo
   camera.position.set(2, 1.5, 2);
   const controls = new OrbitControls(camera, renderer.domElement);
   controls.enableDamping = true;
+  if (!isInteractive) {
+    controls.enablePan = false;
+    controls.enableZoom = false;
+  }
 
   // ---------------- Luzes ----------------
   scene.add(new THREE.HemisphereLight(0xffffff, 0x222244, 1.0));
@@ -747,7 +809,7 @@ export async function initDecalDemo(container: HTMLElement, opts?: InitDecalDemo
 
   // ---------------- Carregar modelo ----------------
   const params = new URLSearchParams(window.location.search);
-  const modelFile = params.get("model") || "tshirt_model/scene.gltf";
+  const modelFile = opts?.model || params.get("model") || "tshirt_model/scene.gltf";
   // Modo mesh (DecalGeometry) é o único disponível
   const modelUrl = `/models/${modelFile}`;
   const gltfLoader = new GLTFLoader();
@@ -993,27 +1055,29 @@ export async function initDecalDemo(container: HTMLElement, opts?: InitDecalDemo
     cutMenu.style.top = `${top}px`;
   };
 
-  cutButton.addEventListener("click", (event) => {
-    event.preventDefault();
-    event.stopPropagation();
-    toggleCutSubmenu();
-  });
+  if (isInteractive) {
+    cutButton.addEventListener("click", (event) => {
+      event.preventDefault();
+      event.stopPropagation();
+      toggleCutSubmenu();
+    });
 
-  cutMenu.addEventListener("pointerdown", (event) => {
-    event.stopPropagation();
-  });
+    cutMenu.addEventListener("pointerdown", (event) => {
+      event.stopPropagation();
+    });
 
-  window.addEventListener("pointerdown", (event) => {
-    if (cutMenuOpen && !cutMenu.contains(event.target as Node)) {
-      closeCutMenu();
-    }
-  });
+    window.addEventListener("pointerdown", (event) => {
+      if (cutMenuOpen && !cutMenu.contains(event.target as Node)) {
+        closeCutMenu();
+      }
+    });
 
-  window.addEventListener("keydown", (event) => {
-    if (event.key === "Escape") {
-      closeCutMenu();
-    }
-  });
+    window.addEventListener("keydown", (event) => {
+      if (event.key === "Escape") {
+        closeCutMenu();
+      }
+    });
+  }
 
   function makeHandle(r = theme.handleRadius, fill = theme.primary) {
     const h = document.createElementNS(svgNS, "circle");
@@ -1062,7 +1126,7 @@ export async function initDecalDemo(container: HTMLElement, opts?: InitDecalDemo
   }
 
   function showOverlay(v: boolean) {
-    overlay.style.display = v ? "block" : "none";
+    overlay.style.display = isInteractive && v ? "block" : "none";
   }
 
   // manter os 4 vértices em tela para clique & visibilidade
@@ -1343,103 +1407,119 @@ export async function initDecalDemo(container: HTMLElement, opts?: InitDecalDemo
     updateOverlay();
   }
 
-  function bindHandle(h: SVGCircleElement, mode: DragMode) {
-    h.addEventListener("pointerdown", (ev) => startDrag(mode, ev));
-    window.addEventListener("pointermove", onPointerMoveOverlay);
-    window.addEventListener("pointerup", endDrag);
+  if (isInteractive) {
+    function bindHandle(h: SVGCircleElement, mode: DragMode) {
+      h.addEventListener("pointerdown", (ev) => startDrag(mode, ev));
+      window.addEventListener("pointermove", onPointerMoveOverlay);
+      window.addEventListener("pointerup", endDrag);
+    }
+    bindHandle(handles.tl, "scale-tl");
+    bindHandle(handles.tr, "scale-tr");
+    bindHandle(handles.br, "scale-br");
+    bindHandle(handles.bl, "scale-bl");
+    bindHandle(handles.tm, "scale-tm");
+    bindHandle(handles.bm, "scale-bm");
+    bindHandle(handles.ml, "scale-ml");
+    bindHandle(handles.mr, "scale-mr");
+    bindHandle(handles.rot, "rotate");
+
+    // mover pelo overlay (clicando no retângulo)
+    boxPoly.addEventListener("pointerdown", (ev) => startDrag("move", ev));
+
+    // =========================
+    // Clique x Arrasto no canvas (para NÃO deselecionar durante rotação da cena)
+    // =========================
+    const CLICK_EPS = 5; // px
+    let downState: {
+      active: boolean;
+      startX: number;
+      startY: number;
+      moved: boolean;
+      wasOutsideGizmo: boolean;
+    } = { active: false, startX: 0, startY: 0, moved: false, wasOutsideGizmo: true };
+
+    renderer.domElement.addEventListener(
+      "pointerdown",
+      (ev) => {
+        const r = renderer.domElement.getBoundingClientRect();
+        const sx = ev.clientX - r.left;
+        const sy = ev.clientY - r.top;
+
+        const pickedDecal = pickDecalAt(ev.clientX, ev.clientY);
+        if (pickedDecal) {
+          if (!galleryState.selectedIds.has(pickedDecal.id)) {
+            galleryState.selectedIds.add(pickedDecal.id);
+          }
+          setActiveDecal(pickedDecal.id);
+          renderGallery();
+        }
+
+        let outside = selected ? !pointInQuad(sx, sy) : true;
+        if (pickedDecal) outside = false;
+
+        downState = {
+          active: true,
+          startX: sx,
+          startY: sy,
+          moved: false,
+          wasOutsideGizmo: outside,
+        };
+
+        if (!selected) {
+          const hit = hitAt(ev.clientX, ev.clientY);
+          if (hit && isPointInsideDecalWorld(hit.point)) {
+            select();
+            updateOverlay();
+            downState.wasOutsideGizmo = false; // evita piscar
+          }
+        }
+      },
+      { capture: true }
+    );
+
+    renderer.domElement.addEventListener(
+      "contextmenu",
+      (event) => {
+        const picked = pickDecalAt(event.clientX, event.clientY);
+        if (!picked) {
+          closeCutMenu();
+          return;
+        }
+        event.preventDefault();
+        event.stopPropagation();
+        galleryState.selectedIds.add(picked.id);
+        setActiveDecal(picked.id);
+        renderGallery();
+        showCutMenu(event.clientX, event.clientY);
+      },
+      { capture: true }
+    );
+
+    renderer.domElement.addEventListener(
+      "pointermove",
+      (ev) => {
+        if (!downState.active) return;
+        const r = renderer.domElement.getBoundingClientRect();
+        const dx = ev.clientX - r.left - downState.startX;
+        const dy = ev.clientY - r.top - downState.startY;
+        if (!downState.moved && dx * dx + dy * dy > CLICK_EPS * CLICK_EPS) {
+          downState.moved = true;
+        }
+      },
+      { capture: true }
+    );
+
+    renderer.domElement.addEventListener(
+      "pointerup",
+      () => {
+        if (downState.active && !downState.moved && selected && downState.wasOutsideGizmo) {
+          deselect();
+        }
+        downState.active = false;
+      },
+      { capture: true }
+    );
   }
-  bindHandle(handles.tl, "scale-tl");
-  bindHandle(handles.tr, "scale-tr");
-  bindHandle(handles.br, "scale-br");
-  bindHandle(handles.bl, "scale-bl");
-  bindHandle(handles.tm, "scale-tm");
-  bindHandle(handles.bm, "scale-bm");
-  bindHandle(handles.ml, "scale-ml");
-  bindHandle(handles.mr, "scale-mr");
-  bindHandle(handles.rot, "rotate");
-
-  // mover pelo overlay (clicando no retângulo)
-  boxPoly.addEventListener("pointerdown", (ev) => startDrag("move", ev));
-
-  // =========================
-  // Clique x Arrasto no canvas (para NÃO deselecionar durante rotação da cena)
-  // =========================
-  const CLICK_EPS = 5; // px
-  let downState: {
-    active: boolean;
-    startX: number; startY: number;
-    moved: boolean;
-    wasOutsideGizmo: boolean;
-  } = { active: false, startX: 0, startY: 0, moved: false, wasOutsideGizmo: true };
-
-  renderer.domElement.addEventListener("pointerdown", (ev) => {
-    const r = renderer.domElement.getBoundingClientRect();
-    const sx = ev.clientX - r.left;
-    const sy = ev.clientY - r.top;
-
-    const pickedDecal = pickDecalAt(ev.clientX, ev.clientY);
-    if (pickedDecal) {
-      if (!galleryState.selectedIds.has(pickedDecal.id)) {
-        galleryState.selectedIds.add(pickedDecal.id);
-      }
-      setActiveDecal(pickedDecal.id);
-      renderGallery();
-    }
-
-    let outside = selected ? !pointInQuad(sx, sy) : true;
-    if (pickedDecal) outside = false;
-
-    downState = {
-      active: true,
-      startX: sx, startY: sy,
-      moved: false,
-      wasOutsideGizmo: outside,
-    };
-
-    if (!selected) {
-      const hit = hitAt(ev.clientX, ev.clientY);
-      if (hit && isPointInsideDecalWorld(hit.point)) {
-        select();
-        updateOverlay();
-        downState.wasOutsideGizmo = false; // evita piscar
-      }
-    }
-  }, { capture: true });
-
-  renderer.domElement.addEventListener(
-    "contextmenu",
-    (event) => {
-      const picked = pickDecalAt(event.clientX, event.clientY);
-      if (!picked) {
-        closeCutMenu();
-        return;
-      }
-      event.preventDefault();
-      event.stopPropagation();
-      galleryState.selectedIds.add(picked.id);
-      setActiveDecal(picked.id);
-      renderGallery();
-      showCutMenu(event.clientX, event.clientY);
-    },
-    { capture: true }
-  );
-
-  renderer.domElement.addEventListener("pointermove", (ev) => {
-    if (!downState.active) return;
-    const r = renderer.domElement.getBoundingClientRect();
-    const dx = ev.clientX - r.left - downState.startX;
-    const dy = ev.clientY - r.top - downState.startY;
-    if (!downState.moved && (dx*dx + dy*dy) > CLICK_EPS*CLICK_EPS) {
-      downState.moved = true;
-    }
-  }, { capture: true });
-
-  renderer.domElement.addEventListener("pointerup", () => {
-    if (downState.active && !downState.moved && selected && downState.wasOutsideGizmo) {
-      deselect();
-    }
-    downState.active = false;
-  }, { capture: true });
 
   function configureDecalPlacement(targetRoot: THREE.Object3D) {
     const bbox = new THREE.Box3().setFromObject(targetRoot);
@@ -1488,15 +1568,17 @@ export async function initDecalDemo(container: HTMLElement, opts?: InitDecalDemo
 
       const radius = size.length() * 0.5 || 1;
       const fov = (camera.fov * Math.PI) / 180;
-      const dist = radius / Math.sin(fov / 2);
+      const baseDist = radius / Math.sin(fov / 2);
+      const zoomMult = opts?.zoomMultiplier ?? (isInteractive ? 1.0 : 0.55);
+      const dist = baseDist * zoomMult;
 
       camera.position.set(0.8 * dist, center.y, dist);
       camera.lookAt(center.x, center.y, center.z);
       controls.target.copy(center);
       controls.update();
 
-  configureDecalPlacement(root);
-      attachDragHandlers();
+    configureDecalPlacement(root);
+      if (isInteractive) attachDragHandlers();
     },
     undefined,
     (err) => console.error("Falha ao carregar modelo:", err)
@@ -1509,9 +1591,10 @@ export async function initDecalDemo(container: HTMLElement, opts?: InitDecalDemo
     camera.aspect = w / h;
     camera.updateProjectionMatrix();
     renderer.setSize(w, h);
-    updateOverlay();
+    if (isInteractive) updateOverlay();
   };
-  new ResizeObserver(onResize).observe(container);
+  const resizeObserver = new ResizeObserver(onResize);
+  resizeObserver.observe(container);
 
   // verificação de visibilidade p/ deselecionar automaticamente
   function isDecalVisible(): boolean {
@@ -1549,7 +1632,10 @@ export async function initDecalDemo(container: HTMLElement, opts?: InitDecalDemo
   }
 
   // ---------------- Loop ----------------
+  let rafId = 0;
+  let running = true;
   const tick = () => {
+    if (!running) return;
     controls.update();
     if (projector) projector.update();
 
@@ -1558,10 +1644,10 @@ export async function initDecalDemo(container: HTMLElement, opts?: InitDecalDemo
       deselect();
     }
 
-    if (selected) updateOverlay();
+    if (isInteractive && selected) updateOverlay();
 
     renderer.render(scene, camera);
-    requestAnimationFrame(tick);
+    rafId = requestAnimationFrame(tick);
   };
   tick();
 
@@ -1573,6 +1659,30 @@ export async function initDecalDemo(container: HTMLElement, opts?: InitDecalDemo
     });
   }
 
+  function collectDecalState() {
+    return Array.from(decals.values()).map((record) => ({
+      id: record.id,
+      position: {
+        x: record.center.x,
+        y: record.center.y,
+        z: record.center.z,
+      },
+      normal: {
+        x: record.normal.x,
+        y: record.normal.y,
+        z: record.normal.z,
+      },
+      width: record.width,
+      height: record.height,
+      depth: record.depth,
+      angle: record.angle,
+    }));
+  }
+
+  function emitDecalState() {
+    notifyListeners(collectDecalState());
+  }
+
   // Exemplo: chame notifyListeners sempre que decals mudarem
   // Adapte para chamar com o estado correto dos decals
   // Exemplo: notifyListeners(currentDecalState);
@@ -1580,15 +1690,17 @@ export async function initDecalDemo(container: HTMLElement, opts?: InitDecalDemo
   // Exemplo de integração: após upsert/remove, notificar
   const upsertExternalDecalWithNotify = (payload: ExternalDecalPayload) => {
     upsertExternalDecal(payload);
-    // notifyListeners(...); // Passe o estado correto
   };
   const removeExternalDecalWithNotify = (id: string) => {
     removeExternalDecal(id);
-    // notifyListeners(...); // Passe o estado correto
   };
 
   function subscribe(listener: (state: any) => void) {
     listeners.push(listener);
+    const initialState = collectDecalState();
+    if (initialState.length) {
+      try { listener(initialState); } catch {}
+    }
     // Retorna função para remover listener
     return () => {
       const idx = listeners.indexOf(listener);
@@ -1596,10 +1708,20 @@ export async function initDecalDemo(container: HTMLElement, opts?: InitDecalDemo
     };
   }
 
+  const destroy = () => {
+    running = false;
+    cancelAnimationFrame(rafId);
+    resizeObserver.disconnect();
+    controls.dispose();
+    renderer.dispose();
+    container.innerHTML = "";
+  };
+
   return {
     upsertExternalDecal: upsertExternalDecalWithNotify,
     removeExternalDecal: removeExternalDecalWithNotify,
     subscribe,
+    destroy,
   } satisfies DecalDemoHandle;
 }
 

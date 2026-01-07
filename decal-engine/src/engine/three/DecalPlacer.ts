@@ -26,8 +26,6 @@ export class DecalPlacer {
     this.texturePromise = loader.loadAsync(logoUrl).then((tex) => {
       if ("colorSpace" in tex && (THREE as any).SRGBColorSpace) {
         (tex as any).colorSpace = (THREE as any).SRGBColorSpace;
-      } else if ((tex as any).encoding !== undefined && (THREE as any).sRGBEncoding !== undefined) {
-        (tex as any).encoding = (THREE as any).sRGBEncoding;
       }
       tex.generateMipmaps = true;
       tex.minFilter = THREE.LinearMipmapLinearFilter;

@@ -48,9 +48,7 @@ export default class ProjectionDecal {
     this.texture.wrapT = THREE.ClampToEdgeWrapping;
     this.texture.minFilter = THREE.LinearMipmapLinearFilter;
     this.texture.magFilter = THREE.LinearFilter;
-    // @ts-ignore compat <= r151
-  if ("colorSpace" in this.texture) (this.texture as any).colorSpace = (THREE as any).SRGBColorSpace;
-  else (this.texture as any).encoding = (THREE as any).sRGBEncoding;
+    if ("colorSpace" in this.texture) (this.texture as any).colorSpace = (THREE as any).SRGBColorSpace;
 
     this.projector = new THREE.Object3D();
     this.projector.name = "ProjectionDecalProjector";

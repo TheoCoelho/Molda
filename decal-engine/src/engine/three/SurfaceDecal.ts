@@ -158,7 +158,6 @@ export class SurfaceDecal {
 		// Normaliza textura
 		if ("colorSpace" in tex)
 			(tex as any).colorSpace = (THREE as any).SRGBColorSpace;
-		else (tex as any).encoding = (THREE as any).sRGBEncoding;
 		tex.generateMipmaps = true;
 		tex.minFilter = THREE.LinearMipmapLinearFilter;
 		tex.magFilter = THREE.LinearFilter;
