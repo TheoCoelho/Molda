@@ -2252,10 +2252,10 @@ const Editor2D = forwardRef<Editor2DHandle, Props>(function Editor2D(
       }
     });
 
+    const lassoActive = !!effectLassoRef.current?.active;
     effectBrushRef.current = null;
     try {
-      const anyActive = !!effectBrushRef.current?.active || !!effectLassoRef.current?.active;
-      emitEffectEditMode(anyActive);
+      emitEffectEditMode(lassoActive);
     } catch {}
     try { c.requestRenderAll?.(); } catch {}
   };
@@ -2310,10 +2310,10 @@ const Editor2D = forwardRef<Editor2DHandle, Props>(function Editor2D(
       }
     });
 
+    const brushActive = !!effectBrushRef.current?.active;
     effectLassoRef.current = null;
     try {
-      const anyActive = !!effectBrushRef.current?.active || !!effectLassoRef.current?.active;
-      emitEffectEditMode(anyActive);
+      emitEffectEditMode(brushActive);
     } catch {}
     try { c.requestRenderAll?.(); } catch {}
   };

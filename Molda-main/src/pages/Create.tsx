@@ -272,7 +272,17 @@ const Create = () => {
         id: tab.id,
         label: tab.name,
         dataUrl: previews[tab.id],
-        transform: placements[tab.id] ?? null,
+        // clone to avoid decal-engine mutating the stored object
+        transform: placements[tab.id]
+          ? {
+              position: placements[tab.id].position ? { ...placements[tab.id].position } : null,
+              normal: placements[tab.id].normal ? { ...placements[tab.id].normal } : null,
+              width: placements[tab.id].width,
+              height: placements[tab.id].height,
+              depth: placements[tab.id].depth,
+              angle: placements[tab.id].angle,
+            }
+          : null,
       }));
   }, [selectedDraft]);
 
@@ -511,9 +521,16 @@ const Create = () => {
                         const remainingMs = expiresAt === null ? null : expiresAt - nowTs;
                         return (
                           <li key={draft.id}>
-                            <button
-                              type="button"
+                            <div
+                              role="button"
+                              tabIndex={0}
                               onClick={() => setSelectedDraftId(draft.id)}
+                              onKeyDown={(e) => {
+                                if (e.key === "Enter" || e.key === " ") {
+                                  e.preventDefault();
+                                  setSelectedDraftId(draft.id);
+                                }
+                              }}
                               className={cn(
                                 "w-full rounded-xl border px-4 py-3 text-left transition",
                                 "hover:border-primary/60 hover:bg-primary/5",
@@ -556,7 +573,7 @@ const Create = () => {
                                   Continuar edição
                                 </Button>
                               </div>
-                            </button>
+                            </div>
                           </li>
                         );
                       })}
@@ -793,24 +810,26 @@ function SegmentedMannequin({ selected, hovered, onHover, onSelect }: SegmentedM
         shader.vertexShader = shader.vertexShader
           .replace(
             "#include <common>",
-            "#include <common>\n  varying vec3 vWorldPosition;"
+            "#include <common>\nvarying vec3 vWorldPosition;"
           )
           .replace(
-            "#include <worldpos_vertex>",
-            "#include <worldpos_vertex>\n  vWorldPosition = worldPosition.xyz;"
+            "#include <begin_vertex>",
+            `#include <begin_vertex>
+vec4 worldPos = modelMatrix * vec4(position, 1.0);
+vWorldPosition = worldPos.xyz;`
           );
 
         shader.fragmentShader = shader.fragmentShader
           .replace(
             "#include <common>",
             `#include <common>
-  varying vec3 vWorldPosition;
-  uniform float uHeadStart;
-  uniform float uTorsoStart;
-  uniform vec3 uSelected;
-  uniform vec3 uHovered;
-  uniform vec3 uSelectedColor;
-  uniform vec3 uHoverColor;`
+varying vec3 vWorldPosition;
+uniform float uHeadStart;
+uniform float uTorsoStart;
+uniform vec3 uSelected;
+uniform vec3 uHovered;
+uniform vec3 uSelectedColor;
+uniform vec3 uHoverColor;`
           )
           .replace(
             "#include <output_fragment>",

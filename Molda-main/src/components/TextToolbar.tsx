@@ -19,6 +19,12 @@ import {
 } from "lucide-react";
 
 /** ===== Props ===== */
+type Props = {
+  editor: { current: Editor2DHandle | null };
+  visible: boolean;
+  position?: "top" | "bottom" | "inline";
+};
+
 export default function TextToolbar({ editor, visible, position = "bottom" }: Props) {
 
 
@@ -145,7 +151,7 @@ async function ensureFontReady(
   };
 
   useEffect(() => {
-    editor.current?.onSelectionChange?.((kind) => {
+    editor.current?.onSelectionChange?.((kind: "none" | "text" | "image" | "other") => {
       if (kind === "text") refreshFromSelection();
     });
   }, [editor]);
