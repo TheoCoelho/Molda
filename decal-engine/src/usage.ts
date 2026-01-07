@@ -589,7 +589,21 @@ export async function initDecalDemo(container: HTMLElement, opts?: InitDecalDemo
         (mesh.userData as Record<string, unknown>).__decalId = record.id;
       }
     }
-    emitDecalState();
+    queueEmitDecalState();
+  }
+
+  // Evita notificar em excesso (principalmente durante drag): agrupa mudanças por frame.
+  let emitRafId = 0;
+  let emitPending = false;
+  function queueEmitDecalState() {
+    emitPending = true;
+    if (emitRafId) return;
+    emitRafId = requestAnimationFrame(() => {
+      emitRafId = 0;
+      if (!emitPending) return;
+      emitPending = false;
+      emitDecalState();
+    });
   }
 
   function ensureAllSelectedDecals() {
@@ -1298,11 +1312,13 @@ export async function initDecalDemo(container: HTMLElement, opts?: InitDecalDemo
       draggingMesh = false;
       isInteracting = false;
       controls.enabled = true;
+      emitDecalState();
     });
     el.addEventListener("pointerleave", () => {
       draggingMesh = false;
       isInteracting = false;
       controls.enabled = true;
+      emitDecalState();
     });
   }
 
@@ -1330,11 +1346,29 @@ export async function initDecalDemo(container: HTMLElement, opts?: InitDecalDemo
     dragPlane = new THREE.Plane().setFromNormalAndCoplanarPoint(decalNormal, decalCenter);
     (ev.target as Element).setPointerCapture?.(ev.pointerId);
   }
+
+  // Listener global (window) deve existir no máx. 1 vez durante drag.
+  let windowDragListenersAttached = false;
+  const attachWindowDragListeners = () => {
+    if (windowDragListenersAttached) return;
+    windowDragListenersAttached = true;
+    window.addEventListener("pointermove", onPointerMoveOverlay, { passive: false });
+    window.addEventListener("pointerup", endDrag);
+  };
+  const detachWindowDragListeners = () => {
+    if (!windowDragListenersAttached) return;
+    windowDragListenersAttached = false;
+    window.removeEventListener("pointermove", onPointerMoveOverlay as any);
+    window.removeEventListener("pointerup", endDrag as any);
+  };
+
   function endDrag(ev: PointerEvent) {
     dragMode = null;
     dragPlane = null;
     isInteracting = false;
     (ev.target as Element).releasePointerCapture?.(ev.pointerId);
+    detachWindowDragListeners();
+    emitDecalState();
   }
 
   const overlayRay = new THREE.Raycaster();
@@ -1409,9 +1443,10 @@ export async function initDecalDemo(container: HTMLElement, opts?: InitDecalDemo
 
   if (isInteractive) {
     function bindHandle(h: SVGCircleElement, mode: DragMode) {
-      h.addEventListener("pointerdown", (ev) => startDrag(mode, ev));
-      window.addEventListener("pointermove", onPointerMoveOverlay);
-      window.addEventListener("pointerup", endDrag);
+      h.addEventListener("pointerdown", (ev) => {
+        startDrag(mode, ev);
+        attachWindowDragListeners();
+      });
     }
     bindHandle(handles.tl, "scale-tl");
     bindHandle(handles.tr, "scale-tr");
@@ -1424,7 +1459,10 @@ export async function initDecalDemo(container: HTMLElement, opts?: InitDecalDemo
     bindHandle(handles.rot, "rotate");
 
     // mover pelo overlay (clicando no retângulo)
-    boxPoly.addEventListener("pointerdown", (ev) => startDrag("move", ev));
+    boxPoly.addEventListener("pointerdown", (ev) => {
+      startDrag("move", ev);
+      attachWindowDragListeners();
+    });
 
     // =========================
     // Clique x Arrasto no canvas (para NÃO deselecionar durante rotação da cena)
@@ -1596,44 +1634,57 @@ export async function initDecalDemo(container: HTMLElement, opts?: InitDecalDemo
   const resizeObserver = new ResizeObserver(onResize);
   resizeObserver.observe(container);
 
+  // Reusa objetos temporários para reduzir GC em loops frequentes.
+  const _tmpViewDir = new THREE.Vector3();
+  const _frustum = new THREE.Frustum();
+  const _projView = new THREE.Matrix4();
+  const _tmpUpCand = new THREE.Vector3();
+  const _tmpRight0 = new THREE.Vector3();
+  const _tmpUp0 = new THREE.Vector3();
+  const _tmpRight = new THREE.Vector3();
+  const _tmpUp = new THREE.Vector3();
+  const _tmpPt = new THREE.Vector3();
+
   // verificação de visibilidade p/ deselecionar automaticamente
   function isDecalVisible(): boolean {
     if (!projector) return false;
 
     // 1) face para a câmera?
-    const viewDir = camera.position.clone().sub(decalCenter).normalize(); // do decal p/ câmera
+    const viewDir = _tmpViewDir.copy(camera.position).sub(decalCenter).normalize(); // do decal p/ câmera
     const facing = decalNormal.dot(viewDir) > 0; // normal voltada para a câmera
     if (!facing) return false;
 
     // 2) algum vértice do quad dentro do frustum?
-    const frustum = new THREE.Frustum();
-    const projView = new THREE.Matrix4().multiplyMatrices(
-      camera.projectionMatrix,
-      camera.matrixWorldInverse
-    );
-    frustum.setFromProjectionMatrix(projView);
+    _projView.multiplyMatrices(camera.projectionMatrix, camera.matrixWorldInverse);
+    _frustum.setFromProjectionMatrix(_projView);
 
-    const upCand =
-      Math.abs(decalNormal.y) > 0.9 ? new THREE.Vector3(1, 0, 0) : new THREE.Vector3(0, 1, 0);
-    const right0 = upCand.clone().cross(decalNormal).normalize();
-    const up0 = decalNormal.clone().cross(right0).normalize();
+    const upCand = Math.abs(decalNormal.y) > 0.9 ? _tmpUpCand.set(1, 0, 0) : _tmpUpCand.set(0, 1, 0);
+    _tmpRight0.copy(upCand).cross(decalNormal).normalize();
+    _tmpUp0.copy(decalNormal).cross(_tmpRight0).normalize();
     const c = Math.cos(decalAngle), s = Math.sin(decalAngle);
-    const right = right0.clone().multiplyScalar(c).add(up0.clone().multiplyScalar(s)).normalize();
-    const up = up0.clone().multiplyScalar(c).sub(right0.clone().multiplyScalar(s)).normalize();
+    _tmpRight.copy(_tmpRight0).multiplyScalar(c).add(_tmpUp.copy(_tmpUp0).multiplyScalar(s)).normalize();
+    _tmpUp.copy(_tmpUp0).multiplyScalar(c).sub(_tmpUp.copy(_tmpRight0).multiplyScalar(s)).normalize();
 
     const hx = decalWidth * 0.5, hy = decalHeight * 0.5;
-    const corners = [
-      decalCenter.clone().add(right.clone().multiplyScalar(-hx)).add(up.clone().multiplyScalar(hy)), // TL
-      decalCenter.clone().add(right.clone().multiplyScalar(hx)).add(up.clone().multiplyScalar(hy)),  // TR
-      decalCenter.clone().add(right.clone().multiplyScalar(hx)).add(up.clone().multiplyScalar(-hy)), // BR
-      decalCenter.clone().add(right.clone().multiplyScalar(-hx)).add(up.clone().multiplyScalar(-hy)) // BL
-    ];
-    return corners.some(pt => frustum.containsPoint(pt));
+    const testCorner = (sx: number, sy: number) => {
+      _tmpPt.copy(decalCenter)
+        .add(_tmpViewDir.copy(_tmpRight).multiplyScalar(sx * hx))
+        .add(_tmpUpCand.copy(_tmpUp).multiplyScalar(sy * hy));
+      return _frustum.containsPoint(_tmpPt);
+    };
+    return (
+      testCorner(-1, 1) ||
+      testCorner(1, 1) ||
+      testCorner(1, -1) ||
+      testCorner(-1, -1)
+    );
   }
 
   // ---------------- Loop ----------------
   let rafId = 0;
   let running = true;
+  let lastOverlayTs = 0;
+  const OVERLAY_MIN_DT = 1000 / 30; // ~30fps
   const tick = () => {
     if (!running) return;
     controls.update();
@@ -1644,7 +1695,13 @@ export async function initDecalDemo(container: HTMLElement, opts?: InitDecalDemo
       deselect();
     }
 
-    if (isInteractive && selected) updateOverlay();
+    if (isInteractive && selected) {
+      const now = performance.now();
+      if (isInteracting || now - lastOverlayTs >= OVERLAY_MIN_DT) {
+        lastOverlayTs = now;
+        updateOverlay();
+      }
+    }
 
     renderer.render(scene, camera);
     rafId = requestAnimationFrame(tick);
@@ -1711,6 +1768,9 @@ export async function initDecalDemo(container: HTMLElement, opts?: InitDecalDemo
   const destroy = () => {
     running = false;
     cancelAnimationFrame(rafId);
+    if (emitRafId) cancelAnimationFrame(emitRafId);
+    // caso a UI esteja no meio de um drag
+    try { detachWindowDragListeners(); } catch {}
     resizeObserver.disconnect();
     controls.dispose();
     renderer.dispose();
