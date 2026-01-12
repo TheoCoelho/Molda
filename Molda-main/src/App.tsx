@@ -44,7 +44,7 @@ const App = () => {
           {/* <ShaderBackground /> */}
           {/* Fundo cinza escuro */}
           <div
-            className="fixed inset-0 z-0 pointer-events-none bg-gray-800"
+            className="fixed inset-0 z-0 pointer-events-none vscode-background"
           />
 
           {/* Conteúdo do app acima do fundo */}

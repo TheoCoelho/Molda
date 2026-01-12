@@ -34,6 +34,7 @@ type Props = {
 };
 
 type CropTool = "default" | "square" | "lasso" | "magic" | "color";
+type EffectCategoryId = "color" | "deform" | "censor" | "overlay";
 
 function IconBtn({
   title,
@@ -129,6 +130,7 @@ export default function ImageToolbar({ visible, editor, position = "bottom" }: P
   const [effectsOpen, setEffectsOpen] = useState(false);
   const [effectsPinned, setEffectsPinned] = useState(false);
   const [effectKind, setEffectKind] = useState<ImageEffectKind>("none");
+  const [effectCategory, setEffectCategory] = useState<EffectCategoryId>("color");
   const [effectAmount, setEffectAmount] = useState(100); // 0-100 (será convertido para 0-1)
   const [effectMode, setEffectMode] = useState<"bucket" | "brush" | "lasso">("bucket");
   const [effectBrushSize, setEffectBrushSize] = useState(40);
@@ -187,19 +189,68 @@ export default function ImageToolbar({ visible, editor, position = "bottom" }: P
     );
   }, []);
 
-  const EFFECT_PRESETS: { kind: ImageEffectKind; label: string; icon: string }[] = [
-    { kind: "none", label: "Original", icon: "⊘" },
-    { kind: "grayscale", label: "P&B", icon: "◐" },
-    { kind: "sepia", label: "Sépia", icon: "🟤" },
-    { kind: "vintage", label: "Vintage", icon: "📷" },
-    { kind: "warm", label: "Quente", icon: "🔥" },
-    { kind: "cold", label: "Frio", icon: "❄️" },
-    { kind: "dramatic", label: "Dramático", icon: "🎭" },
-    { kind: "fade", label: "Desbotado", icon: "☁️" },
-    { kind: "invert", label: "Inverter", icon: "◑" },
-    { kind: "vignette", label: "Vinheta", icon: "⬤" },
-    { kind: "blur", label: "Desfoque", icon: "💧" },
+  const EFFECT_LIBRARY: { id: EffectCategoryId; label: string; presets: { kind: ImageEffectKind; label: string; icon: string }[] }[] = [
+    {
+      id: "color",
+      label: "Cor",
+      presets: [
+        { kind: "cinematic", label: "Cinemático", icon: "🎬" },
+        { kind: "vibrant", label: "Vibrante", icon: "🌈" },
+        { kind: "noir", label: "Noir", icon: "⬛" },
+        { kind: "pastel", label: "Pastel", icon: "🍬" },
+        { kind: "film", label: "Filme", icon: "🎞️" },
+        { kind: "vintage", label: "Vintage", icon: "📷" },
+        { kind: "warm", label: "Quente", icon: "🔥" },
+        { kind: "cold", label: "Frio", icon: "❄️" },
+        { kind: "dramatic", label: "Dramático", icon: "🎭" },
+        { kind: "fade", label: "Desbotado", icon: "☁️" },
+        { kind: "grayscale", label: "P&B", icon: "◐" },
+        { kind: "sepia", label: "Sépia", icon: "🟤" },
+        { kind: "vignette", label: "Vinheta", icon: "⬤" },
+      ],
+    },
+    {
+      id: "deform",
+      label: "Deformar",
+      presets: [
+        { kind: "swirl", label: "Swirl", icon: "🌀" },
+        { kind: "wave", label: "Ondas", icon: "〰️" },
+        { kind: "perspective", label: "Perspectiva", icon: "📐" },
+      ],
+    },
+    {
+      id: "censor",
+      label: "Censura",
+      presets: [
+        { kind: "blur", label: "Desfoque", icon: "💧" },
+        { kind: "pixelate", label: "Pixelar", icon: "⬜" },
+        { kind: "invert", label: "Inverter", icon: "◑" },
+      ],
+    },
+    {
+      id: "overlay",
+      label: "Respingo",
+      presets: [
+        { kind: "ink-splash-a", label: "Respingo A", icon: "🪣" },
+        { kind: "ink-splash-b", label: "Respingo B", icon: "🩸" },
+        { kind: "ink-splash-c", label: "Respingo C", icon: "🎨" },
+      ],
+    },
   ];
+
+  const NEUTRAL_EFFECT_PRESETS: { kind: ImageEffectKind; label: string; icon: string }[] = [
+    { kind: "none", label: "Original", icon: "⊘" },
+  ];
+
+  const findCategoryForKind = (kind: ImageEffectKind): EffectCategoryId => {
+    const found = EFFECT_LIBRARY.find((cat) => cat.presets.some((p) => p.kind === kind));
+    return found?.id ?? "color";
+  };
+
+  const visibleEffectPresets = React.useMemo(() => {
+    const currentCat = EFFECT_LIBRARY.find((cat) => cat.id === effectCategory) ?? EFFECT_LIBRARY[0];
+    return [...NEUTRAL_EFFECT_PRESETS, ...currentCat.presets];
+  }, [effectCategory]);
 
   const applyEffect = (kind: ImageEffectKind, amount: number) => {
     const fx: ImageEffects = { kind, amount: amount / 100 };
@@ -208,6 +259,7 @@ export default function ImageToolbar({ visible, editor, position = "bottom" }: P
 
   const handleEffectKindChange = (kind: ImageEffectKind) => {
     setEffectKind(kind);
+    setEffectCategory(findCategoryForKind(kind));
 
     // Em modos regionais: só entra em edição ao selecionar um efeito.
     if (effectMode === "brush") {
@@ -238,6 +290,7 @@ export default function ImageToolbar({ visible, editor, position = "bottom" }: P
     const current = editor?.current?.getActiveImageEffects?.();
     if (!current) return;
     setEffectKind(current.kind ?? "none");
+    setEffectCategory(findCategoryForKind(current.kind ?? "none"));
     setEffectAmount(Math.round((current.amount ?? 1) * 100));
     // Atualiza scroll state
     requestAnimationFrame(updateEffectsScrollState);
@@ -555,6 +608,13 @@ export default function ImageToolbar({ visible, editor, position = "bottom" }: P
       try {
         editor?.current?.cancelCrop?.();
       } catch {}
+    }
+
+    if (next === "color") {
+      try {
+        editor?.current?.startColorCut?.();
+      } catch {}
+      return;
     }
   };
 
@@ -1227,6 +1287,31 @@ export default function ImageToolbar({ visible, editor, position = "bottom" }: P
                 </div>
               </div>
 
+              {/* Categorias de efeitos */}
+              <div className="mt-2 px-1 flex flex-wrap gap-1">
+                {EFFECT_LIBRARY.map((cat) => (
+                  <button
+                    key={cat.id}
+                    type="button"
+                    className={`px-3 h-7 rounded-full text-xs border transition ${
+                      effectCategory === cat.id
+                        ? "border-violet-400 bg-violet-50 dark:bg-violet-900/30 text-violet-700 dark:text-violet-200"
+                        : "border-black/10 dark:border-white/10 bg-white/70 dark:bg-neutral-900/70 hover:bg-white dark:hover:bg-neutral-800"
+                    }`}
+                    onClick={() => {
+                      setEffectCategory(cat.id);
+                      const hasCurrent = cat.presets.some((p) => p.kind === effectKind) || effectKind === "none";
+                      if (!hasCurrent && cat.presets.length > 0) {
+                        handleEffectKindChange(cat.presets[0].kind);
+                      }
+                      requestAnimationFrame(updateEffectsScrollState);
+                    }}
+                  >
+                    {cat.label}
+                  </button>
+                ))}
+              </div>
+
               {/* Container horizontal com scroll */}
               <div className="relative">
                 {/* Seta esquerda */}
@@ -1274,7 +1359,7 @@ export default function ImageToolbar({ visible, editor, position = "bottom" }: P
                   onScroll={updateEffectsScrollState}
                   onLoad={() => requestAnimationFrame(updateEffectsScrollState)}
                 >
-                  {EFFECT_PRESETS.map((preset) => (
+                  {visibleEffectPresets.map((preset) => (
                     <button
                       key={preset.kind}
                       type="button"

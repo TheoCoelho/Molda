@@ -27,7 +27,38 @@ export default function DecalEngineHost({
   const initedRef = useRef(false);
   const apiRef = useRef<DecalDemoHandle | null>(null);
   const prevExternalIdsRef = useRef<Set<string>>(new Set());
+  const prevPayloadsRef = useRef<Map<string, Parameters<DecalDemoHandle["upsertExternalDecal"]>[0]>>(new Map());
   const [ready, setReady] = useState(false);
+
+  const payloadEquals = (
+    a: Parameters<DecalDemoHandle["upsertExternalDecal"]>[0] | undefined,
+    b: Parameters<DecalDemoHandle["upsertExternalDecal"]>[0] | undefined
+  ) => {
+    if (!a || !b) return false;
+    if (a.id !== b.id) return false;
+    if (a.label !== b.label) return false;
+    if (a.src !== b.src) return false;
+    if (a.width !== b.width) return false;
+    if (a.height !== b.height) return false;
+    if (a.depth !== b.depth) return false;
+    if (a.angle !== b.angle) return false;
+
+    const ap = a.position;
+    const bp = b.position;
+    if (!!ap !== !!bp) return false;
+    if (ap && bp) {
+      if (ap.x !== bp.x || ap.y !== bp.y || ap.z !== bp.z) return false;
+    }
+
+    const an = a.normal;
+    const bn = b.normal;
+    if (!!an !== !!bn) return false;
+    if (an && bn) {
+      if (an.x !== bn.x || an.y !== bn.y || an.z !== bn.z) return false;
+    }
+
+    return true;
+  };
 
   useEffect(() => {
     if (initedRef.current) return; // inicializa apenas uma vez por montagem
@@ -76,10 +107,12 @@ export default function DecalEngineHost({
     if (!api) return;
 
     const nextIds = new Set(decals.map((d) => d.id));
+    const nextPayloads = new Map<string, Parameters<DecalDemoHandle["upsertExternalDecal"]>[0]>();
 
     prevExternalIdsRef.current.forEach((id) => {
       if (!nextIds.has(id)) {
         api.removeExternalDecal(id);
+        prevPayloadsRef.current.delete(id);
       }
     });
 
@@ -101,10 +134,17 @@ export default function DecalEngineHost({
         if (t.normal) payload.normal = t.normal;
       }
 
-      api.upsertExternalDecal(payload);
+      nextPayloads.set(decal.id, payload);
+
+      const prevPayload = prevPayloadsRef.current.get(decal.id);
+      // Só faz upsert se realmente mudou (evita spam durante movimentação).
+      if (!payloadEquals(prevPayload, payload)) {
+        api.upsertExternalDecal(payload);
+      }
     });
 
     prevExternalIdsRef.current = nextIds;
+    prevPayloadsRef.current = nextPayloads;
   }, [decals, ready]);
 
   useEffect(() => {

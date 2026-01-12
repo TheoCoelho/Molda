@@ -538,8 +538,10 @@ const Creation = () => {
   const [selectionKind, setSelectionKind] = useState<SelectionKind>("none");
   const [selectionInfo, setSelectionInfo] = useState<SelectionInfo | null>(null);
   const [cropModeActive, setCropModeActive] = useState(false);
+  const [colorCutModeActive, setColorCutModeActive] = useState(false);
   const [effectsEditModeActive, setEffectsEditModeActive] = useState(false);
   const cropListenerGuard = useRef<WeakSet<Editor2DHandle>>(new WeakSet());
+  const colorCutListenerGuard = useRef<WeakSet<Editor2DHandle>>(new WeakSet());
   const effectsListenerGuard = useRef<WeakSet<Editor2DHandle>>(new WeakSet());
 
   const updateSelectionInfo = useCallback(() => {
@@ -587,6 +589,7 @@ const Creation = () => {
       setSelectionKind("none");
       setSelectionInfo(null);
       setCropModeActive(false);
+      setColorCutModeActive(false);
       return;
     }
     updateSelectionInfo();
@@ -595,10 +598,12 @@ const Creation = () => {
   useEffect(() => {
     if (!activeIs2D) {
       setCropModeActive(false);
+      setColorCutModeActive(false);
       return;
     }
     const inst = editorRefs.current[activeCanvasTab];
     setCropModeActive(!!inst?.isCropActive?.());
+    setColorCutModeActive(!!inst?.isColorCutActive?.());
   }, [activeIs2D, activeCanvasTab]);
 
   const [tabSnapshots, setTabSnapshots] = useState<Record<string, string>>({});
@@ -1342,6 +1347,13 @@ const Creation = () => {
                                   cropListenerGuard.current.add(inst);
                                 }
 
+                                if (!colorCutListenerGuard.current.has(inst)) {
+                                  inst.onColorCutModeChange?.((active) => {
+                                    if (tab.id === activeCanvasTab) setColorCutModeActive(active);
+                                  });
+                                  colorCutListenerGuard.current.add(inst);
+                                }
+
                                 if (!effectsListenerGuard.current.has(inst)) {
                                   inst.onEffectEditModeChange?.((active) => {
                                     if (tab.id === activeCanvasTab) setEffectsEditModeActive(active);
@@ -1353,6 +1365,7 @@ const Creation = () => {
                                 if (tab.id === activeCanvasTab) {
                                   setCropModeActive(!!inst.isCropActive?.());
                                   setEffectsEditModeActive(!!inst.isEffectBrushActive?.() || !!inst.isEffectLassoActive?.());
+                                  setColorCutModeActive(!!inst.isColorCutActive?.());
                                 }
                               }}
                               isActive={activeIs2D && tab.id === activeCanvasTab}
@@ -1392,7 +1405,8 @@ const Creation = () => {
                         const activeEditor = editorRefs.current[activeCanvasTab] as Editor2DHandle | undefined;
                         const effectBrushActive = !!activeEditor?.isEffectBrushActive?.();
                         const effectLassoActive = !!activeEditor?.isEffectLassoActive?.();
-                        const showToolConfirm = cropModeActive || effectBrushActive || effectLassoActive;
+                        const colorCutActive = colorCutModeActive || !!activeEditor?.isColorCutActive?.();
+                        const showToolConfirm = cropModeActive || effectBrushActive || effectLassoActive || colorCutActive;
                         if (!showToolConfirm) return null;
                         return (
                         <div className="absolute left-1/2 bottom-6 z-10 max-w-[95%] -translate-x-1/2">
@@ -1403,7 +1417,7 @@ const Creation = () => {
                               "backdrop-blur supports-[backdrop-filter]:bg-background/90",
                             ].join(" ")}
                             role="toolbar"
-                            aria-label={cropModeActive ? "Corte" : (effectBrushActive ? "Efeito (Pincel)" : "Efeito (Laço)")}
+                            aria-label={cropModeActive ? "Corte" : (colorCutActive ? "Corte por cor" : (effectBrushActive ? "Efeito (Pincel)" : "Efeito (Laço)"))}
                           >
                             <Button
                               type="button"
@@ -1411,9 +1425,11 @@ const Creation = () => {
                               onClick={() =>
                                 cropModeActive
                                   ? editorRefs.current[activeCanvasTab]?.confirmCrop?.()
-                                  : (effectLassoActive
-                                    ? editorRefs.current[activeCanvasTab]?.confirmEffectLasso?.()
-                                    : editorRefs.current[activeCanvasTab]?.confirmEffectBrush?.())
+                                  : (colorCutActive
+                                    ? editorRefs.current[activeCanvasTab]?.confirmColorCut?.()
+                                    : (effectLassoActive
+                                      ? editorRefs.current[activeCanvasTab]?.confirmEffectLasso?.()
+                                      : editorRefs.current[activeCanvasTab]?.confirmEffectBrush?.()))
                               }
                               title="Confirmar (Enter)"
                             >
@@ -1426,9 +1442,11 @@ const Creation = () => {
                               onClick={() =>
                                 cropModeActive
                                   ? editorRefs.current[activeCanvasTab]?.cancelCrop?.()
-                                  : (effectLassoActive
-                                    ? editorRefs.current[activeCanvasTab]?.cancelEffectLasso?.()
-                                    : editorRefs.current[activeCanvasTab]?.cancelEffectBrush?.())
+                                  : (colorCutActive
+                                    ? editorRefs.current[activeCanvasTab]?.cancelColorCut?.()
+                                    : (effectLassoActive
+                                      ? editorRefs.current[activeCanvasTab]?.cancelEffectLasso?.()
+                                      : editorRefs.current[activeCanvasTab]?.cancelEffectBrush?.()))
                               }
                               title="Cancelar (Esc ou Delete)"
                             >

@@ -42,8 +42,6 @@ type CurveMeta = {
   opacity: number;
   fill: string | null;
 };
-
-/** Estilo de texto suportado pelo editor */
 export type TextStyle = Partial<{
   fontFamily: string;
   fontSize: number;
@@ -87,13 +85,25 @@ export type ImageEffectKind =
   | "sepia"
   | "invert"
   | "blur"
+  | "pixelate"
   | "sharpen"
   | "vintage"
   | "cold"
   | "warm"
   | "dramatic"
   | "fade"
-  | "vignette";
+  | "vignette"
+  | "cinematic"
+  | "vibrant"
+  | "noir"
+  | "pastel"
+  | "film"
+  | "swirl"
+  | "wave"
+  | "perspective"
+  | "ink-splash-a"
+  | "ink-splash-b"
+  | "ink-splash-c";
 
 /** Configuração de efeitos de imagem */
 export type ImageEffects = {
@@ -187,6 +197,13 @@ export type Editor2DHandle = {
   redoSquareCropStep?: () => boolean;
   canUndoSquareCropStep?: () => boolean;
   canRedoSquareCropStep?: () => boolean;
+
+  // ==== Corte por cor ==== 
+  startColorCut?: () => void;
+  cancelColorCut?: () => void;
+  confirmColorCut?: () => void;
+  isColorCutActive?: () => boolean;
+  onColorCutModeChange?: (cb: (active: boolean) => void) => void;
 
   toJSON: () => string;
   loadFromJSON: (json: string) => Promise<void>;
@@ -448,6 +465,8 @@ const Editor2D = forwardRef<Editor2DHandle, Props>(function Editor2D(
   const isRestoringRef = useRef(false);
   const isLoadingRef = useRef(false);
   const hostRef = useRef<HTMLDivElement | null>(null);
+  const loupeCanvasRef = useRef<HTMLCanvasElement | null>(null);
+  const loupeWrapRef = useRef<HTMLDivElement | null>(null);
   const canvasRef = useRef<FabricCanvas | null>(null);
   const domCanvasRef = useRef<HTMLCanvasElement | null>(null);
   const fabricRef = useRef<any>(null);
@@ -1123,6 +1142,8 @@ const Editor2D = forwardRef<Editor2DHandle, Props>(function Editor2D(
 
     // Base (imutável) para evitar que o efeito acumule ao passar no mesmo local.
     baseSrc?: string;
+    // Snapshot do estado visível antes de iniciar o modo pincel (para restaurar no cancelamento).
+    prevVisibleSrc?: string;
     baseAdj?: ImageAdjustments;
     baseFx?: ImageEffects;
 
@@ -1149,6 +1170,46 @@ const Editor2D = forwardRef<Editor2DHandle, Props>(function Editor2D(
     onWindowMouseUp?: (ev: MouseEvent) => void;
   };
   const effectBrushRef = useRef<EffectBrushSession | null>(null);
+
+  type ColorCutSession = {
+    active: boolean;
+    img: any;
+    baseSrc: string;
+    baseOriginalSrc?: string;
+    currentSrc?: string;
+    imgPrev: {
+      selectable?: boolean;
+      evented?: boolean;
+      lockMovementX?: boolean;
+      lockMovementY?: boolean;
+      hasControls?: boolean;
+      hasBorders?: boolean;
+    };
+    canvasPrev: {
+      selection?: boolean;
+      defaultCursor?: string;
+    };
+    hostPrevCursor?: string;
+    imageRect?: { left: number; top: number; width: number; height: number };
+    highlight?: any;
+    overlays?: { top: any; bottom: any; left: any; right: any };
+    othersPrev?: any[];
+    inFlight?: boolean;
+    onMouseDown?: (opt: any) => void;
+    onMouseMove?: (opt: any) => void;
+    onKeyDown?: (ev: KeyboardEvent) => void;
+    onHostLeave?: () => void;
+  };
+  const colorCutRef = useRef<ColorCutSession | null>(null);
+  const colorCutModeListenersRef = useRef<Set<(active: boolean) => void>>(new Set());
+
+  const emitColorCutMode = (active: boolean) => {
+    for (const cb of Array.from(colorCutModeListenersRef.current)) {
+      try {
+        cb(active);
+      } catch {}
+    }
+  };
 
   type EffectLassoPoint = LassoPoint;
   type EffectLassoSession = {
@@ -1707,139 +1768,8 @@ const Editor2D = forwardRef<Editor2DHandle, Props>(function Editor2D(
           const h = canvas.height;
           const baseData = ctx.getImageData(0, 0, w, h);
           const fxData = ctx.getImageData(0, 0, w, h);
-          const data = fxData.data;
-          const clamp255 = (n: number) => Math.max(0, Math.min(255, n));
 
-          for (let i = 0; i < data.length; i += 4) {
-            let r = data[i];
-            let g = data[i + 1];
-            let b = data[i + 2];
-            const or = r,
-              og = g,
-              ob = b;
-
-            switch (kind) {
-              case "grayscale": {
-                const gray = 0.299 * r + 0.587 * g + 0.114 * b;
-                r = g = b = gray;
-                break;
-              }
-              case "sepia": {
-                const tr = 0.393 * r + 0.769 * g + 0.189 * b;
-                const tg = 0.349 * r + 0.686 * g + 0.168 * b;
-                const tb = 0.272 * r + 0.534 * g + 0.131 * b;
-                r = tr;
-                g = tg;
-                b = tb;
-                break;
-              }
-              case "invert": {
-                r = 255 - r;
-                g = 255 - g;
-                b = 255 - b;
-                break;
-              }
-              case "vintage": {
-                const tr = 0.393 * r + 0.769 * g + 0.189 * b;
-                const tg = 0.349 * r + 0.686 * g + 0.168 * b;
-                const tb = 0.272 * r + 0.534 * g + 0.131 * b;
-                r = tr * 0.9 + 25;
-                g = tg * 0.85 + 20;
-                b = tb * 0.8 + 15;
-                break;
-              }
-              case "cold": {
-                r = r * 0.9;
-                g = g * 0.95;
-                b = b * 1.1 + 10;
-                break;
-              }
-              case "warm": {
-                r = r * 1.1 + 10;
-                g = g * 1.02;
-                b = b * 0.9;
-                break;
-              }
-              case "dramatic": {
-                const gray = 0.299 * r + 0.587 * g + 0.114 * b;
-                r = r * 0.7 + gray * 0.3;
-                g = g * 0.7 + gray * 0.3;
-                b = b * 0.7 + gray * 0.3;
-                r = 128 + (r - 128) * 1.4;
-                g = 128 + (g - 128) * 1.4;
-                b = 128 + (b - 128) * 1.4;
-                break;
-              }
-              case "fade": {
-                r = r * 0.85 + 38;
-                g = g * 0.85 + 38;
-                b = b * 0.85 + 38;
-                break;
-              }
-              case "vignette":
-              case "blur":
-              case "sharpen":
-                break;
-            }
-
-            r = or + (r - or) * amount;
-            g = og + (g - og) * amount;
-            b = ob + (b - ob) * amount;
-
-            data[i] = clamp255(r);
-            data[i + 1] = clamp255(g);
-            data[i + 2] = clamp255(b);
-          }
-
-          if (kind === "vignette") {
-            const cx = w / 2;
-            const cy = h / 2;
-            const maxDist = Math.sqrt(cx * cx + cy * cy);
-            for (let y = 0; y < h; y++) {
-              for (let x = 0; x < w; x++) {
-                const i = (y * w + x) * 4;
-                const dx = x - cx;
-                const dy = y - cy;
-                const dist = Math.sqrt(dx * dx + dy * dy) / maxDist;
-                const factor = 1 - Math.pow(dist, 1.5) * 0.7 * amount;
-                data[i] = clamp255(data[i] * factor);
-                data[i + 1] = clamp255(data[i + 1] * factor);
-                data[i + 2] = clamp255(data[i + 2] * factor);
-              }
-            }
-          }
-
-          if (kind === "blur" && amount > 0) {
-            const radius = Math.round(amount * 5);
-            if (radius > 0) {
-              const srcData = new Uint8ClampedArray(data);
-              for (let y = 0; y < h; y++) {
-                for (let x = 0; x < w; x++) {
-                  let rSum = 0,
-                    gSum = 0,
-                    bSum = 0,
-                    count = 0;
-                  for (let ddy = -radius; ddy <= radius; ddy++) {
-                    const yy = y + ddy;
-                    if (yy < 0 || yy >= h) continue;
-                    for (let ddx = -radius; ddx <= radius; ddx++) {
-                      const xx = x + ddx;
-                      if (xx < 0 || xx >= w) continue;
-                      const j = (yy * w + xx) * 4;
-                      rSum += srcData[j];
-                      gSum += srcData[j + 1];
-                      bSum += srcData[j + 2];
-                      count++;
-                    }
-                  }
-                  const i = (y * w + x) * 4;
-                  data[i] = rSum / count;
-                  data[i + 1] = gSum / count;
-                  data[i + 2] = bSum / count;
-                }
-              }
-            }
-          }
+          applyEffectToImageData(fxData, kind, amount);
 
           // Máscara (alpha) - assume maskCanvas com mesmo tamanho (img pixels)
           const maskCtx = maskCanvas.getContext("2d");
@@ -2209,9 +2139,8 @@ const Editor2D = forwardRef<Editor2DHandle, Props>(function Editor2D(
     } catch {}
 
     runSilently(() => {
-      // Persistência do resultado final do pincel: salva como nova origem apenas ao confirmar/sair.
-      // Cancelar NÃO deve sobrescrever a origem.
-      const shouldCommit = opts?.commitResult ?? true;
+      // Persistência do resultado final do pincel: salva como nova origem só quando solicitado.
+      const shouldCommit = opts?.commitResult === true;
       if (shouldCommit) {
         try {
           if (s.lastBakedSrc) {
@@ -2219,6 +2148,19 @@ const Editor2D = forwardRef<Editor2DHandle, Props>(function Editor2D(
             try { delete (s.img as any).__moldaImageEffects; } catch {}
           }
         } catch {}
+      } else {
+        const revertSrc = s.prevVisibleSrc || s.baseSrc;
+        if (revertSrc) {
+          try {
+            s.img.setSrc(
+              revertSrc,
+              () => {
+                try { c.requestRenderAll?.(); } catch {}
+              },
+              { crossOrigin: "anonymous" }
+            );
+          } catch {}
+        }
       }
 
       try { c.remove(s.imgHandles?.tl); } catch {}
@@ -2350,6 +2292,13 @@ const Editor2D = forwardRef<Editor2DHandle, Props>(function Editor2D(
     const originalSrc = resolveOriginalSrc();
     if (!originalSrc) return;
 
+    const visibleSrc = (() => {
+      try {
+        if (typeof img?.getSrc === "function") return img.getSrc();
+      } catch {}
+      return img?._element?.src || img?._originalElement?.src || originalSrc;
+    })();
+
     const adj: ImageAdjustments = (() => {
       const saved = (img as any).__moldaImageAdjustments as ImageAdjustments | undefined;
       return saved ? { ...DEFAULT_IMAGE_ADJ, ...saved } : { ...DEFAULT_IMAGE_ADJ };
@@ -2454,6 +2403,7 @@ const Editor2D = forwardRef<Editor2DHandle, Props>(function Editor2D(
       brushSize,
 
       baseSrc: originalSrc,
+      prevVisibleSrc: visibleSrc,
       baseAdj: adj,
       baseFx: { kind: effectKind, amount: effectAmount },
 
@@ -2545,142 +2495,10 @@ const Editor2D = forwardRef<Editor2DHandle, Props>(function Editor2D(
 
         // Efeito full (aplicado uma vez)
         const fxData = ctx.getImageData(0, 0, w, h);
-        const data = fxData.data;
         const kind = fxLocal.kind ?? "none";
         const amount = typeof fxLocal.amount === "number" ? fxLocal.amount : 1;
-        const clamp255 = (n: number) => Math.max(0, Math.min(255, n));
-
         if (!(kind === "none" || amount <= 0)) {
-          for (let i = 0; i < data.length; i += 4) {
-            let r = data[i];
-            let g = data[i + 1];
-            let b = data[i + 2];
-            const or = r,
-              og = g,
-              ob = b;
-
-            switch (kind) {
-              case "grayscale": {
-                const gray = 0.299 * r + 0.587 * g + 0.114 * b;
-                r = g = b = gray;
-                break;
-              }
-              case "sepia": {
-                const tr = 0.393 * r + 0.769 * g + 0.189 * b;
-                const tg = 0.349 * r + 0.686 * g + 0.168 * b;
-                const tb = 0.272 * r + 0.534 * g + 0.131 * b;
-                r = tr;
-                g = tg;
-                b = tb;
-                break;
-              }
-              case "invert": {
-                r = 255 - r;
-                g = 255 - g;
-                b = 255 - b;
-                break;
-              }
-              case "vintage": {
-                const tr = 0.393 * r + 0.769 * g + 0.189 * b;
-                const tg = 0.349 * r + 0.686 * g + 0.168 * b;
-                const tb = 0.272 * r + 0.534 * g + 0.131 * b;
-                r = tr * 0.9 + 25;
-                g = tg * 0.85 + 20;
-                b = tb * 0.8 + 15;
-                break;
-              }
-              case "cold": {
-                r = r * 0.9;
-                g = g * 0.95;
-                b = b * 1.1 + 10;
-                break;
-              }
-              case "warm": {
-                r = r * 1.1 + 10;
-                g = g * 1.02;
-                b = b * 0.9;
-                break;
-              }
-              case "dramatic": {
-                const gray = 0.299 * r + 0.587 * g + 0.114 * b;
-                r = r * 0.7 + gray * 0.3;
-                g = g * 0.7 + gray * 0.3;
-                b = b * 0.7 + gray * 0.3;
-                r = 128 + (r - 128) * 1.4;
-                g = 128 + (g - 128) * 1.4;
-                b = 128 + (b - 128) * 1.4;
-                break;
-              }
-              case "fade": {
-                r = r * 0.85 + 38;
-                g = g * 0.85 + 38;
-                b = b * 0.85 + 38;
-                break;
-              }
-              case "vignette":
-              case "blur":
-              case "sharpen":
-                break;
-            }
-
-            r = or + (r - or) * amount;
-            g = og + (g - og) * amount;
-            b = ob + (b - ob) * amount;
-
-            data[i] = clamp255(r);
-            data[i + 1] = clamp255(g);
-            data[i + 2] = clamp255(b);
-          }
-
-          if (kind === "vignette") {
-            const cx = w / 2;
-            const cy = h / 2;
-            const maxDist = Math.sqrt(cx * cx + cy * cy);
-            for (let yy = 0; yy < h; yy++) {
-              for (let xx = 0; xx < w; xx++) {
-                const i = (yy * w + xx) * 4;
-                const dx = xx - cx;
-                const dy = yy - cy;
-                const dist = Math.sqrt(dx * dx + dy * dy) / maxDist;
-                const factor = 1 - Math.pow(dist, 1.5) * 0.7 * amount;
-                data[i] = clamp255(data[i] * factor);
-                data[i + 1] = clamp255(data[i + 1] * factor);
-                data[i + 2] = clamp255(data[i + 2] * factor);
-              }
-            }
-          }
-
-          if (kind === "blur" && amount > 0) {
-            const radius = Math.round(amount * 5);
-            if (radius > 0) {
-              const srcData = new Uint8ClampedArray(data);
-              for (let yy = 0; yy < h; yy++) {
-                for (let xx = 0; xx < w; xx++) {
-                  let rSum = 0,
-                    gSum = 0,
-                    bSum = 0,
-                    count = 0;
-                  for (let ddy = -radius; ddy <= radius; ddy++) {
-                    const yyy = yy + ddy;
-                    if (yyy < 0 || yyy >= h) continue;
-                    for (let ddx = -radius; ddx <= radius; ddx++) {
-                      const xxx = xx + ddx;
-                      if (xxx < 0 || xxx >= w) continue;
-                      const j = (yyy * w + xxx) * 4;
-                      rSum += srcData[j];
-                      gSum += srcData[j + 1];
-                      bSum += srcData[j + 2];
-                      count++;
-                    }
-                  }
-                  const i = (yy * w + xx) * 4;
-                  data[i] = rSum / count;
-                  data[i + 1] = gSum / count;
-                  data[i + 2] = bSum / count;
-                }
-              }
-            }
-          }
+          applyEffectToImageData(fxData, kind, amount);
         }
 
         const fxPixels = new Uint8ClampedArray(fxData.data);
@@ -5386,6 +5204,609 @@ const Editor2D = forwardRef<Editor2DHandle, Props>(function Editor2D(
     }
   };
 
+  const cleanupColorCut = () => {
+    const c: any = canvasRef.current;
+    const s = colorCutRef.current;
+    if (!c || !s?.active) {
+      colorCutRef.current = null;
+      return;
+    }
+
+    try {
+      if (s.onMouseDown) c.off?.("mouse:down", s.onMouseDown);
+    } catch {}
+    try {
+      if (s.onMouseMove) c.off?.("mouse:move", s.onMouseMove);
+    } catch {}
+    try {
+      if (s.onKeyDown) window.removeEventListener("keydown", s.onKeyDown);
+    } catch {}
+    try {
+      if (s.onHostLeave && hostRef.current) hostRef.current.removeEventListener("mouseleave", s.onHostLeave);
+    } catch {}
+
+    // Remove UI overlays/highlight
+    runSilently(() => {
+      try {
+        if (s.overlays) {
+          c.remove(s.overlays.top);
+          c.remove(s.overlays.bottom);
+          c.remove(s.overlays.left);
+          c.remove(s.overlays.right);
+        }
+      } catch {}
+      try {
+        if (s.highlight) c.remove(s.highlight);
+      } catch {}
+    });
+
+    // Restore canvas selection & cursor
+    try {
+      if (typeof s.canvasPrev?.selection === "boolean") c.selection = s.canvasPrev.selection;
+    } catch {}
+    try {
+      if (typeof s.canvasPrev?.defaultCursor === "string") c.defaultCursor = s.canvasPrev.defaultCursor;
+    } catch {}
+
+    try {
+      if (typeof s.hostPrevCursor === "string" && hostRef.current) (hostRef.current.style as any).cursor = s.hostPrevCursor;
+    } catch {}
+
+    try {
+      if (loupeWrapRef.current) loupeWrapRef.current.style.display = "none";
+    } catch {}
+
+    try { restoreImageAfterCrop(s.img, s.imgPrev); } catch {}
+    try { restoreOtherCanvasObjectsAfterCrop(s.othersPrev); } catch {}
+
+    colorCutRef.current = null;
+    try { emitColorCutMode(false); } catch {}
+    try { c.requestRenderAll?.(); } catch {}
+  };
+
+  const cancelColorCut = () => {
+    const c: any = canvasRef.current;
+    const s = colorCutRef.current;
+    if (!c || !s?.active) return;
+
+    const img = s.img;
+    const restoreSrc = s.baseSrc;
+    const restoreOriginal = s.baseOriginalSrc;
+
+    void (async () => {
+      try {
+        await new Promise<void>((resolve) => {
+          if (typeof img?.setSrc === "function" && typeof restoreSrc === "string" && restoreSrc.length) {
+            img.setSrc(
+              restoreSrc,
+              () => {
+                try { c.requestRenderAll?.(); } catch {}
+                resolve();
+              },
+              { crossOrigin: "anonymous" }
+            );
+            return;
+          }
+          resolve();
+        });
+        try {
+          if (typeof restoreOriginal === "string" && restoreOriginal.length) (img as any).__moldaOriginalSrc = restoreOriginal;
+        } catch {}
+      } finally {
+        cleanupColorCut();
+      }
+    })();
+  };
+
+  const confirmColorCut = () => {
+    const c: any = canvasRef.current;
+    const s = colorCutRef.current;
+    if (!c || !s?.active) return;
+
+    const img = s.img;
+    const finalSrc =
+      s.currentSrc ||
+      (typeof img?.getSrc === "function" ? img.getSrc() : undefined) ||
+      img?._element?.src ||
+      img?._originalElement?.src;
+
+    try {
+      if (typeof finalSrc === "string" && finalSrc.length) (img as any).__moldaOriginalSrc = finalSrc;
+    } catch {}
+
+    if (shouldRecordHistory()) {
+      try { historyRef.current?.push("color-cut"); } catch {}
+      emitHistory();
+    }
+
+    cleanupColorCut();
+  };
+
+  const isColorCutActive = () => {
+    return !!colorCutRef.current?.active;
+  };
+
+  const updateColorCutGraphics = () => {
+    const c: any = canvasRef.current;
+    const s = colorCutRef.current;
+    if (!c || !s?.active) return;
+
+    const img = s.img;
+    if (!img) return;
+
+    const imageRect = getImageRect(img);
+    s.imageRect = imageRect;
+
+    runSilently(() => {
+      try {
+        s.highlight?.set?.({ left: imageRect.left, top: imageRect.top, width: imageRect.width, height: imageRect.height });
+        s.highlight?.setCoords?.();
+      } catch {}
+
+      try {
+        const canvasW = Number(c.getWidth?.() ?? 0) || 0;
+        const canvasH = Number(c.getHeight?.() ?? 0) || 0;
+        const topH = Math.max(0, imageRect.top);
+        const bottomH = Math.max(0, canvasH - (imageRect.top + imageRect.height));
+        const leftW = Math.max(0, imageRect.left);
+        const rightW = Math.max(0, canvasW - (imageRect.left + imageRect.width));
+
+        s.overlays?.top?.set?.({ left: 0, top: 0, width: canvasW, height: topH });
+        s.overlays?.bottom?.set?.({ left: 0, top: imageRect.top + imageRect.height, width: canvasW, height: bottomH });
+        s.overlays?.left?.set?.({ left: 0, top: imageRect.top, width: leftW, height: imageRect.height });
+        s.overlays?.right?.set?.({ left: imageRect.left + imageRect.width, top: imageRect.top, width: rightW, height: imageRect.height });
+        s.overlays?.top?.setCoords?.();
+        s.overlays?.bottom?.setCoords?.();
+        s.overlays?.left?.setCoords?.();
+        s.overlays?.right?.setCoords?.();
+      } catch {}
+
+      try { s.highlight?.bringToFront?.(); } catch {}
+    });
+
+    try { c.requestRenderAll?.(); } catch {}
+  };
+
+  const startColorCut = () => {
+    const c: any = canvasRef.current;
+    const fabric: any = fabricRef.current;
+    if (!c || !fabric) return;
+
+    // Evita sobreposição com outros modos
+    try { cancelCrop(); } catch {}
+    try { cancelEffectBrush?.(); } catch {}
+    try { cancelEffectLasso?.(); } catch {}
+
+    cleanupColorCut();
+
+    const img = getActiveSingleImageForCrop();
+    if (!img) return;
+
+    const baseSrc: string | undefined =
+      (img as any).__moldaOriginalSrc ||
+      (typeof img?.getSrc === "function" ? img.getSrc() : undefined) ||
+      img?._originalElement?.src ||
+      img?._element?.src;
+    if (!baseSrc) return;
+
+    const baseOriginalSrc: string | undefined = (() => {
+      try {
+        const s0 = (img as any).__moldaOriginalSrc;
+        return typeof s0 === "string" && s0.length ? s0 : undefined;
+      } catch {
+        return undefined;
+      }
+    })();
+
+    // Evita o retângulo de seleção do Fabric durante o modo
+    const canvasPrev = { selection: !!c.selection, defaultCursor: String(c.defaultCursor ?? "") };
+    try { c.selection = false; } catch {}
+    try { c.discardActiveObject?.(); } catch {}
+
+    // Cursor: escondemos o cursor padrão e usamos um "loupe" (overlay DOM) seguindo o mouse.
+    const hostPrevCursor = hostRef.current ? String((hostRef.current.style as any).cursor ?? "") : "";
+    try { if (hostRef.current) (hostRef.current.style as any).cursor = "none"; } catch {}
+    try { c.defaultCursor = "none"; } catch { try { c.defaultCursor = "crosshair"; } catch {} }
+
+    const imgPrev = freezeImageForCrop(img);
+
+    // Centraliza temporariamente a imagem no canvas (mesmo padrão das outras ferramentas)
+    runSilently(() => {
+      try {
+        const p = new fabric.Point(c.getWidth() / 2, c.getHeight() / 2);
+        img.setPositionByOrigin?.(p, "center", "center");
+        img.setCoords?.();
+      } catch {}
+    });
+
+    const imageRect = getImageRect(img);
+
+    // Offscreen buffer para o loupe (para evitar recarregar a cada mousemove)
+    const loupeBuffer = document.createElement("canvas");
+    const loupeCtx = loupeBuffer.getContext("2d");
+    const ensureLoupeBufferFromSrc = async (src: string) => {
+      if (!loupeCtx) return;
+      await new Promise<void>((resolve) => {
+        const imgEl = new Image();
+        imgEl.crossOrigin = "anonymous";
+        imgEl.onload = () => {
+          try {
+            const w = Math.max(1, imgEl.naturalWidth || imgEl.width || 1);
+            const h = Math.max(1, imgEl.naturalHeight || imgEl.height || 1);
+            loupeBuffer.width = w;
+            loupeBuffer.height = h;
+            loupeCtx.clearRect(0, 0, w, h);
+            loupeCtx.drawImage(imgEl, 0, 0, w, h);
+          } catch {}
+          resolve();
+        };
+        imgEl.onerror = () => resolve();
+        imgEl.src = src;
+      });
+    };
+    void ensureLoupeBufferFromSrc(baseSrc);
+
+    // Overlay com "buraco" na imagem (destaque)
+    const overlayFill = "rgba(0,0,0,0.55)";
+    const canvasW = Number(c.getWidth?.() ?? 0) || 0;
+    const canvasH = Number(c.getHeight?.() ?? 0) || 0;
+    const topH = Math.max(0, imageRect.top);
+    const bottomH = Math.max(0, canvasH - (imageRect.top + imageRect.height));
+    const leftW = Math.max(0, imageRect.left);
+    const rightW = Math.max(0, canvasW - (imageRect.left + imageRect.width));
+
+    const overlays = {
+      top: new fabric.Rect({ left: 0, top: 0, width: canvasW, height: topH, fill: overlayFill, selectable: false, evented: false, excludeFromExport: true }),
+      bottom: new fabric.Rect({ left: 0, top: imageRect.top + imageRect.height, width: canvasW, height: bottomH, fill: overlayFill, selectable: false, evented: false, excludeFromExport: true }),
+      left: new fabric.Rect({ left: 0, top: imageRect.top, width: leftW, height: imageRect.height, fill: overlayFill, selectable: false, evented: false, excludeFromExport: true }),
+      right: new fabric.Rect({ left: imageRect.left + imageRect.width, top: imageRect.top, width: rightW, height: imageRect.height, fill: overlayFill, selectable: false, evented: false, excludeFromExport: true }),
+    };
+
+    const highlight = new fabric.Rect({
+      left: imageRect.left,
+      top: imageRect.top,
+      width: imageRect.width,
+      height: imageRect.height,
+      fill: "rgba(0,0,0,0)",
+      stroke: withAlpha(GIZMO_THEME.primary, 0.8),
+      strokeWidth: 2,
+      strokeDashArray: [6, 4],
+      selectable: false,
+      evented: false,
+      excludeFromExport: true,
+    });
+
+    runSilently(() => {
+      try { c.add(overlays.top, overlays.bottom, overlays.left, overlays.right); } catch {}
+      try { c.add(highlight); } catch {}
+      try { highlight.bringToFront?.(); } catch {}
+    });
+
+    let othersPrev: any[] | undefined;
+    try {
+      const exclude = new Set<any>([img, highlight, overlays.top, overlays.bottom, overlays.left, overlays.right]);
+      othersPrev = freezeOtherCanvasObjectsForCrop(exclude);
+    } catch {}
+
+    const canvasToImagePixel = (pCanvas: { x: number; y: number }) => {
+      try {
+        const w = Math.max(1, Number(img.width ?? 0) || 1);
+        const h = Math.max(1, Number(img.height ?? 0) || 1);
+        const pt = new fabric.Point(pCanvas.x, pCanvas.y);
+
+        if (fabric?.util?.invertTransform && fabric?.util?.transformPoint && typeof img?.calcTransformMatrix === "function") {
+          const inv = fabric.util.invertTransform(img.calcTransformMatrix());
+          const local = fabric.util.transformPoint(pt, inv);
+          return { x: Number(local.x ?? 0) + w / 2, y: Number(local.y ?? 0) + h / 2 };
+        }
+      } catch {}
+
+      const r = getImageRect(img);
+      const u = (pCanvas.x - r.left) / Math.max(1e-6, r.width);
+      const v = (pCanvas.y - r.top) / Math.max(1e-6, r.height);
+      return { x: u * Number(img.width ?? 1), y: v * Number(img.height ?? 1) };
+    };
+
+    const getScenePointerFromEvent = (evt: any) => {
+      // Use Fabric's actual canvas element + viewportTransform for correct alignment under any zoom/pan/retina scaling.
+      try {
+        const upper: HTMLCanvasElement | null = (c as any)?.upperCanvasEl ?? null;
+        const util = (fabric as any)?.util;
+        const PointCtor = (fabric as any)?.Point;
+        const vpt = (c as any)?.viewportTransform ?? null;
+        if (upper && util?.invertTransform && util?.transformPoint && typeof upper.getBoundingClientRect === "function") {
+          const rect = upper.getBoundingClientRect();
+          const rx = Number(evt?.clientX ?? 0) - rect.left;
+          const ry = Number(evt?.clientY ?? 0) - rect.top;
+          const px = rect.width ? (rx / rect.width) * upper.width : rx;
+          const py = rect.height ? (ry / rect.height) * upper.height : ry;
+          const pt = PointCtor ? new PointCtor(px, py) : { x: px, y: py };
+          if (vpt) {
+            const inv = util.invertTransform(vpt);
+            const scene = util.transformPoint(pt, inv);
+            return { x: Number(scene.x ?? 0), y: Number(scene.y ?? 0) };
+          }
+          return { x: Number((pt as any).x ?? 0), y: Number((pt as any).y ?? 0) };
+        }
+      } catch {}
+
+      // Fallback to Fabric helper
+      try {
+        const pt = c.getPointer?.(evt);
+        if (pt && typeof pt.x === "number" && typeof pt.y === "number") return { x: pt.x, y: pt.y };
+      } catch {}
+      return null;
+    };
+
+    const onKeyDown = (ev: KeyboardEvent) => {
+      if (ev.key === "Escape") {
+        try { ev.preventDefault(); } catch {}
+        cancelColorCut();
+        return;
+      }
+      if (ev.key === "Enter") {
+        try { ev.preventDefault(); } catch {}
+        confirmColorCut();
+        return;
+      }
+    };
+
+    const getScreenPoint = (evt: MouseEvent) => {
+      const host = hostRef.current;
+      if (!host) return null;
+      const r = host.getBoundingClientRect();
+      const x = Number(evt.clientX ?? 0) - r.left;
+      const y = Number(evt.clientY ?? 0) - r.top;
+      if (!Number.isFinite(x) || !Number.isFinite(y)) return null;
+      return { x, y };
+    };
+
+    const updateLoupeAt = (pWorld: { x: number; y: number }, pScreen: { x: number; y: number }) => {
+      const wrap = loupeWrapRef.current;
+      const canvas = loupeCanvasRef.current;
+      if (!wrap || !canvas || !loupeCtx) return;
+
+      const objW = Math.max(1, Number(img.width ?? 0) || 1);
+      const objH = Math.max(1, Number(img.height ?? 0) || 1);
+      const pObj = canvasToImagePixel(pWorld);
+      if (pObj.x < 0 || pObj.y < 0 || pObj.x > objW || pObj.y > objH) {
+        wrap.style.display = "none";
+        return;
+      }
+
+      // posiciona o loupe perto do cursor
+      const size = 56;
+      const offset = 10;
+      wrap.style.display = "block";
+      wrap.style.left = `${pScreen.x + offset}px`;
+      wrap.style.top = `${pScreen.y + offset}px`;
+
+      if (canvas.width !== size || canvas.height !== size) {
+        canvas.width = size;
+        canvas.height = size;
+      }
+
+      const outCtx = canvas.getContext("2d");
+      if (!outCtx) return;
+
+      // mapeia para pixels do buffer
+      const w = Math.max(1, loupeBuffer.width || 1);
+      const h = Math.max(1, loupeBuffer.height || 1);
+      const px = Math.max(0, Math.min(w - 1, Math.floor((pObj.x / objW) * w)));
+      const py = Math.max(0, Math.min(h - 1, Math.floor((pObj.y / objH) * h)));
+
+      const radiusSrc = 6;
+      const sx = Math.max(0, px - radiusSrc);
+      const sy = Math.max(0, py - radiusSrc);
+      const sw = Math.min(w - sx, radiusSrc * 2 + 1);
+      const sh = Math.min(h - sy, radiusSrc * 2 + 1);
+
+      outCtx.clearRect(0, 0, size, size);
+      outCtx.save();
+      outCtx.beginPath();
+      outCtx.arc(size / 2, size / 2, size / 2 - 1, 0, Math.PI * 2);
+      outCtx.clip();
+      outCtx.imageSmoothingEnabled = false;
+      outCtx.drawImage(loupeBuffer, sx, sy, sw, sh, 0, 0, size, size);
+
+      // crosshair
+      outCtx.strokeStyle = withAlpha(GIZMO_THEME.primary, 0.85);
+      outCtx.lineWidth = 1;
+      outCtx.beginPath();
+      outCtx.moveTo(size / 2 - 10, size / 2);
+      outCtx.lineTo(size / 2 + 10, size / 2);
+      outCtx.moveTo(size / 2, size / 2 - 10);
+      outCtx.lineTo(size / 2, size / 2 + 10);
+      outCtx.stroke();
+
+      // cor central (swatch)
+      try {
+        const picked = loupeCtx.getImageData(px, py, 1, 1).data;
+        const pr = picked[0] ?? 0;
+        const pg = picked[1] ?? 0;
+        const pb = picked[2] ?? 0;
+        outCtx.fillStyle = `rgb(${pr},${pg},${pb})`;
+        outCtx.fillRect(size - 22, size - 22, 14, 14);
+        outCtx.strokeStyle = withAlpha(GIZMO_THEME.primary, 0.85);
+        outCtx.strokeRect(size - 22, size - 22, 14, 14);
+      } catch {}
+
+      outCtx.restore();
+
+      // borda
+      outCtx.strokeStyle = withAlpha(GIZMO_THEME.primary, 0.9);
+      outCtx.lineWidth = 2;
+      outCtx.beginPath();
+      outCtx.arc(size / 2, size / 2, size / 2 - 1, 0, Math.PI * 2);
+      outCtx.stroke();
+    };
+
+    const onMouseMove = (opt: any) => {
+      const s = colorCutRef.current;
+      if (!s?.active) return;
+      const evt: MouseEvent | undefined = opt?.e;
+      if (!evt) return;
+
+      const pWorld = getScenePointerFromEvent(evt);
+      const pScreen = getScreenPoint(evt);
+      if (!pWorld || !pScreen) return;
+      updateLoupeAt(pWorld, pScreen);
+    };
+
+    const onHostLeave = () => {
+      try {
+        if (loupeWrapRef.current) loupeWrapRef.current.style.display = "none";
+      } catch {}
+    };
+
+    const onMouseDown = (opt: any) => {
+      const s = colorCutRef.current;
+      if (!s?.active || s.inFlight) return;
+
+      const evt: any = opt?.e;
+      if (!evt) return;
+      const p = getScenePointerFromEvent(evt);
+      if (!p) return;
+
+      const objW = Math.max(1, Number(img.width ?? 0) || 1);
+      const objH = Math.max(1, Number(img.height ?? 0) || 1);
+      const pObj = canvasToImagePixel(p);
+      if (pObj.x < 0 || pObj.y < 0 || pObj.x > objW || pObj.y > objH) return;
+
+      s.inFlight = true;
+
+      void (async () => {
+        try {
+          const src: string | undefined = s.currentSrc || (typeof img?.getSrc === "function" ? img.getSrc() : undefined) || s.baseSrc;
+          if (!src) return;
+
+          const dataUrl = await new Promise<string>((resolve, reject) => {
+            const imgEl = new Image();
+            imgEl.crossOrigin = "anonymous";
+            imgEl.onload = () => {
+              try {
+                const w = Math.max(1, imgEl.naturalWidth || imgEl.width || 1);
+                const h = Math.max(1, imgEl.naturalHeight || imgEl.height || 1);
+                const canvas = document.createElement("canvas");
+                canvas.width = w;
+                canvas.height = h;
+                const ctx = canvas.getContext("2d");
+                if (!ctx) return reject(new Error("Canvas 2D não disponível"));
+                ctx.drawImage(imgEl, 0, 0, w, h);
+
+                const px = Math.max(0, Math.min(w - 1, Math.floor((pObj.x / objW) * w)));
+                const py = Math.max(0, Math.min(h - 1, Math.floor((pObj.y / objH) * h)));
+
+                const picked = ctx.getImageData(px, py, 1, 1).data;
+                const pr = picked[0] ?? 0;
+                const pg = picked[1] ?? 0;
+                const pb = picked[2] ?? 0;
+
+                const imgData = ctx.getImageData(0, 0, w, h);
+                const d = imgData.data;
+
+                const tol = 40; // tolerância padrão (0..~441)
+                const feather = 18; // suavização na borda
+                const tol2 = tol * tol;
+                const tolFeather2 = (tol + feather) * (tol + feather);
+                const smooth01 = (t: number) => {
+                  const x = Math.max(0, Math.min(1, t));
+                  return x * x * (3 - 2 * x);
+                };
+
+                for (let i = 0; i < d.length; i += 4) {
+                  const a = d[i + 3] ?? 0;
+                  if (a === 0) continue;
+
+                  const dr = (d[i] ?? 0) - pr;
+                  const dg = (d[i + 1] ?? 0) - pg;
+                  const db = (d[i + 2] ?? 0) - pb;
+                  const dist2 = dr * dr + dg * dg + db * db;
+
+                  if (dist2 <= tol2) {
+                    d[i + 3] = 0;
+                    continue;
+                  }
+
+                  if (dist2 <= tolFeather2) {
+                    const dist = Math.sqrt(dist2);
+                    const t = (dist - tol) / Math.max(1e-6, feather);
+                    const keep = smooth01(t);
+                    d[i + 3] = Math.round(a * keep);
+                  }
+                }
+
+                ctx.putImageData(imgData, 0, 0);
+                resolve(canvas.toDataURL("image/png"));
+              } catch (err) {
+                reject(err);
+              }
+            };
+            imgEl.onerror = () => reject(new Error("Falha ao carregar a imagem"));
+            imgEl.src = src;
+          });
+
+          await new Promise<void>((resolve) => {
+            if (typeof img?.setSrc === "function") {
+              img.setSrc(
+                dataUrl,
+                () => {
+                  try { c.requestRenderAll?.(); } catch {}
+                  resolve();
+                },
+                { crossOrigin: "anonymous" }
+              );
+              return;
+            }
+            resolve();
+          });
+
+          // Mantém modo ativo; só comita no Confirmar
+          s.currentSrc = dataUrl;
+          try { await ensureLoupeBufferFromSrc(dataUrl); } catch {}
+        } finally {
+          const cur = colorCutRef.current;
+          if (cur) cur.inFlight = false;
+        }
+      })();
+    };
+
+    window.addEventListener("keydown", onKeyDown);
+    c.on?.("mouse:down", onMouseDown);
+    c.on?.("mouse:move", onMouseMove);
+    try { if (hostRef.current) hostRef.current.addEventListener("mouseleave", onHostLeave); } catch {}
+
+    colorCutRef.current = {
+      active: true,
+      img,
+      baseSrc,
+      baseOriginalSrc,
+      currentSrc: undefined,
+      imgPrev,
+      canvasPrev,
+      hostPrevCursor,
+      imageRect,
+      highlight,
+      overlays,
+      othersPrev,
+      inFlight: false,
+      onMouseDown,
+      onMouseMove,
+      onKeyDown,
+      onHostLeave,
+    };
+
+    try {
+      if (loupeWrapRef.current) {
+        loupeWrapRef.current.style.display = "block";
+        loupeWrapRef.current.style.left = "0px";
+        loupeWrapRef.current.style.top = "0px";
+      }
+    } catch {}
+
+    try { emitColorCutMode(true); } catch {}
+  };
+
   const cancelLassoCrop = () => {
     const c: any = canvasRef.current;
     const s = lassoCropRef.current;
@@ -7854,6 +8275,432 @@ const Editor2D = forwardRef<Editor2DHandle, Props>(function Editor2D(
   // ===== Efeitos de imagem =====
   const DEFAULT_IMAGE_FX: ImageEffects = { kind: "none", amount: 1 };
 
+  const clampFx01 = (n: number) => Math.max(0, Math.min(1, n));
+  const clampFx255 = (n: number) => Math.max(0, Math.min(255, n));
+  const lerpByte = (from: number, to: number, t: number) => clampFx255(from + (to - from) * t);
+
+  const makeSeededRng = (seed: string) => {
+    let s = 0;
+    for (let i = 0; i < seed.length; i++) s = (s * 31 + seed.charCodeAt(i)) >>> 0;
+    if (s === 0) s = 0x6d2b79f5;
+    return () => {
+      s ^= s << 13;
+      s ^= s >>> 17;
+      s ^= s << 5;
+      return ((s >>> 0) % 0x100000000) / 0x100000000;
+    };
+  };
+
+  const sampleBilinear = (src: Uint8ClampedArray, w: number, h: number, x: number, y: number) => {
+    const cx = Math.max(0, Math.min(w - 1, x));
+    const cy = Math.max(0, Math.min(h - 1, y));
+    const x0 = Math.floor(cx);
+    const y0 = Math.floor(cy);
+    const x1 = Math.min(w - 1, x0 + 1);
+    const y1 = Math.min(h - 1, y0 + 1);
+    const tx = cx - x0;
+    const ty = cy - y0;
+    const idx = (xx: number, yy: number) => ((yy * w + xx) << 2);
+    const i00 = idx(x0, y0);
+    const i10 = idx(x1, y0);
+    const i01 = idx(x0, y1);
+    const i11 = idx(x1, y1);
+    const lerp = (a: number, b: number, t: number) => a + (b - a) * t;
+    return [
+      lerp(lerp(src[i00], src[i10], tx), lerp(src[i01], src[i11], tx), ty),
+      lerp(lerp(src[i00 + 1], src[i10 + 1], tx), lerp(src[i01 + 1], src[i11 + 1], tx), ty),
+      lerp(lerp(src[i00 + 2], src[i10 + 2], tx), lerp(src[i01 + 2], src[i11 + 2], tx), ty),
+      lerp(lerp(src[i00 + 3], src[i10 + 3], tx), lerp(src[i01 + 3], src[i11 + 3], tx), ty),
+    ];
+  };
+
+  const createInkOverlayData = (
+    w: number,
+    h: number,
+    variant: "ink-splash-a" | "ink-splash-b" | "ink-splash-c",
+    opacity: number
+  ): ImageData | null => {
+    const canvas = document.createElement("canvas");
+    canvas.width = w;
+    canvas.height = h;
+    const ctx = canvas.getContext("2d");
+    if (!ctx) return null;
+
+    const rng = makeSeededRng(`${variant}-${w}x${h}`);
+    const color: [number, number, number] =
+      variant === "ink-splash-b"
+        ? [36, 54, 92]
+        : variant === "ink-splash-c"
+          ? [92, 38, 32]
+          : [18, 18, 18];
+
+    const base = Math.min(w, h);
+    const blobCount = Math.max(4, Math.round((variant === "ink-splash-c" ? 12 : 8) * (0.55 + opacity)));
+
+    for (let i = 0; i < blobCount; i++) {
+      const cx = rng() * w;
+      const cy = rng() * h;
+      const radius = base * (0.05 + rng() * 0.14) * (0.5 + opacity * 0.9);
+      const rx = radius * (0.6 + rng() * 0.7);
+      const ry = radius * (0.5 + rng() * 0.6);
+      ctx.save();
+      ctx.translate(cx, cy);
+      ctx.rotate((rng() - 0.5) * Math.PI);
+      ctx.scale(1 + rng() * 0.4, 1 + rng() * 0.35);
+      ctx.beginPath();
+      ctx.ellipse(0, 0, rx, ry, 0, 0, Math.PI * 2);
+      ctx.fillStyle = `rgba(${color[0]},${color[1]},${color[2]},${0.18 + opacity * 0.5})`;
+      ctx.fill();
+      ctx.restore();
+    }
+
+    const specks = Math.round(blobCount * 1.5);
+    for (let i = 0; i < specks; i++) {
+      const cx = rng() * w;
+      const cy = rng() * h;
+      const r = base * (0.006 + rng() * 0.012) * (0.6 + opacity * 0.9);
+      ctx.beginPath();
+      ctx.arc(cx, cy, r, 0, Math.PI * 2);
+      ctx.fillStyle = `rgba(${color[0]},${color[1]},${color[2]},${0.22 + opacity * 0.6})`;
+      ctx.fill();
+    }
+
+    return ctx.getImageData(0, 0, w, h);
+  };
+
+  const applyEffectToImageData = (
+    imageData: ImageData,
+    kind: ImageEffectKind,
+    amountRaw: number
+  ): ImageData => {
+    const data = imageData?.data;
+    const w = imageData?.width ?? 0;
+    const h = imageData?.height ?? 0;
+    const amount = clampFx01(typeof amountRaw === "number" ? amountRaw : 1);
+    if (!data || w <= 0 || h <= 0) return imageData;
+    if (kind === "none" || amount <= 0) return imageData;
+
+    const base = new Uint8ClampedArray(data);
+
+    const applyColor = (fn: (r: number, g: number, b: number) => [number, number, number]) => {
+      for (let i = 0; i < data.length; i += 4) {
+        const r0 = base[i];
+        const g0 = base[i + 1];
+        const b0 = base[i + 2];
+        const [r1, g1, b1] = fn(r0, g0, b0);
+        data[i] = lerpByte(r0, r1, amount);
+        data[i + 1] = lerpByte(g0, g1, amount);
+        data[i + 2] = lerpByte(b0, b1, amount);
+        data[i + 3] = base[i + 3];
+      }
+    };
+
+    const applyWarp = (sampler: (x: number, y: number) => [number, number, number, number]) => {
+      for (let y = 0; y < h; y++) {
+        for (let x = 0; x < w; x++) {
+          const idx = (y * w + x) * 4;
+          const [r1, g1, b1, a1] = sampler(x, y);
+          const r0 = base[idx];
+          const g0 = base[idx + 1];
+          const b0 = base[idx + 2];
+          data[idx] = lerpByte(r0, r1, amount);
+          data[idx + 1] = lerpByte(g0, g1, amount);
+          data[idx + 2] = lerpByte(b0, b1, amount);
+          data[idx + 3] = a1;
+        }
+      }
+    };
+
+    switch (kind) {
+      case "grayscale":
+        applyColor((r, g, b) => {
+          const gray = 0.299 * r + 0.587 * g + 0.114 * b;
+          return [gray, gray, gray];
+        });
+        return imageData;
+      case "sepia":
+        applyColor((r, g, b) => [
+          0.393 * r + 0.769 * g + 0.189 * b,
+          0.349 * r + 0.686 * g + 0.168 * b,
+          0.272 * r + 0.534 * g + 0.131 * b,
+        ]);
+        return imageData;
+      case "invert":
+        applyColor((r, g, b) => [255 - r, 255 - g, 255 - b]);
+        return imageData;
+      case "vintage":
+        applyColor((r, g, b) => {
+          const tr = 0.393 * r + 0.769 * g + 0.189 * b;
+          const tg = 0.349 * r + 0.686 * g + 0.168 * b;
+          const tb = 0.272 * r + 0.534 * g + 0.131 * b;
+          return [tr * 0.9 + 25, tg * 0.85 + 20, tb * 0.8 + 15];
+        });
+        return imageData;
+      case "warm":
+        applyColor((r, g, b) => [r * 1.1 + 10, g * 1.02, b * 0.9]);
+        return imageData;
+      case "cold":
+        applyColor((r, g, b) => [r * 0.9, g * 0.95, b * 1.1 + 10]);
+        return imageData;
+      case "dramatic":
+        applyColor((r, g, b) => {
+          const gray = 0.299 * r + 0.587 * g + 0.114 * b;
+          const rr = 128 + (r * 0.7 + gray * 0.3 - 128) * 1.4;
+          const gg = 128 + (g * 0.7 + gray * 0.3 - 128) * 1.4;
+          const bb = 128 + (b * 0.7 + gray * 0.3 - 128) * 1.4;
+          return [rr, gg, bb];
+        });
+        return imageData;
+      case "fade":
+        applyColor((r, g, b) => [r * 0.85 + 38, g * 0.85 + 38, b * 0.85 + 38]);
+        return imageData;
+      case "cinematic":
+        applyColor((r, g, b) => {
+          const rr = 128 + (r * 1.08 + 8 - 128) * 1.05;
+          const gg = 128 + (g * 0.98 - 4 - 128) * 0.95;
+          const bb = 128 + (b * 1.07 + 12 - 128) * 1.05;
+          return [rr, gg, bb];
+        });
+        return imageData;
+      case "vibrant":
+        applyColor((r, g, b) => {
+          const avg = (r + g + b) / 3;
+          return [
+            avg + (r - avg) * 1.25,
+            avg + (g - avg) * 1.18,
+            avg + (b - avg) * 1.12,
+          ];
+        });
+        return imageData;
+      case "noir":
+        applyColor((r, g, b) => {
+          const gray = 0.299 * r + 0.587 * g + 0.114 * b;
+          const c = 128 + (gray - 128) * 1.35;
+          return [c, c, c];
+        });
+        return imageData;
+      case "pastel":
+        applyColor((r, g, b) => [r * 0.9 + 28, g * 0.92 + 26, b * 0.96 + 24]);
+        return imageData;
+      case "film":
+        applyColor((r, g, b) => {
+          const faded = [r * 0.94 + 12, g * 0.96 + 8, b * 0.98 + 14];
+          return [faded[0] * 1.03 + 6, faded[1] * 0.99 + 2, faded[2] * 0.97 + 4];
+        });
+        return imageData;
+      case "vignette": {
+        const cx = w / 2;
+        const cy = h / 2;
+        const maxDist = Math.sqrt(cx * cx + cy * cy);
+        for (let y = 0; y < h; y++) {
+          for (let x = 0; x < w; x++) {
+            const idx = (y * w + x) * 4;
+            const dx = x - cx;
+            const dy = y - cy;
+            const dist = Math.sqrt(dx * dx + dy * dy) / maxDist;
+            const factor = 1 - Math.pow(dist, 1.4) * 0.75 * amount;
+            data[idx] = clampFx255(base[idx] * factor);
+            data[idx + 1] = clampFx255(base[idx + 1] * factor);
+            data[idx + 2] = clampFx255(base[idx + 2] * factor);
+            data[idx + 3] = base[idx + 3];
+          }
+        }
+        return imageData;
+      }
+      case "blur": {
+        const radius = Math.max(1, Math.round(amount * 8));
+        const out = new Uint8ClampedArray(base.length);
+        const idx = (x: number, y: number) => (y * w + x) * 4;
+        for (let y = 0; y < h; y++) {
+          for (let x = 0; x < w; x++) {
+            let rSum = 0, gSum = 0, bSum = 0, aSum = 0, count = 0;
+            for (let dy = -radius; dy <= radius; dy++) {
+              const yy = y + dy;
+              if (yy < 0 || yy >= h) continue;
+              for (let dx = -radius; dx <= radius; dx++) {
+                const xx = x + dx;
+                if (xx < 0 || xx >= w) continue;
+                const j = idx(xx, yy);
+                rSum += base[j];
+                gSum += base[j + 1];
+                bSum += base[j + 2];
+                aSum += base[j + 3];
+                count++;
+              }
+            }
+            const j0 = idx(x, y);
+            out[j0] = rSum / count;
+            out[j0 + 1] = gSum / count;
+            out[j0 + 2] = bSum / count;
+            out[j0 + 3] = aSum / count;
+          }
+        }
+        for (let i = 0; i < data.length; i += 4) {
+          data[i] = lerpByte(base[i], out[i], amount);
+          data[i + 1] = lerpByte(base[i + 1], out[i + 1], amount);
+          data[i + 2] = lerpByte(base[i + 2], out[i + 2], amount);
+          data[i + 3] = out[i + 3];
+        }
+        return imageData;
+      }
+      case "pixelate": {
+        const block = Math.max(2, Math.round(4 + amount * 32));
+        const out = new Uint8ClampedArray(base.length);
+        const idx = (x: number, y: number) => (y * w + x) * 4;
+        for (let by = 0; by < h; by += block) {
+          for (let bx = 0; bx < w; bx += block) {
+            let rSum = 0, gSum = 0, bSum = 0, aSum = 0, count = 0;
+            const yMax = Math.min(h, by + block);
+            const xMax = Math.min(w, bx + block);
+            for (let y = by; y < yMax; y++) {
+              for (let x = bx; x < xMax; x++) {
+                const j = idx(x, y);
+                rSum += base[j];
+                gSum += base[j + 1];
+                bSum += base[j + 2];
+                aSum += base[j + 3];
+                count++;
+              }
+            }
+            const rAvg = rSum / count;
+            const gAvg = gSum / count;
+            const bAvg = bSum / count;
+            const aAvg = aSum / count;
+            for (let y = by; y < yMax; y++) {
+              for (let x = bx; x < xMax; x++) {
+                const j = idx(x, y);
+                out[j] = rAvg;
+                out[j + 1] = gAvg;
+                out[j + 2] = bAvg;
+                out[j + 3] = aAvg;
+              }
+            }
+          }
+        }
+        for (let i = 0; i < data.length; i += 4) {
+          data[i] = lerpByte(base[i], out[i], amount);
+          data[i + 1] = lerpByte(base[i + 1], out[i + 1], amount);
+          data[i + 2] = lerpByte(base[i + 2], out[i + 2], amount);
+          data[i + 3] = out[i + 3];
+        }
+        return imageData;
+      }
+      case "swirl": {
+        const src = base;
+        const out = new Uint8ClampedArray(src.length);
+        const cx = w / 2;
+        const cy = h / 2;
+        const maxR = Math.sqrt(cx * cx + cy * cy);
+        const strength = amount * Math.PI * 1.4;
+        for (let y = 0; y < h; y++) {
+          for (let x = 0; x < w; x++) {
+            const dx = x - cx;
+            const dy = y - cy;
+            const r = Math.sqrt(dx * dx + dy * dy);
+            const t = Math.atan2(dy, dx) + strength * (1 - r / maxR);
+            const sx = cx + r * Math.cos(t);
+            const sy = cy + r * Math.sin(t);
+            const [r1, g1, b1, a1] = sampleBilinear(src, w, h, sx, sy);
+            const idx = (y * w + x) * 4;
+            out[idx] = r1;
+            out[idx + 1] = g1;
+            out[idx + 2] = b1;
+            out[idx + 3] = a1;
+          }
+        }
+        for (let i = 0; i < data.length; i += 4) {
+          data[i] = lerpByte(base[i], out[i], amount);
+          data[i + 1] = lerpByte(base[i + 1], out[i + 1], amount);
+          data[i + 2] = lerpByte(base[i + 2], out[i + 2], amount);
+          data[i + 3] = out[i + 3];
+        }
+        return imageData;
+      }
+      case "wave": {
+        const src = base;
+        const out = new Uint8ClampedArray(src.length);
+        const amp = amount * 18;
+        const freqX = (2 * Math.PI) / Math.max(80, w * 0.4);
+        const freqY = (2 * Math.PI) / Math.max(120, h * 0.6);
+        for (let y = 0; y < h; y++) {
+          for (let x = 0; x < w; x++) {
+            const sx = x + Math.sin(y * freqX) * amp;
+            const sy = y + Math.sin(x * freqY) * amp * 0.5;
+            const [r1, g1, b1, a1] = sampleBilinear(src, w, h, sx, sy);
+            const idx = (y * w + x) * 4;
+            out[idx] = r1;
+            out[idx + 1] = g1;
+            out[idx + 2] = b1;
+            out[idx + 3] = a1;
+          }
+        }
+        for (let i = 0; i < data.length; i += 4) {
+          data[i] = lerpByte(base[i], out[i], amount);
+          data[i + 1] = lerpByte(base[i + 1], out[i + 1], amount);
+          data[i + 2] = lerpByte(base[i + 2], out[i + 2], amount);
+          data[i + 3] = out[i + 3];
+        }
+        return imageData;
+      }
+      case "perspective": {
+        const src = base;
+        const out = new Uint8ClampedArray(src.length);
+        const cx = w / 2;
+        const tilt = 0.45 * amount;
+        for (let y = 0; y < h; y++) {
+          const v = (y / Math.max(1, h - 1)) * 2 - 1; // -1..1
+          const scale = 1 + v * tilt;
+          const shift = v * tilt * 60;
+          for (let x = 0; x < w; x++) {
+            const sx = (x - cx) / Math.max(0.001, scale) + cx + shift;
+            const sy = y;
+            const [r1, g1, b1, a1] = sampleBilinear(src, w, h, sx, sy);
+            const idx = (y * w + x) * 4;
+            out[idx] = r1;
+            out[idx + 1] = g1;
+            out[idx + 2] = b1;
+            out[idx + 3] = a1;
+          }
+        }
+        for (let i = 0; i < data.length; i += 4) {
+          data[i] = lerpByte(base[i], out[i], amount);
+          data[i + 1] = lerpByte(base[i + 1], out[i + 1], amount);
+          data[i + 2] = lerpByte(base[i + 2], out[i + 2], amount);
+          data[i + 3] = out[i + 3];
+        }
+        return imageData;
+      }
+      case "ink-splash-a":
+      case "ink-splash-b":
+      case "ink-splash-c": {
+        const overlay = createInkOverlayData(w, h, kind, amount);
+        const overlayData = overlay?.data;
+        if (!overlayData) return imageData;
+        for (let i = 0; i < data.length; i += 4) {
+          const oa = (overlayData[i + 3] ?? 0) / 255 * amount;
+          if (oa <= 0) {
+            data[i] = base[i];
+            data[i + 1] = base[i + 1];
+            data[i + 2] = base[i + 2];
+            data[i + 3] = base[i + 3];
+            continue;
+          }
+          const blend = kind === "ink-splash-b" ? 0.65 : 0.0;
+          const darkened = blend > 0 ? base[i] * (1 - oa * blend) : base[i];
+          const darkenedG = blend > 0 ? base[i + 1] * (1 - oa * blend) : base[i + 1];
+          const darkenedB = blend > 0 ? base[i + 2] * (1 - oa * blend) : base[i + 2];
+          data[i] = clampFx255(darkened + (overlayData[i] - darkened) * oa);
+          data[i + 1] = clampFx255(darkenedG + (overlayData[i + 1] - darkenedG) * oa);
+          data[i + 2] = clampFx255(darkenedB + (overlayData[i + 2] - darkenedB) * oa);
+          data[i + 3] = base[i + 3];
+        }
+        return imageData;
+      }
+      default:
+        return imageData;
+    }
+  };
+
   const getActiveImageEffects = (): ImageEffects | null => {
     const imgs = getSelectedImageObjects();
     if (imgs.length !== 1) return null;
@@ -7894,149 +8741,8 @@ const Editor2D = forwardRef<Editor2DHandle, Props>(function Editor2D(
           const amount = typeof fx.amount === "number" ? fx.amount : 1;
 
           if (kind !== "none" && amount > 0) {
-            const w = canvas.width;
-            const h = canvas.height;
-            const imageData = ctx.getImageData(0, 0, w, h);
-            const data = imageData.data;
-            const clamp255 = (n: number) => Math.max(0, Math.min(255, n));
-
-            for (let i = 0; i < data.length; i += 4) {
-              let r = data[i];
-              let g = data[i + 1];
-              let b = data[i + 2];
-
-              // Salva original para blend
-              const or = r, og = g, ob = b;
-
-              switch (kind) {
-                case "grayscale": {
-                  const gray = 0.299 * r + 0.587 * g + 0.114 * b;
-                  r = g = b = gray;
-                  break;
-                }
-                case "sepia": {
-                  const tr = 0.393 * r + 0.769 * g + 0.189 * b;
-                  const tg = 0.349 * r + 0.686 * g + 0.168 * b;
-                  const tb = 0.272 * r + 0.534 * g + 0.131 * b;
-                  r = tr;
-                  g = tg;
-                  b = tb;
-                  break;
-                }
-                case "invert": {
-                  r = 255 - r;
-                  g = 255 - g;
-                  b = 255 - b;
-                  break;
-                }
-                case "vintage": {
-                  // Sepia + leve fade
-                  const tr = 0.393 * r + 0.769 * g + 0.189 * b;
-                  const tg = 0.349 * r + 0.686 * g + 0.168 * b;
-                  const tb = 0.272 * r + 0.534 * g + 0.131 * b;
-                  r = tr * 0.9 + 25;
-                  g = tg * 0.85 + 20;
-                  b = tb * 0.8 + 15;
-                  break;
-                }
-                case "cold": {
-                  r = r * 0.9;
-                  g = g * 0.95;
-                  b = b * 1.1 + 10;
-                  break;
-                }
-                case "warm": {
-                  r = r * 1.1 + 10;
-                  g = g * 1.02;
-                  b = b * 0.9;
-                  break;
-                }
-                case "dramatic": {
-                  // Alto contraste + leve dessaturação
-                  const gray = 0.299 * r + 0.587 * g + 0.114 * b;
-                  r = r * 0.7 + gray * 0.3;
-                  g = g * 0.7 + gray * 0.3;
-                  b = b * 0.7 + gray * 0.3;
-                  // Contraste
-                  r = 128 + (r - 128) * 1.4;
-                  g = 128 + (g - 128) * 1.4;
-                  b = 128 + (b - 128) * 1.4;
-                  break;
-                }
-                case "fade": {
-                  r = r * 0.85 + 38;
-                  g = g * 0.85 + 38;
-                  b = b * 0.85 + 38;
-                  break;
-                }
-                case "blur":
-                case "sharpen":
-                  // Estes seriam aplicados via convolução separada, por agora deixamos passar
-                  break;
-                case "vignette":
-                  // Vinheta é aplicada via gradiente radial, não por pixel direto
-                  break;
-              }
-
-              // Blend com intensidade (amount)
-              r = or + (r - or) * amount;
-              g = og + (g - og) * amount;
-              b = ob + (b - ob) * amount;
-
-              data[i] = clamp255(r);
-              data[i + 1] = clamp255(g);
-              data[i + 2] = clamp255(b);
-            }
-
-            // Vinheta (radial)
-            if (kind === "vignette") {
-              const cx = w / 2;
-              const cy = h / 2;
-              const maxDist = Math.sqrt(cx * cx + cy * cy);
-              for (let y = 0; y < h; y++) {
-                for (let x = 0; x < w; x++) {
-                  const i = (y * w + x) * 4;
-                  const dx = x - cx;
-                  const dy = y - cy;
-                  const dist = Math.sqrt(dx * dx + dy * dy) / maxDist;
-                  const factor = 1 - Math.pow(dist, 1.5) * 0.7 * amount;
-                  data[i] = clamp255(data[i] * factor);
-                  data[i + 1] = clamp255(data[i + 1] * factor);
-                  data[i + 2] = clamp255(data[i + 2] * factor);
-                }
-              }
-            }
-
-            // Blur (box blur simples)
-            if (kind === "blur" && amount > 0) {
-              const radius = Math.round(amount * 5);
-              if (radius > 0) {
-                const srcData = new Uint8ClampedArray(data);
-                for (let y = 0; y < h; y++) {
-                  for (let x = 0; x < w; x++) {
-                    let rSum = 0, gSum = 0, bSum = 0, count = 0;
-                    for (let dy = -radius; dy <= radius; dy++) {
-                      const yy = y + dy;
-                      if (yy < 0 || yy >= h) continue;
-                      for (let dx = -radius; dx <= radius; dx++) {
-                        const xx = x + dx;
-                        if (xx < 0 || xx >= w) continue;
-                        const j = (yy * w + xx) * 4;
-                        rSum += srcData[j];
-                        gSum += srcData[j + 1];
-                        bSum += srcData[j + 2];
-                        count++;
-                      }
-                    }
-                    const i = (y * w + x) * 4;
-                    data[i] = rSum / count;
-                    data[i + 1] = gSum / count;
-                    data[i + 2] = bSum / count;
-                  }
-                }
-              }
-            }
-
+            const imageData = ctx.getImageData(0, 0, canvas.width, canvas.height);
+            applyEffectToImageData(imageData, kind, amount);
             ctx.putImageData(imageData, 0, 0);
           }
 
@@ -8894,6 +9600,13 @@ const Editor2D = forwardRef<Editor2DHandle, Props>(function Editor2D(
     redoSquareCropStep,
     canUndoSquareCropStep,
     canRedoSquareCropStep,
+    startColorCut,
+    cancelColorCut,
+    confirmColorCut,
+    isColorCutActive,
+    onColorCutModeChange: (cb) => {
+      colorCutModeListenersRef.current.add(cb);
+    },
     onCropModeChange: (cb) => {
       cropModeListenersRef.current.add(cb);
     },
@@ -9300,18 +10013,23 @@ const Editor2D = forwardRef<Editor2DHandle, Props>(function Editor2D(
           const lassoSession = lassoCropRef.current;
           const effectSession = effectBrushRef.current;
           const effectLassoSession = effectLassoRef.current;
+          const colorCutSession = colorCutRef.current;
           const isSquareCropActive = !!cropSession?.active;
           const isLassoCropActive = !!lassoSession?.active;
           const isEffectBrushActive = !!effectSession?.active;
 
           const isEffectLassoActive = !!effectLassoSession?.active;
 
-          if (isSquareCropActive || isLassoCropActive || isEffectBrushActive || isEffectLassoActive) {
+          const isColorCutActiveLocal = !!colorCutSession?.active;
+
+          if (isSquareCropActive || isLassoCropActive || isEffectBrushActive || isEffectLassoActive || isColorCutActiveLocal) {
             const s: any = isSquareCropActive
               ? cropSession
               : (isLassoCropActive
                 ? lassoSession
-                : (isEffectBrushActive ? effectSession : effectLassoSession));
+                : (isEffectBrushActive
+                  ? effectSession
+                  : (isEffectLassoActive ? effectLassoSession : colorCutSession)));
             const img: any = s?.img;
             if (!img) return;
 
@@ -9527,6 +10245,10 @@ const Editor2D = forwardRef<Editor2DHandle, Props>(function Editor2D(
                   } catch {}
                 });
               } catch {}
+            }
+
+            if (isColorCutActiveLocal) {
+              try { updateColorCutGraphics(); } catch {}
             }
 
             try { c.requestRenderAll?.(); } catch {}
@@ -10285,11 +11007,20 @@ const Editor2D = forwardRef<Editor2DHandle, Props>(function Editor2D(
   }, [isActive]);
 
   return (
-    <div
-      ref={hostRef}
-      className="w-full h-full"
-      style={{ background: "transparent", touchAction: "none" }}
-    />
+    <div className="w-full h-full relative" style={{ background: "transparent", touchAction: "none" }}>
+      <div ref={hostRef} className="w-full h-full" />
+      <div
+        ref={loupeWrapRef}
+        className="absolute z-10"
+        style={{
+          display: "none",
+          pointerEvents: "none",
+          transform: "translate3d(0,0,0)",
+        }}
+      >
+        <canvas ref={loupeCanvasRef} style={{ width: 56, height: 56, borderRadius: 9999 }} />
+      </div>
+    </div>
   );
 });
 
