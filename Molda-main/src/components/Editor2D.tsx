@@ -11,7 +11,7 @@ import { installFabricEraser } from "../lib/fabricEraser";
 import { applyGizmoThemeToFabric, DEFAULT_GIZMO_THEME } from "../../../gizmo-theme";
 
 // Tipos alinhados com ExpandableSidebar
-export type Tool = "select" | "brush" | "line" | "curve" | "text";
+export type Tool = "select" | "brush" | "line" | "curve" | "text" | "stamp";
 export type BrushVariant = "pencil" | "spray" | "marker" | "calligraphy" | "eraser";
 export type ShapeKind = "rect" | "triangle" | "ellipse" | "polygon";
 
@@ -248,6 +248,10 @@ type Props = {
   /** Apenas o editor ativo deve responder a atalhos globais (Ctrl+Z/Y, Enter etc.). */
   isActive?: boolean;
   tool: Tool;
+  /** Source image used by the stamp tool (data URL or URL). */
+  stampSrc?: string | null;
+  /** Density of stamps during drag (0-100). Higher = more stamps. Default 50. */
+  stampDensity?: number;
   brushVariant: BrushVariant;
   continuousLineMode: boolean;
   onContinuousLineCancel?: () => void;
@@ -440,6 +444,8 @@ const Editor2D = forwardRef<Editor2DHandle, Props>(function Editor2D(
   {
     isActive = true,
     tool,
+    stampSrc,
+    stampDensity = 50,
     brushVariant,
     continuousLineMode,
     onContinuousLineCancel,
@@ -478,6 +484,7 @@ const Editor2D = forwardRef<Editor2DHandle, Props>(function Editor2D(
     opacity,
   });
   const toolRef = useRef(tool);
+  const stampSrcRef = useRef<string | null>(stampSrc ?? null);
   const selectionListenersRef = useRef(new Set<(k: "none" | "text" | "image" | "other") => void>());
   const erasingCountRef = useRef(0);
   const idleResolversRef = useRef<Set<() => void>>(new Set());
@@ -490,6 +497,18 @@ const Editor2D = forwardRef<Editor2DHandle, Props>(function Editor2D(
   const onRequestToolChangeRef = useRef(onRequestToolChange);
   // Used to implement: only when user presses Enter the last created object should be selected.
   const lastCreatedObjectRef = useRef<any>(null);
+
+  const stampSessionRef = useRef({
+    active: false,
+    pending: 0,
+    endRequested: false,
+    didStamp: false,
+    lastPoint: null as LinePoint | null,
+    lastStampTime: 0,
+  });
+
+  // Stamp image cache: pre-load the stamp image once to avoid re-parsing on every stamp
+  const stampCacheRef = useRef<{ src: string; img: any } | null>(null);
 
   // ----------------------- corte quadrado (preview) -----------------------
   type SquareCropSnapshot = {
@@ -668,6 +687,30 @@ const Editor2D = forwardRef<Editor2DHandle, Props>(function Editor2D(
   React.useEffect(() => {
     toolRef.current = tool;
   }, [tool]);
+
+  React.useEffect(() => {
+    stampSrcRef.current = stampSrc ?? null;
+    // Pre-cache the stamp image when stampSrc changes
+    if (stampSrc && fabricRef.current) {
+      const fabric = fabricRef.current;
+      fabric.Image.fromURL(
+        stampSrc,
+        (img: any) => {
+          if (img && stampSrcRef.current === stampSrc) {
+            stampCacheRef.current = { src: stampSrc, img };
+          }
+        },
+        { crossOrigin: "anonymous" }
+      );
+    } else if (!stampSrc) {
+      stampCacheRef.current = null;
+    }
+  }, [stampSrc]);
+
+  const stampDensityRef = useRef(stampDensity);
+  React.useEffect(() => {
+    stampDensityRef.current = stampDensity;
+  }, [stampDensity]);
 
   React.useEffect(() => {
     continuousLineModeRef.current = continuousLineMode;
@@ -1159,6 +1202,8 @@ const Editor2D = forwardRef<Editor2DHandle, Props>(function Editor2D(
     previewOutData?: ImageData;
     previewBasePixels?: Uint8ClampedArray;
     previewFxPixels?: Uint8ClampedArray;
+    // Para deformações em modo brush: pixels que vão sendo atualizados a cada tick (acúmulo durante o stroke)
+    previewWorkPixels?: Uint8ClampedArray;
     previewW?: number;
     previewH?: number;
     lastBakedSrc?: string;
@@ -2118,6 +2163,25 @@ const Editor2D = forwardRef<Editor2DHandle, Props>(function Editor2D(
   };
 
   // ========== Effect Brush Mode ==========
+  const shouldAccumulateEffectBrush = (kind: ImageEffectKind): boolean => {
+    // Para deformações, o comportamento esperado é “liquify-like”: cada stroke parte
+    // do resultado atual, permitindo deformar a mesma área várias vezes.
+    return kind === "swirl" || kind === "wave" || kind === "perspective";
+  };
+
+  const resetEffectBrushPreviewCache = (s: any) => {
+    if (!s) return;
+    s.previewPrepared = false;
+    s.previewCanvas = undefined;
+    s.previewCtx = undefined;
+    s.previewOutData = undefined;
+    s.previewBasePixels = undefined;
+    s.previewFxPixels = undefined;
+    s.previewWorkPixels = undefined;
+    s.previewW = undefined;
+    s.previewH = undefined;
+  };
+
   const cleanupEffectBrush = (opts?: { restoreImage?: boolean; commitResult?: boolean }) => {
     const c: any = canvasRef.current;
     const fabric: any = fabricRef.current;
@@ -2493,15 +2557,22 @@ const Editor2D = forwardRef<Editor2DHandle, Props>(function Editor2D(
         const baseData = ctx.getImageData(0, 0, w, h);
         const basePixels = new Uint8ClampedArray(baseData.data);
 
-        // Efeito full (aplicado uma vez)
-        const fxData = ctx.getImageData(0, 0, w, h);
         const kind = fxLocal.kind ?? "none";
         const amount = typeof fxLocal.amount === "number" ? fxLocal.amount : 1;
-        if (!(kind === "none" || amount <= 0)) {
-          applyEffectToImageData(fxData, kind, amount);
-        }
 
-        const fxPixels = new Uint8ClampedArray(fxData.data);
+        // Para deformações (swirl/wave/perspective) no brush: NÃO precomputamos uma versão full
+        // e mascaramos. Em vez disso, vamos deformando os pixels atuais incrementalmente.
+        const deformBrush = shouldAccumulateEffectBrush(kind);
+
+        // Efeito full (aplicado uma vez) - apenas para efeitos não-deform
+        let fxPixels: Uint8ClampedArray | undefined = undefined;
+        if (!deformBrush) {
+          const fxData = ctx.getImageData(0, 0, w, h);
+          if (!(kind === "none" || amount <= 0)) {
+            applyEffectToImageData(fxData, kind, amount);
+          }
+          fxPixels = new Uint8ClampedArray(fxData.data);
+        }
 
         // Confere se a sessão ainda é a mesma
         const current = effectBrushRef.current;
@@ -2513,6 +2584,9 @@ const Editor2D = forwardRef<Editor2DHandle, Props>(function Editor2D(
         current.previewOutData = ctx.createImageData(w, h);
         current.previewBasePixels = basePixels;
         current.previewFxPixels = fxPixels;
+        if (deformBrush) {
+          current.previewWorkPixels = new Uint8ClampedArray(basePixels);
+        }
         current.previewW = w;
         current.previewH = h;
         current.previewPrepared = true;
@@ -2550,7 +2624,13 @@ const Editor2D = forwardRef<Editor2DHandle, Props>(function Editor2D(
         const h = cur.previewH;
         const maskCtx = cur.maskCtx;
 
-        if (!pc || !pctx || !outData || !basePixels || !fxPixels || !w || !h || !maskCtx) return;
+        const deformBrush = shouldAccumulateEffectBrush(cur.effectKind);
+        if (!pc || !pctx || !outData || !basePixels || !w || !h) return;
+        if (deformBrush) {
+          if (!cur.previewWorkPixels) return;
+        } else {
+          if (!maskCtx || !fxPixels) return;
+        }
 
         // Evita concorrência: uma aplicação por vez. Se vier update no meio, marca pending.
         if (cur.previewApplyInFlight) {
@@ -2560,16 +2640,23 @@ const Editor2D = forwardRef<Editor2DHandle, Props>(function Editor2D(
         cur.previewApplyInFlight = true;
 
         try {
-          const mask = maskCtx.getImageData(0, 0, w, h).data;
           const outPixels = outData.data;
-          outPixels.set(basePixels);
-          for (let i = 0; i < outPixels.length; i += 4) {
-            const a = (mask[i + 3] ?? 0) / 255;
-            if (a <= 0) continue;
-            const t = a;
-            outPixels[i] = outPixels[i] + (fxPixels[i] - outPixels[i]) * t;
-            outPixels[i + 1] = outPixels[i + 1] + (fxPixels[i + 1] - outPixels[i + 1]) * t;
-            outPixels[i + 2] = outPixels[i + 2] + (fxPixels[i + 2] - outPixels[i + 2]) * t;
+
+          if (deformBrush) {
+            // Deformação local já foi aplicada em previewWorkPixels pelos eventos do pincel.
+            outPixels.set(cur.previewWorkPixels as Uint8ClampedArray);
+          } else {
+            // === Demais efeitos: mascara uma versão full pré-calculada ===
+            const mask = (maskCtx as CanvasRenderingContext2D).getImageData(0, 0, w, h).data;
+            outPixels.set(basePixels);
+            for (let i = 0; i < outPixels.length; i += 4) {
+              const a = (mask[i + 3] ?? 0) / 255;
+              if (a <= 0) continue;
+              const t = a;
+              outPixels[i] = outPixels[i] + ((fxPixels as Uint8ClampedArray)[i] - outPixels[i]) * t;
+              outPixels[i + 1] = outPixels[i + 1] + ((fxPixels as Uint8ClampedArray)[i + 1] - outPixels[i + 1]) * t;
+              outPixels[i + 2] = outPixels[i + 2] + ((fxPixels as Uint8ClampedArray)[i + 2] - outPixels[i + 2]) * t;
+            }
           }
           pctx.putImageData(outData, 0, 0);
           const dataUrl = pc.toDataURL("image/png");
@@ -2694,6 +2781,126 @@ const Editor2D = forwardRef<Editor2DHandle, Props>(function Editor2D(
       return { x: u * Number(img.width ?? 1), y: v * Number(img.height ?? 1) };
     };
 
+    const canvasToNaturalPixel = (pCanvas: { x: number; y: number }) => {
+      const s = effectBrushRef.current;
+      const wNat = Math.max(1, Number(s?.previewW ?? 0) || 0);
+      const hNat = Math.max(1, Number(s?.previewH ?? 0) || 0);
+      const objW = Math.max(1e-6, Number(img.width ?? 1) || 1);
+      const objH = Math.max(1e-6, Number(img.height ?? 1) || 1);
+      const pObj = canvasToImagePixel(pCanvas);
+      return {
+        x: (pObj.x / objW) * wNat,
+        y: (pObj.y / objH) * hNat,
+      };
+    };
+
+    const getBrushRadiusNat = () => {
+      const s = effectBrushRef.current;
+      if (!s?.active) return 0;
+      const wNat = Math.max(1, Number(s.previewW ?? 0) || 0);
+      const objW = Math.max(1e-6, Number(img.width ?? 1) || 1);
+      const scale = Math.max(1e-6, Number(img.scaleX ?? 1) || 1);
+      const radiusObj = Math.max(1, (s.brushSize / 2) / scale);
+      return radiusObj * (wNat / objW);
+    };
+
+    const applyLocalDeformAt = (
+      center: { x: number; y: number },
+      delta: { x: number; y: number },
+      kind: ImageEffectKind
+    ) => {
+      const s = effectBrushRef.current;
+      if (!s?.active) return;
+      const w = Math.max(1, Number(s.previewW ?? 0) || 0);
+      const h = Math.max(1, Number(s.previewH ?? 0) || 0);
+      const work = s.previewWorkPixels;
+      if (!w || !h || !work || work.length !== w * h * 4) return;
+
+      const radius = getBrushRadiusNat();
+      if (radius <= 0.5) return;
+
+      const strength01 = clampFx01(typeof s.effectAmount === "number" ? s.effectAmount : 1);
+      const maxMovePx = radius * (0.18 + 0.55 * strength01);
+
+      const len = Math.sqrt(delta.x * delta.x + delta.y * delta.y) || 0;
+      const dx = len > 1e-6 ? (delta.x / len) * Math.min(len, maxMovePx) : 0;
+      const dy = len > 1e-6 ? (delta.y / len) * Math.min(len, maxMovePx) : 0;
+
+      const cx = center.x;
+      const cy = center.y;
+      const r = radius;
+      const r2 = r * r;
+      const minX = Math.max(0, Math.floor(cx - r - 1));
+      const maxX = Math.min(w - 1, Math.ceil(cx + r + 1));
+      const minY = Math.max(0, Math.floor(cy - r - 1));
+      const maxY = Math.min(h - 1, Math.ceil(cy + r + 1));
+
+      const src = new Uint8ClampedArray(work);
+      const doSwirl = kind === "swirl";
+      const doPerspective = kind === "perspective";
+      const imgCenter = { x: w / 2, y: h / 2 };
+      const moveDot = (cx - imgCenter.x) * dx + (cy - imgCenter.y) * dy;
+      const perspectiveSign = moveDot >= 0 ? 1 : -1;
+
+      for (let y = minY; y <= maxY; y++) {
+        for (let x = minX; x <= maxX; x++) {
+          const ox = x - cx;
+          const oy = y - cy;
+          const d2 = ox * ox + oy * oy;
+          if (d2 > r2) continue;
+          const dist = Math.sqrt(d2) || 0;
+          const t = 1 - dist / r;
+          const falloff = t * t;
+
+          let sx = x;
+          let sy = y;
+          if (doSwirl) {
+            const sign = dx >= 0 ? 1 : -1;
+            const angle = sign * falloff * (0.35 + 1.25 * strength01);
+            const cos = Math.cos(angle);
+            const sin = Math.sin(angle);
+            sx = cx + ox * cos - oy * sin;
+            sy = cy + ox * sin + oy * cos;
+          } else if (doPerspective) {
+            const k = perspectiveSign * falloff * (0.08 + 0.32 * strength01);
+            const scale = 1 + k;
+            sx = cx + ox / Math.max(0.15, scale);
+            sy = cy + oy / Math.max(0.15, scale);
+          } else {
+            // wave (e fallback): smudge/drag
+            sx = x - dx * falloff;
+            sy = y - dy * falloff;
+          }
+
+          const [r1, g1, b1, a1] = sampleBilinear(src, w, h, sx, sy);
+          const idx = (y * w + x) * 4;
+          work[idx] = r1;
+          work[idx + 1] = g1;
+          work[idx + 2] = b1;
+          work[idx + 3] = a1;
+        }
+      }
+    };
+
+    const applyLocalDeformSegment = (fromCanvas: { x: number; y: number }, toCanvas: { x: number; y: number }) => {
+      const s = effectBrushRef.current;
+      if (!s?.active) return;
+      if (!shouldAccumulateEffectBrush(s.effectKind)) return;
+      if (!s.previewPrepared || !s.previewWorkPixels) return;
+
+      const a = canvasToNaturalPixel(fromCanvas);
+      const b = canvasToNaturalPixel(toCanvas);
+      const dx = b.x - a.x;
+      const dy = b.y - a.y;
+      const dist = Math.sqrt(dx * dx + dy * dy);
+      const step = Math.max(1, getBrushRadiusNat() * 0.35);
+      const n = Math.max(1, Math.ceil(dist / step));
+      for (let i = 0; i <= n; i++) {
+        const t = i / n;
+        applyLocalDeformAt({ x: a.x + dx * t, y: a.y + dy * t }, { x: dx / n, y: dy / n }, s.effectKind);
+      }
+    };
+
     const drawBrush = (pCanvas: { x: number; y: number }) => {
       const s = effectBrushRef.current;
       if (!s?.active) return;
@@ -2753,18 +2960,26 @@ const Editor2D = forwardRef<Editor2DHandle, Props>(function Editor2D(
         const h = cur?.previewH;
         const maskCtx = cur?.maskCtx;
 
-        if (cur?.active && pc && pctx && outData && basePixels && fxPixels && w && h && maskCtx) {
+        const deformBrush = !!cur?.active && shouldAccumulateEffectBrush(cur.effectKind);
+
+        if (cur?.active && pc && pctx && outData && basePixels && w && h && (deformBrush || (!!maskCtx && !!fxPixels))) {
           try {
-            const mask = maskCtx.getImageData(0, 0, w, h).data;
             const outPixels = outData.data;
-            outPixels.set(basePixels);
-            for (let i = 0; i < outPixels.length; i += 4) {
-              const a = (mask[i + 3] ?? 0) / 255;
-              if (a <= 0) continue;
-              const t = a;
-              outPixels[i] = outPixels[i] + (fxPixels[i] - outPixels[i]) * t;
-              outPixels[i + 1] = outPixels[i + 1] + (fxPixels[i + 1] - outPixels[i + 1]) * t;
-              outPixels[i + 2] = outPixels[i + 2] + (fxPixels[i + 2] - outPixels[i + 2]) * t;
+
+            if (deformBrush) {
+              if (!cur.previewWorkPixels) return;
+              outPixels.set(cur.previewWorkPixels);
+            } else {
+              const mask = (maskCtx as CanvasRenderingContext2D).getImageData(0, 0, w, h).data;
+              outPixels.set(basePixels);
+              for (let i = 0; i < outPixels.length; i += 4) {
+                const a = (mask[i + 3] ?? 0) / 255;
+                if (a <= 0) continue;
+                const t = a;
+                outPixels[i] = outPixels[i] + ((fxPixels as Uint8ClampedArray)[i] - outPixels[i]) * t;
+                outPixels[i + 1] = outPixels[i + 1] + ((fxPixels as Uint8ClampedArray)[i + 1] - outPixels[i + 1]) * t;
+                outPixels[i + 2] = outPixels[i + 2] + ((fxPixels as Uint8ClampedArray)[i + 2] - outPixels[i + 2]) * t;
+              }
             }
             pctx.putImageData(outData, 0, 0);
             const dataUrl = pc.toDataURL("image/png");
@@ -2779,6 +2994,17 @@ const Editor2D = forwardRef<Editor2DHandle, Props>(function Editor2D(
               );
             });
             cur.lastBakedSrc = dataUrl;
+
+            // Para efeitos de deformação, acumula o resultado: o próximo stroke parte
+            // desta nova base (em vez de sempre do original), permitindo múltiplas passadas.
+            if (shouldAccumulateEffectBrush(cur.effectKind) && cur.lastBakedSrc) {
+              cur.baseSrc = cur.lastBakedSrc;
+              // limpa a máscara para que o próximo stroke não re-aplique áreas antigas
+              try {
+                cur.maskCtx?.clearRect(0, 0, cur.maskCanvas?.width ?? 0, cur.maskCanvas?.height ?? 0);
+              } catch {}
+              resetEffectBrushPreviewCache(cur);
+            }
           } catch {
             // se falhar, tenta pelo caminho normal do throttle
             schedulePreviewUpdate();
@@ -2804,7 +3030,8 @@ const Editor2D = forwardRef<Editor2DHandle, Props>(function Editor2D(
       s.isPointerDown = true;
       const p = getPointer(opt);
       s.lastPoint = p;
-      drawBrush(p);
+      const deformBrush = shouldAccumulateEffectBrush(s.effectKind);
+      if (!deformBrush) drawBrush(p);
       // começa a preparar o preview o quanto antes
       try { void preparePreviewOnce(); } catch {}
       schedulePreviewUpdate();
@@ -2820,7 +3047,16 @@ const Editor2D = forwardRef<Editor2DHandle, Props>(function Editor2D(
       try { opt?.e?.stopPropagation?.(); } catch {}
       const p = getPointer(opt);
       const last = s.lastPoint;
-      if (last) drawBrushLine(last, p);
+      const deformBrush = shouldAccumulateEffectBrush(s.effectKind);
+      if (deformBrush) {
+        if (!s.previewPrepared) {
+          try { void preparePreviewOnce(); } catch {}
+        } else if (last) {
+          applyLocalDeformSegment(last, p);
+        }
+      } else {
+        if (last) drawBrushLine(last, p);
+      }
       s.lastPoint = p;
       schedulePreviewUpdate();
     };
@@ -10476,6 +10712,229 @@ const Editor2D = forwardRef<Editor2DHandle, Props>(function Editor2D(
       setObjectsSelectable(c, true);
       setHostCursor("default");
       c.renderAll();
+      return;
+    }
+
+    // STAMP (carimbo/moldes): clica/arrasta para inserir repetidamente a imagem selecionada
+    // OPTIMIZED: uses cached fabric.Image, throttling, and density control
+    if (tool === "stamp") {
+      c.isDrawingMode = false;
+      c.selection = false;
+      c.skipTargetFind = true;
+      setObjectsSelectable(c, false);
+      c.discardActiveObject();
+
+      const sizePx = Math.max(12, (strokeWidth || 1) * 10);
+      const cursor = buildCircularCursor(sizePx);
+      setHostCursor(cursor);
+      try { (c as any).defaultCursor = cursor; } catch {}
+
+      const session = stampSessionRef.current;
+      session.active = false;
+      session.endRequested = false;
+      session.lastPoint = null;
+      session.lastStampTime = 0;
+
+      // Batch render: only render once per animation frame
+      let renderScheduled = false;
+      const scheduleRender = () => {
+        if (renderScheduled) return;
+        renderScheduled = true;
+        requestAnimationFrame(() => {
+          renderScheduled = false;
+          try { c.requestRenderAll?.(); } catch {}
+        });
+      };
+
+      const maybeFinalizeStampHistory = () => {
+        if (!session.didStamp) return;
+        if (session.pending > 0) return;
+        if (!session.endRequested) return;
+        if (!shouldRecordHistory()) return;
+        try { historyRef.current?.push("stamp"); } catch {}
+        emitHistory();
+        session.didStamp = false;
+        session.endRequested = false;
+      };
+
+      // Optimized stamp placement using cached image (sync clone)
+      const placeStampSync = (pt: LinePoint) => {
+        const cache = stampCacheRef.current;
+        const src = stampSrcRef.current;
+        if (!cache || cache.src !== src || !cache.img) return;
+
+        historyGuardRef.current += 1;
+        try {
+          const baseImg = cache.img;
+          const w = Math.max(1, Number(baseImg?.width) || 1);
+          const h = Math.max(1, Number(baseImg?.height) || 1);
+          const base = Math.max(w, h);
+          const scale = Math.max(0.001, sizePx / base);
+
+          // Clone from cached image (synchronous!)
+          const cloned = fabric.util.object.clone(baseImg);
+          cloned.set({
+            left: pt.x - (w * scale) / 2,
+            top: pt.y - (h * scale) / 2,
+            scaleX: scale,
+            scaleY: scale,
+            opacity,
+            erasable: true,
+            selectable: false,
+            evented: false,
+          });
+
+          try { (cloned as any).__moldaOriginalSrc = src; } catch {}
+
+          c.add(cloned);
+          session.didStamp = true;
+        } finally {
+          historyGuardRef.current = Math.max(0, historyGuardRef.current - 1);
+        }
+        scheduleRender();
+      };
+
+      // Fallback async placement (used on first stamp if cache not ready)
+      const placeStampAsync = (pt: LinePoint) => {
+        const src = stampSrcRef.current;
+        if (!src) return;
+
+        session.pending += 1;
+        historyGuardRef.current += 1;
+        fabric.Image.fromURL(
+          src,
+          (img: any) => {
+            try {
+              const w = Math.max(1, Number(img?.width) || 1);
+              const h = Math.max(1, Number(img?.height) || 1);
+              const base = Math.max(w, h);
+              const scale = Math.max(0.001, sizePx / base);
+
+              img.set({
+                left: pt.x - (w * scale) / 2,
+                top: pt.y - (h * scale) / 2,
+                scaleX: scale,
+                scaleY: scale,
+                opacity,
+                erasable: true,
+                selectable: false,
+                evented: false,
+              });
+
+              try { (img as any).__moldaOriginalSrc = src; } catch {}
+
+              c.add(img);
+              session.didStamp = true;
+
+              // Also cache for next stamps
+              if (!stampCacheRef.current || stampCacheRef.current.src !== src) {
+                stampCacheRef.current = { src, img };
+              }
+            } finally {
+              historyGuardRef.current = Math.max(0, historyGuardRef.current - 1);
+              session.pending = Math.max(0, session.pending - 1);
+              flushIdleResolvers();
+              maybeFinalizeStampHistory();
+            }
+            scheduleRender();
+          },
+          { crossOrigin: "anonymous" }
+        );
+      };
+
+      const placeStamp = (pt: LinePoint) => {
+        const cache = stampCacheRef.current;
+        const src = stampSrcRef.current;
+        if (cache && cache.src === src && cache.img) {
+          placeStampSync(pt);
+        } else {
+          placeStampAsync(pt);
+        }
+      };
+
+      const dist = (a: LinePoint, b: LinePoint) => Math.hypot(a.x - b.x, a.y - b.y);
+
+      // Compute spacing threshold based on density (0=sparse, 100=dense)
+      const getThreshold = () => {
+        const density = Math.max(0, Math.min(100, stampDensityRef.current));
+        // At density 0: threshold = sizePx * 2 (very sparse)
+        // At density 100: threshold = sizePx * 0.15 (very dense)
+        const minMult = 0.15;
+        const maxMult = 2.0;
+        const mult = maxMult - (density / 100) * (maxMult - minMult);
+        return Math.max(4, sizePx * mult);
+      };
+
+      // Throttle: minimum ms between stamps during drag
+      const getMinInterval = () => {
+        const density = Math.max(0, Math.min(100, stampDensityRef.current));
+        // At density 100: 8ms (fast), at density 0: 80ms (slow)
+        return Math.max(8, 80 - (density / 100) * 72);
+      };
+
+      const onMouseDown = (evt: any) => {
+        if (evt?.e?.button && evt.e.button !== 0) return;
+        if (!stampSrcRef.current) return;
+        const pointer = c.getPointer(evt.e);
+        const p: LinePoint = { x: pointer.x, y: pointer.y };
+        session.active = true;
+        session.endRequested = false;
+        session.lastPoint = p;
+        session.lastStampTime = performance.now();
+        placeStamp(p);
+      };
+
+      const onMouseMove = (evt: any) => {
+        if (!session.active) return;
+        if (!stampSrcRef.current) return;
+
+        const now = performance.now();
+        const minInterval = getMinInterval();
+        if (now - session.lastStampTime < minInterval) return;
+
+        const pointer = c.getPointer(evt.e);
+        const current: LinePoint = { x: pointer.x, y: pointer.y };
+        const threshold = getThreshold();
+
+        let last = session.lastPoint;
+        if (!last) {
+          session.lastPoint = current;
+          session.lastStampTime = now;
+          placeStamp(current);
+          return;
+        }
+
+        const d = dist(last, current);
+        if (d >= threshold) {
+          // Place a single stamp at current position (no gap-fill loop to avoid flooding)
+          placeStamp(current);
+          session.lastPoint = current;
+          session.lastStampTime = now;
+        }
+      };
+
+      const onMouseUp = () => {
+        if (!session.active) return;
+        session.active = false;
+        session.endRequested = true;
+        session.lastPoint = null;
+        maybeFinalizeStampHistory();
+      };
+
+      const onKeyDown = (evt: KeyboardEvent) => {
+        if (evt.key === "Escape") {
+          evt.preventDefault();
+          try { onRequestToolChangeRef.current?.("select"); } catch {}
+        }
+      };
+
+      attachLineListeners(c, {
+        down: onMouseDown,
+        move: onMouseMove,
+        up: onMouseUp,
+        keydown: onKeyDown,
+      });
+      c.requestRenderAll();
       return;
     }
 

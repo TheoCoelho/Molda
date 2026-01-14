@@ -10,6 +10,7 @@ import FloatingEditorToolbar from "../components/FloatingEditorToolbar";
 import TextToolbar from "../components/TextToolbar";
 import ImageToolbar from "../components/ImageToolbar";
 import { useRecentFonts } from "../hooks/use-recent-fonts";
+import { generateBlobSvgDataUrl } from "../lib/shapeGenerators";
 
 import Editor2D, {
   Editor2DHandle,
@@ -172,6 +173,20 @@ const Creation = () => {
   const [fillColor, setFillColor] = useState("#ffffff");
   const [strokeWidth, setStrokeWidth] = useState(4);
   const [opacity, setOpacity] = useState(1);
+  const [stampDensity, setStampDensity] = useState(50);
+  const [stampColor, setStampColor] = useState("#000000");
+  const [stampSeed, setStampSeed] = useState<number | null>(null);
+
+  const stampSrc = useMemo(() => {
+    if (stampSeed == null) return null;
+    return generateBlobSvgDataUrl({
+      size: 256,
+      seed: stampSeed,
+      fill: stampColor,
+      stroke: stampColor,
+      strokeWidth: 0,
+    });
+  }, [stampSeed, stampColor]);
 
   const editorRefs = useRef<Record<string, Editor2DHandle | null>>({});
   const lastEditorTabRef = useRef<string | null>(null);
@@ -1056,6 +1071,9 @@ const Creation = () => {
               onExpandChange={() => {}}
               tool={tool}
               setTool={setTool}
+              stampSeed={stampSeed}
+              setStampSeed={setStampSeed}
+              stampColor={stampColor}
               brushVariant={brushVariant}
               setBrushVariant={setBrushVariant}
               strokeColor={strokeColor}
@@ -1264,6 +1282,10 @@ const Creation = () => {
                   <FloatingEditorToolbar
                     strokeColor={strokeColor}
                     setStrokeColor={setStrokeColor}
+                    stampColor={stampColor}
+                    setStampColor={setStampColor}
+                    stampDensity={stampDensity}
+                    setStampDensity={setStampDensity}
                     strokeWidth={strokeWidth}
                     setStrokeWidth={setStrokeWidth}
                     opacity={opacity}
@@ -1370,6 +1392,8 @@ const Creation = () => {
                               }}
                               isActive={activeIs2D && tab.id === activeCanvasTab}
                               tool={tool}
+                              stampSrc={stampSrc}
+                              stampDensity={stampDensity}
                               brushVariant={brushVariant}
                               continuousLineMode={continuousLineMode}
                               onRequestToolChange={(nextTool) => {
@@ -1462,7 +1486,8 @@ const Creation = () => {
                         const effectBrushActive = !!activeEditor?.isEffectBrushActive?.();
                         const effectLassoActive = !!activeEditor?.isEffectLassoActive?.();
                         const effectToolActive = effectBrushActive || effectLassoActive;
-                        return (!cropModeActive && !effectToolActive && !effectsEditModeActive && selectionKind === "text");
+                        const colorCutActive = colorCutModeActive || !!activeEditor?.isColorCutActive?.();
+                        return (!cropModeActive && !effectToolActive && !effectsEditModeActive && !colorCutActive && selectionKind === "text");
                       })() && (
                         <div className="absolute left-1/2 bottom-6 z-10 max-w-[95%] -translate-x-1/2">
                           <TextToolbar
@@ -1478,7 +1503,8 @@ const Creation = () => {
                         const effectBrushActive = !!activeEditor?.isEffectBrushActive?.();
                         const effectLassoActive = !!activeEditor?.isEffectLassoActive?.();
                         const effectToolActive = effectBrushActive || effectLassoActive;
-                        return (!cropModeActive && !effectToolActive && (effectsEditModeActive || selectionKind === "image"));
+                        const colorCutActive = colorCutModeActive || !!activeEditor?.isColorCutActive?.();
+                        return (!cropModeActive && !effectToolActive && !colorCutActive && (effectsEditModeActive || selectionKind === "image"));
                       })() && (
                         <div className="absolute left-1/2 bottom-6 z-10 max-w-[95%] -translate-x-1/2">
                           <ImageToolbar
@@ -1494,12 +1520,17 @@ const Creation = () => {
                         const effectBrushActive = !!activeEditor?.isEffectBrushActive?.();
                         const effectLassoActive = !!activeEditor?.isEffectLassoActive?.();
                         const effectToolActive = effectBrushActive || effectLassoActive;
-                        return (!cropModeActive && !effectToolActive && !effectsEditModeActive && selectionKind !== "text" && selectionKind !== "image");
+                        const colorCutActive = colorCutModeActive || !!activeEditor?.isColorCutActive?.();
+                        return (!cropModeActive && !effectToolActive && !effectsEditModeActive && !colorCutActive && selectionKind !== "text" && selectionKind !== "image");
                       })() && (
                         <div className="absolute left-1/2 bottom-6 z-10 max-w-[95%] -translate-x-1/2">
                           <FloatingEditorToolbar
                             strokeColor={strokeColor}
                             setStrokeColor={setStrokeColor}
+                            stampColor={stampColor}
+                            setStampColor={setStampColor}
+                            stampDensity={stampDensity}
+                            setStampDensity={setStampDensity}
                             strokeWidth={strokeWidth}
                             setStrokeWidth={setStrokeWidth}
                             opacity={opacity}

@@ -24,14 +24,20 @@ type Props = {
   strokeColor: string;
   setStrokeColor: (c: string) => void;
 
+  stampColor?: string;
+  setStampColor?: (c: string) => void;
+
+  stampDensity?: number;
+  setStampDensity?: (n: number) => void;
+
   strokeWidth: number;
   setStrokeWidth: (n: number) => void;
 
   opacity: number;
   setOpacity: (n: number) => void;
 
-  tool: "select" | "brush" | "line" | "curve" | "text";
-  setTool: (t: "select" | "brush" | "line" | "curve" | "text") => void;
+  tool: "select" | "brush" | "line" | "curve" | "text" | "stamp";
+  setTool: (t: "select" | "brush" | "line" | "curve" | "text" | "stamp") => void;
 
   /** Handle imperativo do Editor2D (opcional, usado para delete e histórico) */
   editor2DRef?: {
@@ -100,6 +106,10 @@ export default function FloatingEditorToolbar({
   mode = "2D",
   strokeColor,
   setStrokeColor,
+  stampColor = "#000000",
+  setStampColor,
+  stampDensity = 50,
+  setStampDensity,
   strokeWidth,
   setStrokeWidth,
   opacity,
@@ -134,12 +144,21 @@ export default function FloatingEditorToolbar({
   const [h, setH] = useState<number>(0);
   const [s, setS] = useState<number>(1);
   const [v, setV] = useState<number>(1);
+  const activeColor = tool === "stamp" ? stampColor : strokeColor;
+  const setActiveColor = (hex: string) => {
+    if (tool === "stamp") {
+      setStampColor?.(hex);
+      return;
+    }
+    setStrokeColor(hex);
+  };
+
   useEffect(() => {
-    const hsv = hexToHsv(strokeColor);
+    const hsv = hexToHsv(activeColor);
     if (hsv) {
       setH(hsv[0]); setS(hsv[1]); setV(hsv[2]);
     }
-  }, [strokeColor]);
+  }, [activeColor]);
   const currentHex = useMemo(() => hsvToHex(h, s, v), [h, s, v]);
   const [hexInput, setHexInput] = useState<string>(currentHex);
   useEffect(() => setHexInput(currentHex), [currentHex]);
@@ -157,7 +176,7 @@ export default function FloatingEditorToolbar({
     if (!(svDragging || hueDragging)) return;
     if (rafRef.current) cancelAnimationFrame(rafRef.current);
     rafRef.current = requestAnimationFrame(() => {
-      setStrokeColor(hsvToHex(h, s, v));
+      setActiveColor(hsvToHex(h, s, v));
     });
     return () => {
       if (rafRef.current) cancelAnimationFrame(rafRef.current);
@@ -235,9 +254,10 @@ export default function FloatingEditorToolbar({
         const noDup = prev.filter((c) => c.toUpperCase() !== hex.toUpperCase());
         return [hex.toUpperCase(), ...noDup].slice(0, 64);
       });
-      setStrokeColor(hex.toUpperCase());
-      // Cada clique de swatch é um gesto concluído -> registra histórico
-      editor2DRef?.historyCapture?.();
+      setActiveColor(hex.toUpperCase());
+      // Para ferramentas de desenho, trocar cor é um gesto -> registra histórico.
+      // Para stamp, a cor só afeta os próximos stamps (não o canvas atual).
+      if (tool !== "stamp") editor2DRef?.historyCapture?.();
     }
   };
 
@@ -263,7 +283,7 @@ export default function FloatingEditorToolbar({
     if (/^#([0-9A-F]{6})$/.test(val)) {
       applyPickedColor(val);
       // Registro final garantido em alterações por HEX
-      editor2DRef?.historyCapture?.();
+      if (tool !== "stamp") editor2DRef?.historyCapture?.();
     }
   };
 
@@ -434,6 +454,27 @@ export default function FloatingEditorToolbar({
 
           {/* Separador */}
           <div className="mx-1 h-6 w-px bg-black/10 dark:bg-white/15" />
+
+          {/* 2.5) Densidade do stamp */}
+          {tool === "stamp" && (
+            <div className="flex items-center">
+              <div className="h-9 grid place-items-center">
+                <SlidersHorizontal className="h-4 w-4 opacity-90" />
+              </div>
+              <input
+                type="range"
+                min={0}
+                max={100}
+                step={5}
+                value={stampDensity}
+                onChange={(e) => setStampDensity?.(Number(e.target.value))}
+                className="w-24 accent-current"
+                aria-label="Densidade do molde"
+                title={`Densidade: ${stampDensity}%`}
+              />
+              <span className="ml-2 text-xs text-gray-500">{stampDensity}%</span>
+            </div>
+          )}
 
           {/* 3) Largura */}
           <div className="flex items-center">

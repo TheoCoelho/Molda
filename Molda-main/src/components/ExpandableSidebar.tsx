@@ -58,8 +58,11 @@ interface ExpandableSidebarProps {
   onExpandChange?: (isExpanded: boolean) => void;
 
   // Editor 2D
-  tool: "select" | "brush" | "line" | "curve" | "text";
-  setTool: (t: "select" | "brush" | "line" | "curve" | "text") => void;
+  tool: "select" | "brush" | "line" | "curve" | "text" | "stamp";
+  setTool: (t: "select" | "brush" | "line" | "curve" | "text" | "stamp") => void;
+  stampSeed?: number | null;
+  setStampSeed?: (seed: number | null) => void;
+  stampColor?: string;
   brushVariant: BrushVariant;
   setBrushVariant: (v: BrushVariant) => void;
   continuousLineEnabled: boolean;
@@ -116,6 +119,9 @@ const ExpandableSidebar: React.FC<ExpandableSidebarProps> = (props) => {
     onExpandChange,
     tool,
     setTool,
+    stampSeed,
+    setStampSeed,
+    stampColor,
     brushVariant,
     setBrushVariant,
   continuousLineEnabled,
@@ -219,6 +225,9 @@ const ExpandableSidebar: React.FC<ExpandableSidebarProps> = (props) => {
                 is2DActive={is2DActive}
                 tool={tool}
                 setTool={setTool}
+                stampSeed={stampSeed}
+                setStampSeed={setStampSeed}
+                stampColor={stampColor}
                 brushVariant={brushVariant}
                 setBrushVariant={setBrushVariant}
                 continuousLineEnabled={continuousLineEnabled}
@@ -316,8 +325,11 @@ function SettingsContent(props: {
 
 function BrushSectionAccordion(props: {
   is2DActive: boolean;
-  tool: "select" | "brush" | "line" | "curve" | "text";
-  setTool: (t: "select" | "brush" | "line" | "curve" | "text") => void;
+  tool: "select" | "brush" | "line" | "curve" | "text" | "stamp";
+  setTool: (t: "select" | "brush" | "line" | "curve" | "text" | "stamp") => void;
+  stampSeed?: number | null;
+  setStampSeed?: (seed: number | null) => void;
+  stampColor?: string;
   brushVariant: BrushVariant;
   setBrushVariant: (v: BrushVariant) => void;
   continuousLineEnabled: boolean;
@@ -340,6 +352,9 @@ function BrushSectionAccordion(props: {
     is2DActive,
     tool,
     setTool,
+    stampSeed,
+    setStampSeed,
+    stampColor = "#000000",
     brushVariant,
     setBrushVariant,
   continuousLineEnabled,
@@ -359,7 +374,7 @@ function BrushSectionAccordion(props: {
     autoOpenTextPanelCounter,
   } = props;
 
-  type SubKey = "texto" | "formas" | "blobs" | "padroes" | "rabiscos" | "hero-patterns" | "pincel" | "linhas" | null;
+  type SubKey = "texto" | "formas" | "blobs" | "padroes" | "rabiscos" | "hero-patterns" | "moldes" | "pincel" | "linhas" | null;
   const [openKey, setOpenKey] = useState<SubKey>(null);
   const [enabledKey, setEnabledKey] = useState<SubKey>(null);
   const activationDelayMs = 380;
@@ -406,6 +421,7 @@ function BrushSectionAccordion(props: {
       if (key === "pincel") setTool("brush");
       else if (key === "linhas") setTool("line");
       else if (key === "texto") setTool("text");
+      else if (key === "moldes") setTool("stamp");
     }, activationDelayMs);
   };
 
@@ -461,6 +477,51 @@ function BrushSectionAccordion(props: {
           </div>
         </div>
       </AccordionItem>
+
+        {/* Moldes (carimbos) */}
+        <AccordionItem title="Moldes" icon={<Circle className="w-4 h-4" />} open={openKey === "moldes"} onToggle={() => toggle("moldes")}>
+          <div className="mt-2">
+            <div className="text-xs text-gray-600 mb-2">Selecione um molde e clique/arraste no canvas.</div>
+
+            <div className="max-h-64 overflow-y-auto overflow-x-hidden px-1 scrollbar-soft">
+              <div className="grid grid-cols-6 gap-2">
+                {Array.from({ length: 48 }).map((_, i) => {
+                  const seed = i * 131 + 17;
+                  const src = generateBlobSvgDataUrl({
+                    size: 96,
+                    seed,
+                    fill: stampColor,
+                    stroke: stampColor,
+                    strokeWidth: 0,
+                  });
+                  const active = stampSeed != null && stampSeed === seed;
+                  const disabled = !is2DActive || enabledKey !== "moldes";
+                  return (
+                    <button
+                      key={i}
+                      type="button"
+                      title={`Molde ${i + 1}`}
+                      className={
+                        [
+                          "h-10 w-10 rounded border bg-white/70 overflow-hidden grid place-items-center transition",
+                          disabled ? "opacity-40 cursor-not-allowed" : "hover:bg-white hover:shadow",
+                          active ? "border-black/40 ring-2 ring-black/20" : "border-black/10",
+                        ].join(" ")
+                      }
+                      disabled={disabled}
+                      onClick={() => {
+                        setStampSeed?.(seed);
+                        setTool("stamp");
+                      }}
+                    >
+                      <img src={src} alt="" className="w-full h-full object-contain" draggable={false} />
+                    </button>
+                  );
+                })}
+              </div>
+            </div>
+          </div>
+        </AccordionItem>
 
         {/* Formas */}
     <AccordionItem title="Formas" icon={<Shapes className="w-4 h-4" />} open={openKey === "formas"} onToggle={() => toggle("formas")}>
