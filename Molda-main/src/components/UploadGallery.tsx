@@ -245,6 +245,37 @@ export default function UploadGallery({ onImageInsert }: Props) {
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [user, supabase]);
 
+  // Permite que outras partes do app insiram itens na galeria após upload (ex.: salvar PNG do Editor2D)
+  useEffect(() => {
+    const handler = (ev: Event) => {
+      if (!user) return;
+      const detail = (ev as CustomEvent)?.detail as
+        | {
+            id?: string;
+            previewUrl?: string;
+            originalName?: string;
+            sortKey?: string;
+            userId?: string;
+          }
+        | undefined;
+
+      if (!detail?.id || !detail?.previewUrl) return;
+      if (detail.userId && detail.userId !== user.id) return;
+
+      const item: GalleryItem = {
+        id: detail.id,
+        previewUrl: detail.previewUrl,
+        originalName: detail.originalName || "imagem.png",
+        sortKey: detail.sortKey || "",
+      };
+
+      setGallery((prev) => [item, ...prev.filter((p) => p.id !== item.id)]);
+    };
+
+    window.addEventListener("uploadGallery:newItem", handler as EventListener);
+    return () => window.removeEventListener("uploadGallery:newItem", handler as EventListener);
+  }, [user]);
+
   const handleConfirm = async () => {
     try {
       setIsSaving(true);

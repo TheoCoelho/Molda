@@ -10,7 +10,6 @@ import FloatingEditorToolbar from "../components/FloatingEditorToolbar";
 import TextToolbar from "../components/TextToolbar";
 import ImageToolbar from "../components/ImageToolbar";
 import { useRecentFonts } from "../hooks/use-recent-fonts";
-import { generateBlobSvgDataUrl } from "../lib/shapeGenerators";
 
 import Editor2D, {
   Editor2DHandle,
@@ -35,6 +34,8 @@ import { PatternSubmenu } from "../components/PatternSubmenuEnhanced";
 import type { PatternDefinition } from "../lib/patterns";
 import { useAuth } from "../contexts/AuthContext";
 import type { ExternalDecalData, DecalTransform, DecalStateSnapshot } from "../types/decals";
+import { STORAGE_BUCKET } from "../lib/supabaseClient";
+import { toast } from "sonner";
 
 type CanvasTab = { id: string; name: string; type: "2d" | "3d" };
 type SelectionKind = "none" | "text" | "image" | "other";
@@ -78,6 +79,16 @@ const nearlyEqual = (a?: number | null, b?: number | null) => {
 };
 
 const DRAFT_EPHEMERAL_TTL_MS = 5 * 60 * 1000;
+
+const slugify = (s: string) =>
+  s
+    .toLowerCase()
+    .normalize("NFD")
+    .replace(/[\u0300-\u036f]/g, "")
+    .replace(/[^a-z0-9]+/g, "-")
+    .replace(/(^-|-$)+/g, "");
+
+const tsPrefix = () => new Date().toISOString().replace(/[-:.TZ]/g, "");
 
 const vectorNearlyEqual = (a?: DecalTransform["position"], b?: DecalTransform["position"]) => {
   if (!a && !b) return true;
@@ -175,18 +186,87 @@ const Creation = () => {
   const [opacity, setOpacity] = useState(1);
   const [stampDensity, setStampDensity] = useState(50);
   const [stampColor, setStampColor] = useState("#000000");
-  const [stampSeed, setStampSeed] = useState<number | null>(null);
+  const [stampImageSrc, setStampImageSrc] = useState<string | null>(null);
 
-  const stampSrc = useMemo(() => {
-    if (stampSeed == null) return null;
-    return generateBlobSvgDataUrl({
-      size: 256,
-      seed: stampSeed,
-      fill: stampColor,
-      stroke: stampColor,
-      strokeWidth: 0,
-    });
-  }, [stampSeed, stampColor]);
+  const [stampSrc, setStampSrc] = useState<string | null>(null);
+
+  // Applies a solid tint where the stamp pixels are present.
+  // Uses the image's luminance to preserve texture/softness.
+  useEffect(() => {
+    let cancelled = false;
+    const src = stampImageSrc;
+    if (!src) {
+      setStampSrc(null);
+      return;
+    }
+
+    const hex = stampColor;
+    const m = /^#([0-9a-f]{6})$/i.exec(hex);
+    const tint = m ? parseInt(m[1], 16) : 0;
+    const tr = (tint >> 16) & 255;
+    const tg = (tint >> 8) & 255;
+    const tb = tint & 255;
+
+    const run = async () => {
+      try {
+        const img = new Image();
+        img.crossOrigin = "anonymous";
+        img.src = src;
+        await img.decode();
+        if (cancelled) return;
+
+        const w = Math.max(1, img.naturalWidth || img.width || 1);
+        const h = Math.max(1, img.naturalHeight || img.height || 1);
+        const canvas = document.createElement("canvas");
+        canvas.width = w;
+        canvas.height = h;
+        const ctx = canvas.getContext("2d", { willReadFrequently: true });
+        if (!ctx) {
+          setStampSrc(src);
+          return;
+        }
+
+        ctx.clearRect(0, 0, w, h);
+        ctx.drawImage(img, 0, 0, w, h);
+
+        const imageData = ctx.getImageData(0, 0, w, h);
+        const data = imageData.data;
+        for (let i = 0; i < data.length; i += 4) {
+          const r = data[i];
+          const g = data[i + 1];
+          const b = data[i + 2];
+          const a = data[i + 3];
+          if (a === 0) continue;
+
+          const lum = (0.2126 * r + 0.7152 * g + 0.0722 * b) / 255;
+          // Keep alpha and use luminance to modulate it (preserve texture)
+          const outA = Math.round((a * lum));
+          if (outA === 0) {
+            data[i + 3] = 0;
+            continue;
+          }
+          data[i] = tr;
+          data[i + 1] = tg;
+          data[i + 2] = tb;
+          data[i + 3] = outA;
+        }
+        ctx.putImageData(imageData, 0, 0);
+
+        const out = canvas.toDataURL("image/png");
+        if (!cancelled) setStampSrc(out);
+      } catch {
+        if (!cancelled) setStampSrc(src);
+      }
+    };
+
+    // Immediately fall back to raw image while tinting computes.
+    setStampSrc(src);
+    void run();
+
+    return () => {
+      cancelled = true;
+    };
+  }, [stampImageSrc, stampColor]);
 
   const editorRefs = useRef<Record<string, Editor2DHandle | null>>({});
   const lastEditorTabRef = useRef<string | null>(null);
@@ -586,6 +666,23 @@ const Creation = () => {
         event.preventDefault();
         return;
       }
+
+      // Tenta selecionar o objeto sob o cursor no clique direito (UX: "clicar com o botão direito sobre")
+      try {
+        const rect = event.currentTarget.getBoundingClientRect();
+        inst.selectObjectAt?.({
+          x: event.clientX - rect.left,
+          y: event.clientY - rect.top,
+          containerWidth: rect.width,
+          containerHeight: rect.height,
+        });
+      } catch {}
+
+      try {
+        const k = inst.getSelectionKind?.();
+        if (k) setSelectionKind(k);
+      } catch {}
+
       const info = inst.getSelectionInfo?.();
       if (!info || !info.hasSelection) {
         event.preventDefault();
@@ -596,6 +693,80 @@ const Creation = () => {
     },
     [activeCanvasTab]
   );
+
+  const saveSelectedImage = useCallback(async () => {
+    if (!activeIs2D) return;
+
+    await runWithActiveEditor(async (inst) => {
+      try {
+        await inst.waitForIdle?.();
+      } catch {}
+      try {
+        inst.refresh?.();
+      } catch {}
+
+      const dataUrl = inst.exportSelectionPNG?.();
+      if (!dataUrl) {
+        toast.error("Selecione uma imagem para salvar.");
+        return;
+      }
+
+      // 1) Download local (PNG)
+      try {
+        const a = document.createElement("a");
+        a.href = dataUrl;
+        a.download = `${slugify(projectName || "imagem") || "imagem"}-${Date.now()}.png`;
+        a.click();
+      } catch {}
+
+      // 2) Salvar na galeria (Supabase Storage) para aparecer no UploadGallery
+      if (!user?.id) {
+        toast.error("Faça login para salvar na galeria (o download foi feito localmente).");
+        return;
+      }
+
+      try {
+        const blob = await (await fetch(dataUrl)).blob();
+        const base = slugify(projectName || "imagem") || "imagem";
+        const filename = `${tsPrefix()}-${base}.png`;
+        const path = `${user.id}/images/${filename}`;
+
+        const { error: uploadErr } = await supabase.storage
+          .from(STORAGE_BUCKET)
+          .upload(path, blob, { upsert: false, contentType: "image/png" });
+        if (uploadErr) throw uploadErr;
+
+        const { data: signed, error: signErr } = await supabase.storage
+          .from(STORAGE_BUCKET)
+          .createSignedUrl(path, 60 * 60 * 24 * 7);
+        if (signErr) throw signErr;
+
+        const previewUrl =
+          signed?.signedUrl ||
+          supabase.storage.from(STORAGE_BUCKET).getPublicUrl(path).data.publicUrl ||
+          dataUrl;
+
+        try {
+          window.dispatchEvent(
+            new CustomEvent("uploadGallery:newItem", {
+              detail: {
+                id: path,
+                previewUrl,
+                originalName: `${base}.png`,
+                sortKey: filename.slice(0, 17),
+                userId: user.id,
+              },
+            })
+          );
+        } catch {}
+
+        toast.success("Imagem salva na galeria e baixada em PNG.");
+      } catch (err: any) {
+        console.error("[saveSelectedImage]", err);
+        toast.error(err?.message || "Falha ao salvar na galeria.");
+      }
+    });
+  }, [activeIs2D, projectName, runWithActiveEditor, user?.id]);
 
   useEffect(() => {
     if (!activeIs2D) {
@@ -1071,8 +1242,8 @@ const Creation = () => {
               onExpandChange={() => {}}
               tool={tool}
               setTool={setTool}
-              stampSeed={stampSeed}
-              setStampSeed={setStampSeed}
+              stampImageSrc={stampImageSrc}
+              setStampImageSrc={setStampImageSrc}
               stampColor={stampColor}
               brushVariant={brushVariant}
               setBrushVariant={setBrushVariant}
@@ -1571,6 +1742,14 @@ const Creation = () => {
                       Duplicar
                       <ContextMenuShortcut>Ctrl+D</ContextMenuShortcut>
                     </ContextMenuItem>
+
+                    <ContextMenuItem
+                      disabled={!selectionInfo?.hasSelection || selectionKind !== "image"}
+                      onSelect={() => void saveSelectedImage()}
+                    >
+                      Salvar
+                    </ContextMenuItem>
+
                     <ContextMenuSeparator />
                     <ContextMenuItem
                       disabled={!selectionInfo?.hasSelection}

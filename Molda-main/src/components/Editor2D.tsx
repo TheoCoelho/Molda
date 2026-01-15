@@ -137,6 +137,12 @@ export type Editor2DHandle = {
 
   clear: () => void;
   exportPNG: () => string;
+  /** Exporta a seleção atual (recortada) como PNG quando ela é composta por imagem(ns). */
+  exportSelectionPNG?: () => string | null;
+  /** Seleciona o objeto no ponto (coords relativas ao container) — útil para clique direito/context menu. */
+  selectObjectAt?: (pt: { x: number; y: number; containerWidth: number; containerHeight: number }) => boolean;
+  /** Retorna o tipo atual de seleção (sincrono). */
+  getSelectionKind?: () => "none" | "text" | "image" | "other";
   addShape: (
     shape: ShapeKind,
     style?: {
@@ -6458,6 +6464,88 @@ const Editor2D = forwardRef<Editor2DHandle, Props>(function Editor2D(
     return "";
   };
 
+  const selectObjectAt = (pt: { x: number; y: number; containerWidth: number; containerHeight: number }): boolean => {
+    const c: any = canvasRef.current as any;
+    const fabricLocal: any = fabricRef.current as any;
+    if (!c || !fabricLocal) return false;
+
+    const cw = Math.max(1, Number(pt.containerWidth) || 1);
+    const ch = Math.max(1, Number(pt.containerHeight) || 1);
+    const canvasW = typeof c.getWidth === "function" ? c.getWidth() : cw;
+    const canvasH = typeof c.getHeight === "function" ? c.getHeight() : ch;
+
+    const x = (Number(pt.x) || 0) * (canvasW / cw);
+    const y = (Number(pt.y) || 0) * (canvasH / ch);
+
+    try {
+      const p = new fabricLocal.Point(x, y);
+      const objects: any[] = (typeof c.getObjects === "function" ? c.getObjects() : []) || [];
+
+      // Topmost first (Fabric pinta do início ao fim; o último está por cima)
+      for (let i = objects.length - 1; i >= 0; i -= 1) {
+        const obj = objects[i];
+        if (!obj) continue;
+        if (obj.evented === false || obj.selectable === false) continue;
+        try {
+          if (typeof obj.containsPoint === "function" && obj.containsPoint(p)) {
+            c.setActiveObject?.(obj);
+            c.requestRenderAll?.();
+            notifySelectionKind();
+            return true;
+          }
+        } catch {}
+      }
+
+      // Clique em vazio: limpa seleção
+      c.discardActiveObject?.();
+      c.requestRenderAll?.();
+      notifySelectionKind();
+      return false;
+    } catch {
+      return false;
+    }
+  };
+
+  const exportSelectionPNG = (): string | null => {
+    const c: any = canvasRef.current as any;
+    if (!c) return null;
+    const active: any = c.getActiveObject?.();
+    if (!active) return null;
+
+    // Garante que a seleção atual é de imagem(ns)
+    const kind = computeSelectionKind();
+    if (kind !== "image") return null;
+
+    try {
+      // Método 1: Se o objeto tem toDataURL, usa diretamente
+      if (typeof active.toDataURL === "function") {
+        return active.toDataURL({
+          format: "png",
+          quality: 1,
+          multiplier: 2,
+        });
+      }
+
+      // Método 2: Exporta o canvas inteiro como crop do objeto selecionado
+      const bounds = active.getBoundingRect();
+      const canvasDataURL = c.toDataURL({
+        format: "png",
+        quality: 1,
+        multiplier: 2,
+        left: bounds.left,
+        top: bounds.top,
+        width: bounds.width,
+        height: bounds.height,
+      });
+      
+      return canvasDataURL;
+    } catch (err) {
+      console.warn("[exportSelectionPNG] Error:", err);
+    }
+
+    return null;
+  };
+
   const addText = (value: string = "Digite aqui", opts?: { x?: number; y?: number }) => {
     const c: any = canvasRef.current as any;
     const fabricLocal: any = fabricRef.current as any;
@@ -9496,10 +9584,14 @@ const Editor2D = forwardRef<Editor2DHandle, Props>(function Editor2D(
     };
 
     const isImageObject = (obj: any): boolean => {
+      if (!obj) return false;
       const t = String(obj?.type || "").toLowerCase();
-      if (t.includes("image")) return true;
-      // fallback: fabric.Image costuma ter _element
-      if (obj && obj._element) return true;
+      // Fabric.js image types: 'image', 'Image'
+      if (t === "image") return true;
+      // fallback: fabric.Image costuma ter _element (HTMLImageElement, HTMLCanvasElement, etc.)
+      if (obj._element && (obj._element instanceof HTMLImageElement || obj._element instanceof HTMLCanvasElement)) return true;
+      // Outro fallback: verificar se tem getSrc (método comum em fabric.Image)
+      if (typeof obj.getSrc === "function") return true;
       return false;
     };
 
@@ -9782,6 +9874,9 @@ const Editor2D = forwardRef<Editor2DHandle, Props>(function Editor2D(
   useImperativeHandle(ref, () => ({
     clear,
     exportPNG,
+    exportSelectionPNG,
+    selectObjectAt,
+    getSelectionKind: computeSelectionKind,
     addShape,
     addImage,
     toJSON,

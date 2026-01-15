@@ -60,8 +60,8 @@ interface ExpandableSidebarProps {
   // Editor 2D
   tool: "select" | "brush" | "line" | "curve" | "text" | "stamp";
   setTool: (t: "select" | "brush" | "line" | "curve" | "text" | "stamp") => void;
-  stampSeed?: number | null;
-  setStampSeed?: (seed: number | null) => void;
+  stampImageSrc?: string | null;
+  setStampImageSrc?: (src: string | null) => void;
   stampColor?: string;
   brushVariant: BrushVariant;
   setBrushVariant: (v: BrushVariant) => void;
@@ -119,8 +119,8 @@ const ExpandableSidebar: React.FC<ExpandableSidebarProps> = (props) => {
     onExpandChange,
     tool,
     setTool,
-    stampSeed,
-    setStampSeed,
+    stampImageSrc,
+    setStampImageSrc,
     stampColor,
     brushVariant,
     setBrushVariant,
@@ -225,8 +225,8 @@ const ExpandableSidebar: React.FC<ExpandableSidebarProps> = (props) => {
                 is2DActive={is2DActive}
                 tool={tool}
                 setTool={setTool}
-                stampSeed={stampSeed}
-                setStampSeed={setStampSeed}
+                stampImageSrc={stampImageSrc}
+                setStampImageSrc={setStampImageSrc}
                 stampColor={stampColor}
                 brushVariant={brushVariant}
                 setBrushVariant={setBrushVariant}
@@ -327,8 +327,8 @@ function BrushSectionAccordion(props: {
   is2DActive: boolean;
   tool: "select" | "brush" | "line" | "curve" | "text" | "stamp";
   setTool: (t: "select" | "brush" | "line" | "curve" | "text" | "stamp") => void;
-  stampSeed?: number | null;
-  setStampSeed?: (seed: number | null) => void;
+  stampImageSrc?: string | null;
+  setStampImageSrc?: (src: string | null) => void;
   stampColor?: string;
   brushVariant: BrushVariant;
   setBrushVariant: (v: BrushVariant) => void;
@@ -352,8 +352,8 @@ function BrushSectionAccordion(props: {
     is2DActive,
     tool,
     setTool,
-    stampSeed,
-    setStampSeed,
+    stampImageSrc,
+    setStampImageSrc,
     stampColor = "#000000",
     brushVariant,
     setBrushVariant,
@@ -484,37 +484,33 @@ function BrushSectionAccordion(props: {
             <div className="text-xs text-gray-600 mb-2">Selecione um molde e clique/arraste no canvas.</div>
 
             <div className="max-h-64 overflow-y-auto overflow-x-hidden px-1 scrollbar-soft">
-              <div className="grid grid-cols-6 gap-2">
-                {Array.from({ length: 48 }).map((_, i) => {
-                  const seed = i * 131 + 17;
-                  const src = generateBlobSvgDataUrl({
-                    size: 96,
-                    seed,
-                    fill: stampColor,
-                    stroke: stampColor,
-                    strokeWidth: 0,
-                  });
-                  const active = stampSeed != null && stampSeed === seed;
+              <div className="grid grid-cols-3 gap-3 justify-items-center">
+                {[
+                  { key: "ink-splatter", src: "/assets/stamps/ink-splatter.png", title: "Molde (imagem)" },
+                  { key: "ink-splatter-2", src: "/assets/stamps/ink-splatter-2.png", title: "Molde (imagem)" },
+                  { key: "ink-splatter-3", src: "/assets/stamps/ink-splatter-3.png", title: "Molde (imagem)" },
+                ].map(({ key, src, title }) => {
+                  const active = !!stampImageSrc && stampImageSrc === src;
                   const disabled = !is2DActive || enabledKey !== "moldes";
                   return (
                     <button
-                      key={i}
+                      key={key}
                       type="button"
-                      title={`Molde ${i + 1}`}
+                      title={title}
                       className={
                         [
-                          "h-10 w-10 rounded border bg-white/70 overflow-hidden grid place-items-center transition",
+                          "h-14 w-14 rounded border bg-white/70 overflow-hidden grid place-items-center transition",
                           disabled ? "opacity-40 cursor-not-allowed" : "hover:bg-white hover:shadow",
                           active ? "border-black/40 ring-2 ring-black/20" : "border-black/10",
                         ].join(" ")
                       }
                       disabled={disabled}
                       onClick={() => {
-                        setStampSeed?.(seed);
+                        setStampImageSrc?.(src);
                         setTool("stamp");
                       }}
                     >
-                      <img src={src} alt="" className="w-full h-full object-contain" draggable={false} />
+                      <img src={src} alt="" className="w-full h-full object-contain p-1" draggable={false} />
                     </button>
                   );
                 })}
