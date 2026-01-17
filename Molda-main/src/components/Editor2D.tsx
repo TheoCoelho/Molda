@@ -8130,10 +8130,57 @@ const Editor2D = forwardRef<Editor2DHandle, Props>(function Editor2D(
     }
   };
 
+  // Cancel any active drawing operations
+  const cancelContinuousLine = () => {
+    console.log(`[Editor2D] Canceling active drawing operations, current tool: ${toolRef.current}`);
+    
+    // Cancel curve drawing
+    resetCurveState(canvasRef.current);
+    
+    // Cancel continuous line mode if active
+    if (continuousLineMode) {
+      console.log(`[Editor2D] Canceling continuous line mode`);
+      onContinuousLineCancelRef.current?.();
+    }
+    
+    // Reset any other tool states that might be active
+    try {
+      const canvas = canvasRef.current;
+      if (canvas) {
+        canvas.isDrawingMode = false;
+        canvas.selection = true;
+        canvas.requestRenderAll();
+        // Reset canvas cursor to default
+        canvas.defaultCursor = "default";
+        console.log(`[Editor2D] Reset canvas drawing mode and enabled selection`);
+      }
+    } catch (error) {
+      console.error(`[Editor2D] Error resetting canvas state:`, error);
+    }
+    
+    // Reset host cursor to default (this fixes the stamp cursor issue)
+    try {
+      setHostCursor("default");
+      console.log(`[Editor2D] Reset host cursor to default`);
+    } catch (error) {
+      console.error(`[Editor2D] Error resetting host cursor:`, error);
+    }
+    
+    // Request tool change to select if current tool is a drawing tool
+    const currentTool = toolRef.current;
+    if (currentTool && currentTool !== "select" && currentTool !== "text") {
+      console.log(`[Editor2D] Requesting tool change from ${currentTool} to select`);
+      onRequestToolChangeRef.current?.("select");
+    }
+  };
+
   const addImage = (src: string, opts?: { x?: number; y?: number; scale?: number }) => {
     const c = canvasRef.current;
     const fabric = fabricRef.current;
     if (c && fabric) {
+      // Cancel any active drawing tools when adding image
+      cancelContinuousLine();
+      
       void ensureCanvasReady();
       fabric.Image.fromURL(
         src,
@@ -10731,11 +10778,17 @@ const Editor2D = forwardRef<Editor2DHandle, Props>(function Editor2D(
 
   // ----------------------- tool switching -----------------------
   useEffect(() => {
-    console.log("[Editor2D] Tool effect:", { canvasReady, tool, brushVariant, hasCanvas: !!canvasRef.current });
+    console.log("[Editor2D] Tool effect:", { 
+      canvasReady, 
+      tool, 
+      brushVariant, 
+      hasCanvas: !!canvasRef.current,
+      currentHostCursor: hostRef.current?.style?.cursor || "unknown"
+    });
     if (!canvasReady) return;
     const c = canvasRef.current;
     if (!c) {
-      console.log("[Editor2D] No canvas in tool effect");
+      console.log("[Editor2D] No canvas in tool effect, setting default cursor");
       setHostCursor("default");
       return;
     }
@@ -10788,31 +10841,40 @@ const Editor2D = forwardRef<Editor2DHandle, Props>(function Editor2D(
 
     // SELECT
     if (tool === "select") {
+      console.log("[Editor2D] Setting up SELECT tool - resetting cursor to default");
       // Keep current selection when switching to select.
       c.isDrawingMode = false;
       c.selection = true;
       c.skipTargetFind = false;
       setObjectsSelectable(c, true);
       setHostCursor("default");
+      // Reset canvas default cursor to ensure no custom cursors remain
+      try { c.defaultCursor = "default"; } catch {}
       c.renderAll();
+      console.log("[Editor2D] SELECT tool setup complete, cursor should be default");
       return;
     }
 
     // TEXT (funciona como select)
     if (tool === "text") {
+      console.log("[Editor2D] Setting up TEXT tool - resetting cursor to default");
       // Same behavior as select (do not discard selection).
       c.isDrawingMode = false;
       c.selection = true;
       c.skipTargetFind = false;
       setObjectsSelectable(c, true);
       setHostCursor("default");
+      // Reset canvas default cursor to ensure no custom cursors remain
+      try { c.defaultCursor = "default"; } catch {}
       c.renderAll();
+      console.log("[Editor2D] TEXT tool setup complete, cursor should be default");
       return;
     }
 
     // STAMP (carimbo/moldes): clica/arrasta para inserir repetidamente a imagem selecionada
     // OPTIMIZED: uses cached fabric.Image, throttling, and density control
     if (tool === "stamp") {
+      console.log("[Editor2D] Setting up STAMP tool - setting circular cursor");
       c.isDrawingMode = false;
       c.selection = false;
       c.skipTargetFind = true;
@@ -10823,6 +10885,7 @@ const Editor2D = forwardRef<Editor2DHandle, Props>(function Editor2D(
       const cursor = buildCircularCursor(sizePx);
       setHostCursor(cursor);
       try { (c as any).defaultCursor = cursor; } catch {}
+      console.log("[Editor2D] STAMP tool setup complete, circular cursor applied");
 
       const session = stampSessionRef.current;
       session.active = false;

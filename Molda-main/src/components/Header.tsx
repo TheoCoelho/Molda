@@ -25,7 +25,7 @@ const Header = () => {
     const fallback = user?.user_metadata?.avatar_url ?? null;
     setAvatarUrl(fallback);
 
-    if (!user) {
+    if (!user?.id) {
       return () => {
         mounted = false;
       };
@@ -89,7 +89,7 @@ const Header = () => {
         <div className="flex items-center gap-4">
           {loading ? (
             <div className="w-8 h-8 animate-pulse bg-gray-200 rounded-full" />
-          ) : !user ? (
+          ) : !user?.id ? (
             <>
               <Button
                 variant="outline"

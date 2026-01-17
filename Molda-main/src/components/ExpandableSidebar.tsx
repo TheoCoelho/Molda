@@ -1,4 +1,4 @@
-import React, { useEffect, useMemo, useState } from "react";
+import React, { useEffect, useMemo, useState, useCallback } from "react";
 import { Button } from "../components/ui/button";
 import { Input } from "../components/ui/input";
 import { Label } from "../components/ui/label";
@@ -80,6 +80,9 @@ interface ExpandableSidebarProps {
 
   // Upload -> inserir imagem no canvas
   onImageInsert?: (src: string, opts?: { x?: number; y?: number; scale?: number; meta?: Record<string, unknown> }) => void;
+  
+  // Callback para notificar quando uma imagem for inserida
+  onImageInserted?: () => void;
 
   // Texto (Editor2D integração)
   addText?: (value?: string) => void;
@@ -135,8 +138,9 @@ const ExpandableSidebar: React.FC<ExpandableSidebarProps> = (props) => {
     opacity,
     setOpacity,
     addShape,
-  is2DActive,
+    is2DActive,
     onImageInsert,
+    onImageInserted,
     addText,
     applyTextStyle,
     autoOpenTextPanelCounter,
@@ -148,8 +152,20 @@ const ExpandableSidebar: React.FC<ExpandableSidebarProps> = (props) => {
   useEffect(() => onExpandChange?.(isExpanded), [isExpanded, onExpandChange]);
 
   const handleIconClick = (id: SectionId) => {
+    console.log(`[ExpandableSidebar] Changing section from ${activeSection} to ${id}, current tool: ${tool}`);
+    
     if (id === activeSection) setIsExpanded((prev) => !prev);
     else {
+      // Desativar ferramentas de desenho quando mudar para outras seções
+      if (id !== "brush" && tool !== "select" && tool !== "text") {
+        console.log(`[ExpandableSidebar] Deactivating tool ${tool} -> select (section change should reset cursor)`);
+        setTool("select");
+        
+        // Small delay to ensure the tool change is processed by Editor2D
+        setTimeout(() => {
+          console.log(`[ExpandableSidebar] Tool change processed, cursor should now be default`);
+        }, 100);
+      }
       setActiveSection(id);
       setIsExpanded(true);
     }
@@ -219,7 +235,24 @@ const ExpandableSidebar: React.FC<ExpandableSidebarProps> = (props) => {
                 setFabric={setFabric}
               />
             )}
-            {activeSection === "upload" && <UploadGallery onImageInsert={onImageInsert} />}
+            {activeSection === "upload" && (
+              <UploadGallery 
+                onImageInsert={(src, opts) => {
+                  console.log(`[ExpandableSidebar] Image inserted, current tool: ${tool}`);
+                  // Desativar ferramentas de desenho quando inserir imagem
+                  if (tool !== "select" && tool !== "text") {
+                    console.log(`[ExpandableSidebar] Deactivating tool ${tool} -> select on image insert (this should reset cursor)`);
+                    setTool("select");
+                  } else {
+                    console.log(`[ExpandableSidebar] Tool is already ${tool}, no need to change`);
+                  }
+                  
+                  // Call the original onImageInsert (which adds to canvas and should trigger cancelContinuousLine)
+                  onImageInsert?.(src, opts);
+                  onImageInserted?.();
+                }} 
+              />
+            )}
             {activeSection === "brush" && (
               <BrushSectionAccordion
                 is2DActive={is2DActive}
@@ -405,23 +438,63 @@ function BrushSectionAccordion(props: {
   // Não force o retorno para "select" ao trocar de seção.
   // Mantemos a ferramenta escolhida ativa até o usuário alterá-la explicitamente.
 
+  // Função para desativar ferramentas ativas quando necessário
+  const deactivateCurrentTool = useCallback(() => {
+    if (tool !== "select" && tool !== "text") {
+      console.log(`[BrushSectionAccordion] Deactivating tool ${tool} -> select`);
+      setEnabledKey(null);
+      setTool("select");
+      setOpenKey(null);
+    }
+  }, [tool, setTool]);
+
+  // Expor função de desativação para uso externo
+  useEffect(() => {
+    // Se tool foi alterado externamente para "select", resetar estado interno
+    if (tool === "select" && enabledKey) {
+      console.log(`[BrushSectionAccordion] Tool externally changed to select, resetting internal state`);
+      setEnabledKey(null);
+      setOpenKey(null);
+    }
+  }, [tool, enabledKey]);
+
   const toggle = (key: Exclude<SubKey, null>) => {
+    console.log(`[BrushSectionAccordion] Toggling ${key}, current openKey: ${openKey}, current tool: ${tool}`);
+    
     if (openKey === key) {
+      console.log(`[BrushSectionAccordion] Closing ${key}, switching to select`);
       setEnabledKey(null);
       setTool("select");
       setOpenKey(null);
       return;
     }
+    
+    console.log(`[BrushSectionAccordion] Opening ${key}, temporarily switching to select`);
     setEnabledKey(null);
     setTool("select");
     setOpenKey(key);
+    
     window.setTimeout(() => {
+      console.log(`[BrushSectionAccordion] Activating ${key}`);
       setEnabledKey(key);
-      if (!is2DActive) return;
-      if (key === "pincel") setTool("brush");
-      else if (key === "linhas") setTool("line");
-      else if (key === "texto") setTool("text");
-      else if (key === "moldes") setTool("stamp");
+      if (!is2DActive) {
+        console.log(`[BrushSectionAccordion] 2D not active, keeping tool as select`);
+        return;
+      }
+      
+      if (key === "pincel") {
+        console.log(`[BrushSectionAccordion] Setting tool to brush`);
+        setTool("brush");
+      } else if (key === "linhas") {
+        console.log(`[BrushSectionAccordion] Setting tool to line`);
+        setTool("line");
+      } else if (key === "texto") {
+        console.log(`[BrushSectionAccordion] Setting tool to text`);
+        setTool("text");
+      } else if (key === "moldes") {
+        console.log(`[BrushSectionAccordion] Setting tool to stamp`);
+        setTool("stamp");
+      }
     }, activationDelayMs);
   };
 

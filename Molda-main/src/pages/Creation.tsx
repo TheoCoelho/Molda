@@ -1300,6 +1300,11 @@ const Creation = () => {
                   }, 100);
                 }
               }}
+              onImageInserted={() => {
+                // Callback para quando uma imagem é inserida
+                // Pode ser usado para lógica adicional, como analytics
+                console.log('[Creation] Image inserted, tool switched to select');
+              }}
               addText={addText}
               applyTextStyle={async (patch) => {
                 if (patch.fontFamily) {
