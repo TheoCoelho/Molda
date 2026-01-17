@@ -62,7 +62,6 @@ interface ExpandableSidebarProps {
   setTool: (t: "select" | "brush" | "line" | "curve" | "text" | "stamp") => void;
   stampImageSrc?: string | null;
   setStampImageSrc?: (src: string | null) => void;
-  stampColor?: string;
   brushVariant: BrushVariant;
   setBrushVariant: (v: BrushVariant) => void;
   continuousLineEnabled: boolean;
@@ -124,7 +123,6 @@ const ExpandableSidebar: React.FC<ExpandableSidebarProps> = (props) => {
     setTool,
     stampImageSrc,
     setStampImageSrc,
-    stampColor,
     brushVariant,
     setBrushVariant,
   continuousLineEnabled,
@@ -260,7 +258,6 @@ const ExpandableSidebar: React.FC<ExpandableSidebarProps> = (props) => {
                 setTool={setTool}
                 stampImageSrc={stampImageSrc}
                 setStampImageSrc={setStampImageSrc}
-                stampColor={stampColor}
                 brushVariant={brushVariant}
                 setBrushVariant={setBrushVariant}
                 continuousLineEnabled={continuousLineEnabled}
@@ -362,7 +359,6 @@ function BrushSectionAccordion(props: {
   setTool: (t: "select" | "brush" | "line" | "curve" | "text" | "stamp") => void;
   stampImageSrc?: string | null;
   setStampImageSrc?: (src: string | null) => void;
-  stampColor?: string;
   brushVariant: BrushVariant;
   setBrushVariant: (v: BrushVariant) => void;
   continuousLineEnabled: boolean;
@@ -387,7 +383,6 @@ function BrushSectionAccordion(props: {
     setTool,
     stampImageSrc,
     setStampImageSrc,
-    stampColor = "#000000",
     brushVariant,
     setBrushVariant,
   continuousLineEnabled,

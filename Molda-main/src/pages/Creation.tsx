@@ -1244,7 +1244,6 @@ const Creation = () => {
               setTool={setTool}
               stampImageSrc={stampImageSrc}
               setStampImageSrc={setStampImageSrc}
-              stampColor={stampColor}
               brushVariant={brushVariant}
               setBrushVariant={setBrushVariant}
               strokeColor={strokeColor}
