@@ -511,6 +511,7 @@ const Editor2D = forwardRef<Editor2DHandle, Props>(function Editor2D(
     didStamp: false,
     lastPoint: null as LinePoint | null,
     lastStampTime: 0,
+    stampCount: 0,
   });
 
   // Stamp image cache: pre-load the stamp image once to avoid re-parsing on every stamp
@@ -10892,6 +10893,7 @@ const Editor2D = forwardRef<Editor2DHandle, Props>(function Editor2D(
       session.endRequested = false;
       session.lastPoint = null;
       session.lastStampTime = 0;
+      session.stampCount = 0;
 
       // Batch render: only render once per animation frame
       let renderScheduled = false;
@@ -10904,15 +10906,17 @@ const Editor2D = forwardRef<Editor2DHandle, Props>(function Editor2D(
         });
       };
 
-      const maybeFinalizeStampHistory = () => {
-        if (!session.didStamp) return;
-        if (session.pending > 0) return;
+      // For stamp, we rely on the canvas "object:added" history hook.
+      // That makes each stamp (including during drag) become its own undo step.
+      const maybeFinalizeStampSession = () => {
         if (!session.endRequested) return;
-        if (!shouldRecordHistory()) return;
-        try { historyRef.current?.push("stamp"); } catch {}
-        emitHistory();
-        session.didStamp = false;
+        if (session.pending > 0) return;
+        session.active = false;
         session.endRequested = false;
+        session.lastPoint = null;
+        session.didStamp = false;
+        session.stampCount = 0;
+        flushIdleResolvers();
       };
 
       // Optimized stamp placement using cached image (sync clone)
@@ -10921,34 +10925,31 @@ const Editor2D = forwardRef<Editor2DHandle, Props>(function Editor2D(
         const src = stampSrcRef.current;
         if (!cache || cache.src !== src || !cache.img) return;
 
-        historyGuardRef.current += 1;
-        try {
-          const baseImg = cache.img;
-          const w = Math.max(1, Number(baseImg?.width) || 1);
-          const h = Math.max(1, Number(baseImg?.height) || 1);
-          const base = Math.max(w, h);
-          const scale = Math.max(0.001, sizePx / base);
+        const baseImg = cache.img;
+        const w = Math.max(1, Number(baseImg?.width) || 1);
+        const h = Math.max(1, Number(baseImg?.height) || 1);
+        const base = Math.max(w, h);
+        const scale = Math.max(0.001, sizePx / base);
 
-          // Clone from cached image (synchronous!)
-          const cloned = fabric.util.object.clone(baseImg);
-          cloned.set({
-            left: pt.x - (w * scale) / 2,
-            top: pt.y - (h * scale) / 2,
-            scaleX: scale,
-            scaleY: scale,
-            opacity,
-            erasable: true,
-            selectable: false,
-            evented: false,
-          });
+        // Clone from cached image (synchronous!)
+        const cloned = fabric.util.object.clone(baseImg);
+        cloned.set({
+          left: pt.x - (w * scale) / 2,
+          top: pt.y - (h * scale) / 2,
+          scaleX: scale,
+          scaleY: scale,
+          opacity,
+          erasable: true,
+          selectable: false,
+          evented: false,
+          objectCaching: false,
+        });
 
-          try { (cloned as any).__moldaOriginalSrc = src; } catch {}
+        try { (cloned as any).__moldaOriginalSrc = src; } catch {}
 
-          c.add(cloned);
-          session.didStamp = true;
-        } finally {
-          historyGuardRef.current = Math.max(0, historyGuardRef.current - 1);
-        }
+        c.add(cloned);
+        session.didStamp = true;
+        session.stampCount += 1;
         scheduleRender();
       };
 
@@ -10958,7 +10959,6 @@ const Editor2D = forwardRef<Editor2DHandle, Props>(function Editor2D(
         if (!src) return;
 
         session.pending += 1;
-        historyGuardRef.current += 1;
         fabric.Image.fromURL(
           src,
           (img: any) => {
@@ -10977,22 +10977,22 @@ const Editor2D = forwardRef<Editor2DHandle, Props>(function Editor2D(
                 erasable: true,
                 selectable: false,
                 evented: false,
+                objectCaching: false,
               });
 
               try { (img as any).__moldaOriginalSrc = src; } catch {}
 
               c.add(img);
               session.didStamp = true;
+              session.stampCount += 1;
 
               // Also cache for next stamps
               if (!stampCacheRef.current || stampCacheRef.current.src !== src) {
                 stampCacheRef.current = { src, img };
               }
             } finally {
-              historyGuardRef.current = Math.max(0, historyGuardRef.current - 1);
               session.pending = Math.max(0, session.pending - 1);
-              flushIdleResolvers();
-              maybeFinalizeStampHistory();
+              maybeFinalizeStampSession();
             }
             scheduleRender();
           },
@@ -11076,7 +11076,7 @@ const Editor2D = forwardRef<Editor2DHandle, Props>(function Editor2D(
         session.active = false;
         session.endRequested = true;
         session.lastPoint = null;
-        maybeFinalizeStampHistory();
+        maybeFinalizeStampSession();
       };
 
       const onKeyDown = (evt: KeyboardEvent) => {

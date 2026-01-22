@@ -8,6 +8,9 @@ import {
   Redo2,
   MousePointer2,
   Pipette,
+  Circle,
+  Minus,
+  Eye,
 } from "lucide-react";
 type Props = {
   // Undo/Redo (ligação com Editor2D)
@@ -457,9 +460,11 @@ export default function FloatingEditorToolbar({
 
           {/* 2.5) Densidade do stamp */}
           {tool === "stamp" && (
-            <div className="flex items-center">
-              <div className="h-9 grid place-items-center">
-                <SlidersHorizontal className="h-4 w-4 opacity-90" />
+            <div className="flex items-center gap-1">
+              <div className="flex items-center gap-0.5 opacity-60">
+                <Circle className="h-2 w-2 fill-current" />
+                <Circle className="h-2 w-2 fill-current" />
+                <Circle className="h-2 w-2 fill-current" />
               </div>
               <input
                 type="range"
@@ -472,14 +477,16 @@ export default function FloatingEditorToolbar({
                 aria-label="Densidade do molde"
                 title={`Densidade: ${stampDensity}%`}
               />
-              <span className="ml-2 text-xs text-gray-500">{stampDensity}%</span>
+              <span className="text-xs text-gray-500 tabular-nums min-w-[2.5rem]">{stampDensity}%</span>
             </div>
           )}
 
           {/* 3) Largura */}
-          <div className="flex items-center">
-            <div className="h-9 grid place-items-center">
-              <SlidersHorizontal className="h-4 w-4 opacity-90" />
+          <div className="flex items-center gap-1">
+            <div className="flex flex-col gap-0.5 opacity-60">
+              <Minus className="h-2 w-3" strokeWidth={1} />
+              <Minus className="h-2 w-3" strokeWidth={2} />
+              <Minus className="h-2 w-3" strokeWidth={3} />
             </div>
             <input
               type="range"
@@ -488,15 +495,16 @@ export default function FloatingEditorToolbar({
               value={strokeWidth}
               onChange={(e) => setStrokeWidth(Number(e.target.value))}
               onPointerUp={() => editor2DRef?.historyCapture?.()}
-              className="w-28 accent-current"
+              className="w-24 accent-current"
               aria-label="Largura"
               title={`Largura: ${strokeWidth}px`}
             />
-            <span className="ml-2 text-xs text-gray-500">{strokeWidth}px</span>
+            <span className="text-xs text-gray-500 tabular-nums min-w-[2rem]">{strokeWidth}px</span>
           </div>
 
           {/* 4) Opacidade */}
-          <div className="flex items-center">
+          <div className="flex items-center gap-1">
+            <Eye className="h-4 w-4 opacity-60" />
             <input
               type="range"
               min={0}
@@ -509,7 +517,7 @@ export default function FloatingEditorToolbar({
               aria-label="Opacidade"
               title={`Opacidade: ${Math.round(opacity * 100)}%`}
             />
-            <span className="ml-2 text-xs text-gray-500">{Math.round(opacity * 100)}%</span>
+            <span className="text-xs text-gray-500 tabular-nums min-w-[2.5rem]">{Math.round(opacity * 100)}%</span>
           </div>
 
           {/* Separador */}
