@@ -1,0 +1,39 @@
+{
+  "name": "molda-optimization-agent",
+  "version": "1.0.0",
+  "description": "Performance optimization agent for Molda project",
+  "type": "module",
+  "scripts": {
+    "optimize:full": "node src/orchestrator.js",
+    "analyze:bundle": "node src/analyzers/bundleAnalyzer.js",
+    "analyze:components": "node src/analyzers/componentAnalyzer.js",
+    "analyze:performance": "node src/analyzers/performanceAnalyzer.js",
+    "optimize:images": "node src/optimizers/imageOptimizer.js",
+    "optimize:splitting": "node src/optimizers/codeSplitting.js",
+    "optimize:vite": "node src/optimizers/viteOptimizer.js",
+    "watch:performance": "node src/watchers/performanceWatcher.js",
+    "report:generate": "node src/reporters/reportGenerator.js",
+    "report:dashboard": "node src/reporters/dashboardGenerator.js",
+    "validate:changes": "node src/validators/changeValidator.js",
+    "rollback:changes": "node src/utils/rollback.js",
+    "dev": "node src/dev.js"
+  },
+  "dependencies": {
+    "chalk": "^5.3.0",
+    "cheerio": "^1.0.0-rc.12",
+    "dotenv": "^16.3.1",
+    "estree-walker": "^3.0.3",
+    "fast-glob": "^3.3.2",
+    "fs-extra": "^11.2.0",
+    "lighthouse": "^12.0.0",
+    "mime-types": "^2.1.35",
+    "ora": "^8.0.1",
+    "sharp": "^0.33.0",
+    "strip-comments": "^2.0.0",
+    "terser": "^5.25.0",
+    "webpack-bundle-analyzer": "^4.10.1"
+  },
+  "devDependencies": {
+    "node-watch": "^0.7.3"
+  }
+}
