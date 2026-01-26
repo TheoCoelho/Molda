@@ -150,6 +150,7 @@ export type Editor2DHandle = {
       fillColor?: string;
       strokeWidth?: number;
       opacity?: number;
+      fillEnabled?: boolean;
     }
   ) => void;
   addImage: (
@@ -8105,21 +8106,79 @@ const Editor2D = forwardRef<Editor2DHandle, Props>(function Editor2D(
     return brush;
   };
 
-  const addShape = (shape: ShapeKind) => {
+  const addShape = (shape: ShapeKind, style?: {
+    strokeColor?: string;
+    fillColor?: string;
+    strokeWidth?: number;
+    opacity?: number;
+    fillEnabled?: boolean;
+  }) => {
     const c = canvasRef.current;
     const fabric = fabricRef.current;
     if (!c || !fabric) return;
 
+    const useFill = style?.fillEnabled !== undefined ? style.fillEnabled : true;
+    const finalFillColor = useFill ? (style?.fillColor ?? fillColor) : null;
+    const finalStrokeColor = style?.strokeColor ?? strokeColor;
+    const finalStrokeWidth = style?.strokeWidth ?? strokeWidth;
+    const finalOpacity = style?.opacity ?? opacity;
+
     let obj: any = null;
+    
     if (shape === "rect") {
       obj = new fabric.Rect({
         left: 80,
         top: 60,
         width: 180,
         height: 120,
-        fill: fillColor,
-        stroke: strokeColor,
-        strokeWidth,
+        fill: finalFillColor || "transparent",
+        stroke: finalStrokeColor,
+        strokeWidth: finalStrokeWidth,
+        opacity: finalOpacity,
+        erasable: true,
+      });
+    } else if (shape === "ellipse") {
+      obj = new fabric.Ellipse({
+        left: 80,
+        top: 60,
+        rx: 90,
+        ry: 60,
+        fill: finalFillColor || "transparent",
+        stroke: finalStrokeColor,
+        strokeWidth: finalStrokeWidth,
+        opacity: finalOpacity,
+        erasable: true,
+      });
+    } else if (shape === "triangle") {
+      obj = new fabric.Triangle({
+        left: 80,
+        top: 60,
+        width: 180,
+        height: 120,
+        fill: finalFillColor || "transparent",
+        stroke: finalStrokeColor,
+        strokeWidth: finalStrokeWidth,
+        opacity: finalOpacity,
+        erasable: true,
+      });
+    } else if (shape === "polygon") {
+      // Hexágono
+      const points: Array<{ x: number; y: number }> = [];
+      const centerX = 80 + 90;
+      const centerY = 60 + 60;
+      const radius = 60;
+      for (let i = 0; i < 6; i++) {
+        const angle = (Math.PI / 3) * i - Math.PI / 2;
+        points.push({
+          x: centerX + radius * Math.cos(angle),
+          y: centerY + radius * Math.sin(angle),
+        });
+      }
+      obj = new fabric.Polygon(points, {
+        fill: finalFillColor || "transparent",
+        stroke: finalStrokeColor,
+        strokeWidth: finalStrokeWidth,
+        opacity: finalOpacity,
         erasable: true,
       });
     }
@@ -8128,6 +8187,8 @@ const Editor2D = forwardRef<Editor2DHandle, Props>(function Editor2D(
       c.add(obj);
       c.setActiveObject(obj);
       c.renderAll();
+      historyRef.current?.push(`add-shape-${shape}`);
+      emitHistory();
     }
   };
 

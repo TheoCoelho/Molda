@@ -40,9 +40,9 @@ function ToggleBtn({
       type="button"
       title={title}
       className={[
-        "h-9 min-w-9 px-2 rounded-md border",
+        "h-9 min-w-9 px-2 rounded-full border-none shadow-none",
         "flex items-center justify-center text-sm",
-        pressed ? "bg-primary/10 border-primary/40" : "bg-background hover:bg-muted",
+        pressed ? "bg-primary/10" : "bg-transparent hover:bg-black/5 dark:hover:bg-white/10",
       ].join(" ")}
       onClick={onClick}
     >
@@ -406,11 +406,7 @@ async function ensureFontReady(
   const toolbar = (
     <div
       ref={barRef}
-      className={[
-        "relative",
-        "flex items-center gap-2 p-2 rounded-2xl border shadow-lg bg-background",
-        "backdrop-blur supports-[backdrop-filter]:bg-background/90",
-      ].join(" ")}
+      className="relative flex items-center gap-2 p-2"
       role="toolbar"
       aria-label="Configurações de texto"
     >
@@ -426,6 +422,9 @@ async function ensureFontReady(
         />
         <ToggleBtn title="Aumentar" onClick={incFont}><Plus size={16} /></ToggleBtn>
       </div>
+
+      {/* Separador visual */}
+      <div className="mx-2 h-8 w-px bg-black/20 dark:bg-white/20 opacity-60" />
 
       {/* Cor do texto (gota + painel) */}
       <div ref={dropWrapRef} className="relative">

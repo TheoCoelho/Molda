@@ -46,7 +46,7 @@ function IconBtn({
       type="button"
       title={title}
       aria-label={title}
-      className="h-9 w-9 grid place-items-center rounded-xl border border-black/5 dark:border-white/10 bg-white/80 dark:bg-neutral-900/70 hover:bg-white hover:shadow transition"
+      className="h-9 w-9 grid place-items-center rounded-full bg-transparent border-none shadow-none hover:bg-black/5 dark:hover:bg-white/10 transition"
       onClick={onClick ?? (() => {})}
     >
       {children}
@@ -665,11 +665,7 @@ export default function ImageToolbar({ visible, editor, position = "bottom" }: P
 
   const toolbar = (
     <div
-      className={[
-        "relative",
-        "flex items-center gap-2 p-2 rounded-2xl border shadow-lg bg-background",
-        "backdrop-blur supports-[backdrop-filter]:bg-background/90",
-      ].join(" ")}
+      className="relative flex items-center gap-2 p-2"
       role="toolbar"
       aria-label="Ferramentas de imagem"
     >
@@ -1440,9 +1436,15 @@ export default function ImageToolbar({ visible, editor, position = "bottom" }: P
         )}
       </div>
 
+      {/* Separador visual */}
+      <div className="mx-2 h-8 w-px bg-black/20 dark:bg-white/20 opacity-60" />
+
       <IconBtn title="Transformação unificada">
         <Move className="h-4 w-4" />
       </IconBtn>
+
+      {/* Separador visual */}
+      <div className="mx-2 h-8 w-px bg-black/20 dark:bg-white/20 opacity-60" />
 
       <IconBtn title="Deformação">
         <Waves className="h-4 w-4" />

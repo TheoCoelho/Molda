@@ -1,5 +1,6 @@
 // src/components/FloatingEditorToolbar.tsx
 import React, { useEffect, useMemo, useRef, useState } from "react";
+import "./FloatingEditorToolbar.custom.css";
 import {
   Droplet,
   Trash2,
@@ -41,6 +42,9 @@ type Props = {
 
   tool: "select" | "brush" | "line" | "curve" | "text" | "stamp";
   setTool: (t: "select" | "brush" | "line" | "curve" | "text" | "stamp") => void;
+
+  /** Tipo de seleção atual (para determinar se há forma selecionada) */
+  selectionKind?: "none" | "text" | "image" | "other";
 
   /** Handle imperativo do Editor2D (opcional, usado para delete e histórico) */
   editor2DRef?: {
@@ -121,6 +125,7 @@ export default function FloatingEditorToolbar({
   setTool,
   isTrashMode,
   setTrashMode,
+  selectionKind = "none",
   editor2DRef,
   onUndo,
   onRedo,
@@ -308,10 +313,7 @@ export default function FloatingEditorToolbar({
         {/* ====== TOOLBAR ====== */}
         <div
           ref={barRef}
-          className={
-            `rounded-2xl p-2 border border-black/5 dark:border-white/10 flex items-center gap-2 ` +
-            (reduceFx ? `bg-white/90 dark:bg-neutral-800/90` : `backdrop-blur-md bg-white/70 dark:bg-neutral-900/60`)
-          }
+          className="flex items-center gap-2 p-2"
         >
           {/* 1) Gota + paleta */}
           <div ref={dropWrapRef} className="relative">
@@ -481,29 +483,31 @@ export default function FloatingEditorToolbar({
             </div>
           )}
 
-          {/* 3) Largura */}
-          <div className="flex items-center gap-1">
-            <div className="flex flex-col gap-0.5 opacity-60">
-              <Minus className="h-2 w-3" strokeWidth={1} />
-              <Minus className="h-2 w-3" strokeWidth={2} />
-              <Minus className="h-2 w-3" strokeWidth={3} />
+          {/* 3) Largura - só aparece para lápis (brush), linhas (line/curve) ou quando não há forma selecionada (gizmo) */}
+          {(tool === "brush" || tool === "line" || tool === "curve" || (tool === "select" && selectionKind !== "other")) && (
+            <div className="h-9 min-w-[220px] px-3 flex items-center gap-2 bg-white/30 dark:bg-neutral-900/60 backdrop-blur-md border border-white/20 dark:border-black/20 shadow rounded-xl">
+              <div className="flex flex-col gap-0.5 opacity-60">
+                <Minus className="h-2 w-3" strokeWidth={1} />
+                <Minus className="h-2 w-3" strokeWidth={2} />
+                <Minus className="h-2 w-3" strokeWidth={3} />
+              </div>
+              <input
+                type="range"
+                min={1}
+                max={60}
+                value={strokeWidth}
+                onChange={(e) => setStrokeWidth(Number(e.target.value))}
+                onPointerUp={() => editor2DRef?.historyCapture?.()}
+                className="floating-toolbar-slider"
+                aria-label="Largura"
+                title={`Largura: ${strokeWidth}px`}
+              />
+              <span className="text-xs text-gray-500 tabular-nums min-w-[2rem]">{strokeWidth}px</span>
             </div>
-            <input
-              type="range"
-              min={1}
-              max={60}
-              value={strokeWidth}
-              onChange={(e) => setStrokeWidth(Number(e.target.value))}
-              onPointerUp={() => editor2DRef?.historyCapture?.()}
-              className="w-24 accent-current"
-              aria-label="Largura"
-              title={`Largura: ${strokeWidth}px`}
-            />
-            <span className="text-xs text-gray-500 tabular-nums min-w-[2rem]">{strokeWidth}px</span>
-          </div>
+          )}
 
           {/* 4) Opacidade */}
-          <div className="flex items-center gap-1">
+          <div className="h-9 min-w-[220px] px-3 flex items-center gap-2 bg-white/30 dark:bg-neutral-900/60 backdrop-blur-md border border-white/20 dark:border-black/20 shadow rounded-xl">
             <Eye className="h-4 w-4 opacity-60" />
             <input
               type="range"
@@ -513,7 +517,7 @@ export default function FloatingEditorToolbar({
               value={opacity}
               onChange={(e) => setOpacity(Number(e.target.value))}
               onPointerUp={() => editor2DRef?.historyCapture?.()}
-              className="w-24 accent-current"
+              className="floating-toolbar-slider"
               aria-label="Opacidade"
               title={`Opacidade: ${Math.round(opacity * 100)}%`}
             />

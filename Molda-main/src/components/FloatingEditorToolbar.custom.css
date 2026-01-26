@@ -1,0 +1,90 @@
+/* FloatingEditorToolbar custom slider styles */
+
+.floating-toolbar-slider {
+  width: 112px;
+  height: 8px;
+  appearance: none;
+  background: #bdbdbd; /* cinza médio visível */
+  border-radius: 999px;
+  outline: none;
+  transition: background 0.2s;
+  margin: 0 8px;
+}
+.floating-toolbar-slider:focus {
+  background: #a3a3a3; /* cinza mais escuro no foco */
+}
+.floating-toolbar-slider::-webkit-slider-thumb {
+  appearance: none;
+  width: 18px;
+  height: 18px;
+  border-radius: 50%;
+  background: #222;
+  box-shadow: 0 2px 8px rgba(0,0,0,0.10);
+  border: 2px solid #fff;
+  cursor: pointer;
+  transition: background 0.2s;
+  margin-top: -5px; /* Centraliza o thumb na barra de 8px */
+}
+.floating-toolbar-slider:active::-webkit-slider-thumb {
+  background: #444;
+}
+.floating-toolbar-slider::-moz-range-thumb {
+  width: 18px;
+  height: 18px;
+  border-radius: 50%;
+  background: #222;
+  border: 2px solid #fff;
+  cursor: pointer;
+  transition: background 0.2s;
+}
+.floating-toolbar-slider:active::-moz-range-thumb {
+  background: #444;
+}
+.floating-toolbar-slider::-ms-thumb {
+  width: 18px;
+  height: 18px;
+  border-radius: 50%;
+  background: #222;
+  border: 2px solid #fff;
+  cursor: pointer;
+  transition: background 0.2s;
+  margin-top: 0; /* IE/Edge não precisa ajuste */
+}
+.floating-toolbar-slider::-webkit-slider-runnable-track {
+  height: 8px;
+  border-radius: 999px;
+  background: #bdbdbd;
+}
+.floating-toolbar-slider::-ms-fill-lower,
+.floating-toolbar-slider::-ms-fill-upper {
+  background: #bdbdbd;
+  border-radius: 999px;
+}
+.floating-toolbar-slider::-moz-range-track {
+  height: 8px;
+  border-radius: 999px;
+  background: #bdbdbd;
+}
+
+.floating-toolbar-slider:focus::-webkit-slider-thumb {
+  outline: 2px solid #3083DC;
+}
+
+.floating-toolbar-slider:focus::-moz-range-thumb {
+  outline: 2px solid #3083DC;
+}
+
+.floating-toolbar-slider:focus::-ms-thumb {
+  outline: 2px solid #3083DC;
+}
+
+.floating-toolbar-slider::-ms-tooltip {
+  display: none;
+}
+
+/* For Firefox */
+input[type=range].floating-toolbar-slider {
+  background: #bdbdbd;
+  border-radius: 999px;
+  height: 8px;
+}

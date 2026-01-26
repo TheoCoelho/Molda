@@ -931,13 +931,14 @@ const Creation = () => {
     editorRefs.current[tabId] = null;
   };
 
-  const addShape = (shape: ShapeKind) => {
+  const addShape = (shape: ShapeKind, style?: { fillEnabled?: boolean; fillColor?: string; strokeColor?: string; strokeWidth?: number; opacity?: number }) => {
     if (!activeIs2D) return;
     editorRefs.current[activeCanvasTab]?.addShape(shape, {
-      strokeColor,
-      fillColor,
-      strokeWidth,
-      opacity,
+      strokeColor: style?.strokeColor ?? strokeColor,
+      fillColor: style?.fillColor ?? fillColor,
+      strokeWidth: style?.strokeWidth ?? strokeWidth,
+      opacity: style?.opacity ?? opacity,
+      fillEnabled: style?.fillEnabled,
     });
   };
 
@@ -1469,6 +1470,7 @@ const Creation = () => {
                     setTool={setTool}
                     isTrashMode={isTrashMode}
                     setTrashMode={setTrashMode}
+                    selectionKind="none"
                     editor2DRef={editorRefs.current[activeCanvasTab] as Editor2DHandle}
                     onUndo={activeIs2D ? () => editorRefs.current[activeCanvasTab]?.undo?.() : undefined}
                     onRedo={activeIs2D ? () => editorRefs.current[activeCanvasTab]?.redo?.() : undefined}
@@ -1714,6 +1716,7 @@ const Creation = () => {
                             setTool={setTool}
                             isTrashMode={isTrashMode}
                             setTrashMode={setTrashMode}
+                            selectionKind={selectionKind}
                             editor2DRef={editorRefs.current[activeCanvasTab] as Editor2DHandle}
                             onUndo={activeIs2D ? () => editorRefs.current[activeCanvasTab]?.undo?.() : undefined}
                             onRedo={activeIs2D ? () => editorRefs.current[activeCanvasTab]?.redo?.() : undefined}

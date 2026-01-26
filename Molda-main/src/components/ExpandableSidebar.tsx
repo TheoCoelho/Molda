@@ -3,6 +3,14 @@ import { Button } from "../components/ui/button";
 import { Input } from "../components/ui/input";
 import { Label } from "../components/ui/label";
 import { Textarea } from "../components/ui/textarea";
+import {
+  DropdownMenu,
+  DropdownMenuContent,
+  DropdownMenuItem,
+  DropdownMenuTrigger,
+  DropdownMenuRadioGroup,
+  DropdownMenuRadioItem,
+} from "../components/ui/dropdown-menu";
 import UploadGallery from "../components/UploadGallery";
 import { useRecentFonts } from "../hooks/use-recent-fonts";
 import {
@@ -25,6 +33,8 @@ import {
   Triangle,
   Hexagon,
   Minus,
+  Search,
+  Filter,
 } from "lucide-react";
 // Novo ícone para a seção de ferramentas
 import { Wrench } from "lucide-react";
@@ -34,13 +44,6 @@ import { generateCreativeName } from "../lib/creativeNames";
 
 import {
   generateBlobSvgDataUrl,
-  generatePatternSvgDataUrl,
-  generateScribblePngDataUrl,
-  generateHeroPatternDataUrl,
-  HERO_PATTERNS,
-  type PatternType,
-  type ScribbleType,
-  type HeroPatternType,
 } from "../lib/shapeGenerators";
 import type { BrushVariant } from "./Editor2D";
 
@@ -402,12 +405,18 @@ function BrushSectionAccordion(props: {
     autoOpenTextPanelCounter,
   } = props;
 
-  type SubKey = "texto" | "formas" | "blobs" | "padroes" | "rabiscos" | "hero-patterns" | "moldes" | "pincel" | "linhas" | null;
+  type SubKey = "texto" | "formas" | "blobs" | "moldes" | "pincel" | "linhas" | null;
   const [openKey, setOpenKey] = useState<SubKey>(null);
   const [enabledKey, setEnabledKey] = useState<SubKey>(null);
   const activationDelayMs = 380;
   // Preferência de preenchimento para blobs: "solid" (usa a cor do traço) ou "transparent"
   const [blobFillMode, setBlobFillMode] = useState<"solid" | "transparent">("solid");
+  
+  // Estados para biblioteca unificada de formas e blobs
+  const [searchQuery, setSearchQuery] = useState("");
+  const [activeFilter, setActiveFilter] = useState<"all" | "shapes" | "blobs">("all");
+  // Estado para controle de preenchimento de formas
+  const [shapeFillEnabled, setShapeFillEnabled] = useState(true);
 
   const iconToggleClasses = (active: boolean, disabled?: boolean) =>
     [
@@ -445,48 +454,57 @@ function BrushSectionAccordion(props: {
 
   // Expor função de desativação para uso externo
   useEffect(() => {
-    // Se tool foi alterado externamente para "select", resetar estado interno
-    if (tool === "select" && enabledKey) {
+    // Só reseta o estado interno automaticamente se o painel aberto NÃO for formas ou blobs
+    if (
+      tool === "select" &&
+      enabledKey &&
+      openKey !== "formas" &&
+      openKey !== "blobs"
+    ) {
       console.log(`[BrushSectionAccordion] Tool externally changed to select, resetting internal state`);
       setEnabledKey(null);
       setOpenKey(null);
     }
-  }, [tool, enabledKey]);
+  }, [tool, enabledKey, openKey]);
 
   const toggle = (key: Exclude<SubKey, null>) => {
     console.log(`[BrushSectionAccordion] Toggling ${key}, current openKey: ${openKey}, current tool: ${tool}`);
     
-    if (openKey === key) {
-      console.log(`[BrushSectionAccordion] Closing ${key}, switching to select`);
+    // Normalizar "formas" e "blobs" para a mesma chave unificada
+    const normalizedKey = (key === "formas" || key === "blobs") ? "formas" : key;
+    const currentNormalizedKey = (openKey === "formas" || openKey === "blobs") ? "formas" : openKey;
+    
+    if (currentNormalizedKey === normalizedKey) {
+      console.log(`[BrushSectionAccordion] Closing ${normalizedKey}, switching to select`);
       setEnabledKey(null);
       setTool("select");
       setOpenKey(null);
       return;
     }
     
-    console.log(`[BrushSectionAccordion] Opening ${key}, temporarily switching to select`);
+    console.log(`[BrushSectionAccordion] Opening ${normalizedKey}, temporarily switching to select`);
     setEnabledKey(null);
     setTool("select");
-    setOpenKey(key);
+    setOpenKey(normalizedKey);
     
     window.setTimeout(() => {
-      console.log(`[BrushSectionAccordion] Activating ${key}`);
-      setEnabledKey(key);
+      console.log(`[BrushSectionAccordion] Activating ${normalizedKey}`);
+      setEnabledKey(normalizedKey);
       if (!is2DActive) {
         console.log(`[BrushSectionAccordion] 2D not active, keeping tool as select`);
         return;
       }
       
-      if (key === "pincel") {
+      if (normalizedKey === "pincel") {
         console.log(`[BrushSectionAccordion] Setting tool to brush`);
         setTool("brush");
-      } else if (key === "linhas") {
+      } else if (normalizedKey === "linhas") {
         console.log(`[BrushSectionAccordion] Setting tool to line`);
         setTool("line");
-      } else if (key === "texto") {
+      } else if (normalizedKey === "texto") {
         console.log(`[BrushSectionAccordion] Setting tool to text`);
         setTool("text");
-      } else if (key === "moldes") {
+      } else if (normalizedKey === "moldes") {
         console.log(`[BrushSectionAccordion] Setting tool to stamp`);
         setTool("stamp");
       }
@@ -505,6 +523,52 @@ function BrushSectionAccordion(props: {
       }
     } catch {}
   }, [openKey]);
+
+  // Itens filtrados da biblioteca unificada
+  const filteredItems = useMemo(() => {
+    // Definir todos os itens da biblioteca
+    const allItems: Array<{
+      id: string;
+      type: "shape" | "blob";
+      name: string;
+      keywords: string[];
+      shapeKind?: "rect" | "ellipse" | "triangle" | "polygon";
+      blobSeed?: number;
+    }> = [
+      // Formas geométricas
+      { id: "shape-rect", type: "shape", name: "Retângulo", keywords: ["retângulo", "quadrado", "retangulo", "square", "rectangle"], shapeKind: "rect" },
+      { id: "shape-ellipse", type: "shape", name: "Círculo", keywords: ["círculo", "circulo", "elipse", "ellipse", "circle"], shapeKind: "ellipse" },
+      { id: "shape-triangle", type: "shape", name: "Triângulo", keywords: ["triângulo", "triangulo", "triangle"], shapeKind: "triangle" },
+      { id: "shape-polygon", type: "shape", name: "Polígono", keywords: ["polígono", "poligono", "hexágono", "hexagono", "polygon", "hexagon"], shapeKind: "polygon" },
+      // Blobs orgânicos
+      ...Array.from({ length: 24 }).map((_, i) => ({
+        id: `blob-${i}`,
+        type: "blob" as const,
+        name: `Blob ${i + 1}`,
+        keywords: ["blob", "orgânico", "organico", "forma", "shape", `blob ${i + 1}`],
+        blobSeed: i * 131 + 17,
+      })),
+    ];
+
+    // Filtrar por tipo
+    let filtered = allItems;
+    if (activeFilter === "shapes") {
+      filtered = filtered.filter(item => item.type === "shape");
+    } else if (activeFilter === "blobs") {
+      filtered = filtered.filter(item => item.type === "blob");
+    }
+
+    // Filtrar por pesquisa
+    if (searchQuery.trim()) {
+      const query = searchQuery.toLowerCase().trim();
+      filtered = filtered.filter(item =>
+        item.name.toLowerCase().includes(query) ||
+        item.keywords.some(keyword => keyword.toLowerCase().includes(query))
+      );
+    }
+
+    return filtered;
+  }, [searchQuery, activeFilter]);
 
   return (
     <div className="flex h-full flex-1 min-h-0 max-h-full flex-col overflow-hidden">
@@ -587,204 +651,221 @@ function BrushSectionAccordion(props: {
           </div>
         </AccordionItem>
 
-        {/* Formas */}
-    <AccordionItem title="Formas" icon={<Shapes className="w-4 h-4" />} open={openKey === "formas"} onToggle={() => toggle("formas")}>
-        <div className="grid grid-cols-4 gap-3 mt-2">
-          <button type="button" className={iconToggleClasses(false, !is2DActive || enabledKey !== "formas")} onClick={() => addShape("rect")} disabled={!is2DActive || enabledKey !== "formas"} aria-label="Adicionar retângulo" title="Retângulo">
-            <Square className="w-6 h-6" />
-          </button>
-          <button type="button" className={iconToggleClasses(false, !is2DActive || enabledKey !== "formas")} onClick={() => addShape("ellipse")} disabled={!is2DActive || enabledKey !== "formas"} aria-label="Adicionar círculo" title="Círculo">
-            <Circle className="w-6 h-6" />
-          </button>
-          <button type="button" className={iconToggleClasses(false, !is2DActive || enabledKey !== "formas")} onClick={() => addShape("triangle")} disabled={!is2DActive || enabledKey !== "formas"} aria-label="Adicionar triângulo" title="Triângulo">
-            <Triangle className="w-6 h-6" />
-          </button>
-          <button type="button" className={iconToggleClasses(false, !is2DActive || enabledKey !== "formas")} onClick={() => addShape("polygon")} disabled={!is2DActive || enabledKey !== "formas"} aria-label="Adicionar polígono" title="Polígono">
-            <Hexagon className="w-6 h-6" />
-          </button>
-        </div>
-      </AccordionItem>
-
-        {/* Blobs orgânicos */}
-    <AccordionItem title="Blobs orgânicos" icon={<Circle className="w-4 h-4" />} open={openKey === "blobs"} onToggle={() => toggle("blobs")}>
-        {/* Controle de preenchimento */}
-        <div className="flex items-center gap-2 mt-2">
-          <span className="text-xs text-gray-600">Preenchimento:</span>
-          <div className="flex items-center gap-2">
-            <button
-              type="button"
-              className={iconToggleClasses(blobFillMode === "solid", !is2DActive) + " h-8 w-auto px-2 text-xs"}
-              onClick={() => setBlobFillMode("solid")}
-              disabled={!is2DActive}
-              aria-pressed={blobFillMode === "solid"}
-            >
-              Igual ao traço
-            </button>
-            <button
-              type="button"
-              className={iconToggleClasses(blobFillMode === "transparent", !is2DActive) + " h-8 w-auto px-2 text-xs"}
-              onClick={() => setBlobFillMode("transparent")}
-              disabled={!is2DActive}
-              aria-pressed={blobFillMode === "transparent"}
-            >
-              Transparente
-            </button>
+        {/* Biblioteca Unificada de Formas e Blobs */}
+    <AccordionItem 
+      title="Formas e Blobs" 
+      icon={<Shapes className="w-4 h-4" />} 
+      open={openKey === "formas" || openKey === "blobs"} 
+      onToggle={() => {
+        const targetKey = (openKey === "formas" || openKey === "blobs") ? null : "formas";
+        toggle(targetKey as SubKey);
+      }}
+    >
+      {/* Barra de pesquisa com botão de filtros */}
+      <div className="mt-2 mb-3">
+        <div className="flex items-center gap-2">
+          <div className="relative flex-1">
+            <Search className="absolute left-3 top-1/2 transform -translate-y-1/2 w-4 h-4 text-gray-400" />
+            <Input
+              type="text"
+              placeholder="Pesquisar formas e blobs..."
+              value={searchQuery}
+              onChange={(e) => setSearchQuery(e.target.value)}
+              className="pl-9 h-9 text-sm"
+            />
           </div>
+          <DropdownMenu>
+            <DropdownMenuTrigger asChild>
+              <button
+                type="button"
+                className={`h-9 px-3 rounded-md border border-white/15 bg-white/5 flex items-center justify-center transition hover:bg-white/10 focus:outline-none focus-visible:ring-2 focus-visible:ring-purple-300/60 ${
+                  !is2DActive ? "opacity-35 cursor-not-allowed" : ""
+                } ${activeFilter !== "all" ? "bg-white/20 border-white/35" : ""}`}
+                disabled={!is2DActive}
+                aria-label="Filtros"
+              >
+                <Filter className="w-4 h-4" />
+              </button>
+            </DropdownMenuTrigger>
+            <DropdownMenuContent align="end" className="w-40">
+              <DropdownMenuRadioGroup
+                value={activeFilter}
+                onValueChange={(value) => setActiveFilter(value as "all" | "shapes" | "blobs")}
+              >
+                <DropdownMenuRadioItem value="all" disabled={!is2DActive}>
+                  Todos
+                </DropdownMenuRadioItem>
+                <DropdownMenuRadioItem value="shapes" disabled={!is2DActive}>
+                  Formas
+                </DropdownMenuRadioItem>
+                <DropdownMenuRadioItem value="blobs" disabled={!is2DActive}>
+                  Blobs
+                </DropdownMenuRadioItem>
+              </DropdownMenuRadioGroup>
+            </DropdownMenuContent>
+          </DropdownMenu>
         </div>
+      </div>
+
+      {/* Controle de preenchimento para formas */}
+      <div className="flex items-center gap-2 mb-3">
+        <span className="text-xs text-gray-600">Preenchimento (formas):</span>
+        <div className="flex items-center gap-2">
+          <button
+            type="button"
+            className={iconToggleClasses(shapeFillEnabled, !is2DActive) + " h-8 w-auto px-2 text-xs"}
+            onClick={() => setShapeFillEnabled(true)}
+            disabled={!is2DActive}
+            aria-pressed={shapeFillEnabled}
+          >
+            Preenchido
+          </button>
+          <button
+            type="button"
+            className={iconToggleClasses(!shapeFillEnabled, !is2DActive) + " h-8 w-auto px-2 text-xs"}
+            onClick={() => setShapeFillEnabled(false)}
+            disabled={!is2DActive}
+            aria-pressed={!shapeFillEnabled}
+          >
+            Vazado
+          </button>
+        </div>
+      </div>
+
+      {/* Controle de preenchimento para blobs */}
+      <div className="flex items-center gap-2 mb-3">
+        <span className="text-xs text-gray-600">Preenchimento (blobs):</span>
+        <div className="flex items-center gap-2">
+          <button
+            type="button"
+            className={iconToggleClasses(blobFillMode === "solid", !is2DActive) + " h-8 w-auto px-2 text-xs"}
+            onClick={() => setBlobFillMode("solid")}
+            disabled={!is2DActive}
+            aria-pressed={blobFillMode === "solid"}
+          >
+            Igual ao traço
+          </button>
+          <button
+            type="button"
+            className={iconToggleClasses(blobFillMode === "transparent", !is2DActive) + " h-8 w-auto px-2 text-xs"}
+            onClick={() => setBlobFillMode("transparent")}
+            disabled={!is2DActive}
+            aria-pressed={blobFillMode === "transparent"}
+          >
+            Transparente
+          </button>
+        </div>
+      </div>
+
+      {/* Lista de itens filtrados */}
+      {filteredItems.length === 0 ? (
+        <div className="mt-2 text-center text-sm text-gray-500 py-4">
+          Nenhum item encontrado
+        </div>
+      ) : (
         <div className="mt-2 max-h-64 overflow-y-auto overflow-x-hidden px-1 scrollbar-soft">
           <div className="flex flex-wrap gap-3 justify-start">
-            {Array.from({ length: 24 }).map((_, i) => {
-              const blobPreview = generateBlobSvgDataUrl({ 
-                size: 64, 
-                seed: i * 131 + 17, 
-                fill: (blobFillMode === "transparent" ? "none" : (strokeColor || "#000")), 
-                stroke: strokeColor || "#000" 
-              });
+            {filteredItems.map((item) => {
+              const isEnabled = is2DActive && (enabledKey === "formas" || enabledKey === "blobs");
               
-              return (
-                <button
-                  key={i}
-                  type="button"
-                  className={iconToggleClasses(false, !is2DActive) + " group"}
-                  onClick={() => {
-                    console.log('[Blob Click]', { onImageInsert: !!onImageInsert, is2DActive });
-                    if (!onImageInsert || !is2DActive) {
-                      console.warn('[Blob Click] Blocked:', { onImageInsert: !!onImageInsert, is2DActive });
-                      return;
-                    }
-                    const url = generateBlobSvgDataUrl({
-                      size: 320,
-                      seed: i * 131 + 17,
-                      fill: blobFillMode === "transparent" ? "none" : (strokeColor || "#000000"),
-                      stroke: strokeColor || "#000000",
-                    });
-                    console.log('[Blob Click] Inserting:', url.substring(0, 100));
-                    onImageInsert(url, {
-                      scale: 0.75,
-                      meta: {
-                        kind: "blob",
-                        seed: i * 131 + 17,
-                        fillMode: blobFillMode,
-                        baseSize: 320,
-                        strokeWidth: Math.max(1, strokeWidth || 2),
-                        currentFill: blobFillMode === "transparent" ? "none" : (strokeColor || "#000000"),
-                        currentStroke: strokeColor || "#000000",
-                        currentStrokeWidth: strokeWidth,
-                      },
-                    });
-                    setTool("select");
-                  }}
-                  disabled={!is2DActive}
-                  aria-label={`Blob ${i+1}`}
-                  title={`Blob ${i+1}`}
-                >
-                  <div className="w-8 h-8 transition-transform group-hover:scale-110">
-                    <img src={blobPreview} alt="blob" className="w-full h-full" />
-                  </div>
-                </button>
-              );
+              if (item.type === "shape") {
+                const IconComponent = 
+                  item.shapeKind === "rect" ? Square :
+                  item.shapeKind === "ellipse" ? Circle :
+                  item.shapeKind === "triangle" ? Triangle :
+                  Hexagon;
+
+                const fillColorValue = shapeFillEnabled ? (fillColor || strokeColor || "#000000") : "none";
+                const strokeColorValue = strokeColor || "#000000";
+                const strokeWidthValue = shapeFillEnabled ? 0 : 2;
+
+                return (
+                  <button
+                    key={item.id}
+                    type="button"
+                    className={iconToggleClasses(false, !isEnabled)}
+                    onClick={() => {
+                      if (!isEnabled || !item.shapeKind) return;
+                      addShape(item.shapeKind, {
+                        fillEnabled: shapeFillEnabled,
+                        fillColor: fillColor,
+                        strokeColor: strokeColor,
+                        strokeWidth: strokeWidth,
+                        opacity: opacity,
+                      });
+                      setTool("select");
+                    }}
+                    disabled={!isEnabled}
+                    aria-label={item.name}
+                    title={item.name}
+                  >
+                    <IconComponent 
+                      className="w-6 h-6" 
+                      fill={fillColorValue}
+                      stroke={strokeColorValue}
+                      strokeWidth={strokeWidthValue}
+                      style={{
+                        fill: fillColorValue !== "none" ? fillColorValue : undefined,
+                        stroke: strokeColorValue,
+                        strokeWidth: strokeWidthValue,
+                      }}
+                    />
+                  </button>
+                );
+              } else {
+                // Blob
+                const blobPreview = generateBlobSvgDataUrl({ 
+                  size: 64, 
+                  seed: item.blobSeed || 0, 
+                  fill: (blobFillMode === "transparent" ? "none" : (strokeColor || "#000")), 
+                  stroke: strokeColor || "#000" 
+                });
+
+                return (
+                  <button
+                    key={item.id}
+                    type="button"
+                    className={iconToggleClasses(false, !isEnabled) + " group"}
+                    onClick={() => {
+                      if (!onImageInsert || !isEnabled || item.blobSeed === undefined) {
+                        return;
+                      }
+                      const url = generateBlobSvgDataUrl({
+                        size: 320,
+                        seed: item.blobSeed,
+                        fill: blobFillMode === "transparent" ? "none" : (strokeColor || "#000000"),
+                        stroke: strokeColor || "#000000",
+                      });
+                      onImageInsert(url, {
+                        scale: 0.75,
+                        meta: {
+                          kind: "blob",
+                          seed: item.blobSeed,
+                          fillMode: blobFillMode,
+                          baseSize: 320,
+                          strokeWidth: Math.max(1, strokeWidth || 2),
+                          currentFill: blobFillMode === "transparent" ? "none" : (strokeColor || "#000000"),
+                          currentStroke: strokeColor || "#000000",
+                          currentStrokeWidth: strokeWidth,
+                        },
+                      });
+                      setTool("select");
+                    }}
+                    disabled={!isEnabled}
+                    aria-label={item.name}
+                    title={item.name}
+                  >
+                    <div className="w-8 h-8 transition-transform group-hover:scale-110">
+                      <img src={blobPreview} alt={item.name} className="w-full h-full" />
+                    </div>
+                  </button>
+                );
+              }
             })}
           </div>
         </div>
-      </AccordionItem>
-
-        {/* Padrões geométricos */}
-    <AccordionItem title="Padrões" icon={<Square className="w-4 h-4" />} open={openKey === "padroes"} onToggle={() => toggle("padroes")}>
-        <div className="grid grid-cols-4 gap-3 mt-2">
-          {(["dots","stripes","grid","zigzag","triangles","hex","diagonal","chevron","plus","cross","diamonds","waves","scallop","concentric","herringbone","plaid","halftone","checkerboard","isometric","bricks","maze","circles"] as const).map((pattern) => (
-            <button
-              key={pattern}
-              type="button"
-              className={iconToggleClasses(false, !is2DActive)}
-              onClick={() => {
-                console.log('[Pattern Click]', { pattern, onImageInsert: !!onImageInsert, is2DActive });
-                if (!onImageInsert || !is2DActive) {
-                  console.warn('[Pattern Click] Blocked:', { pattern, onImageInsert: !!onImageInsert, is2DActive });
-                  return;
-                }
-                const url = generatePatternSvgDataUrl({
-                  pattern,
-                  size: 512,
-                  bg: fillColor || "#ffffff",
-                  fg: strokeColor || "#000000",
-                });
-                console.log('[Pattern Click] Inserting:', pattern);
-                onImageInsert(url, { scale: 0.6 });
-                setTool("select");
-              }}
-              disabled={!is2DActive}
-              aria-label={`Padrão ${pattern}`}
-              title={`Padrão ${pattern}`}
-            >
-              <div className="w-8 h-8 rounded overflow-hidden">
-                <img src={generatePatternSvgDataUrl({ pattern, size: 64, bg: fillColor || "#fff", fg: strokeColor || "#000" })} alt={pattern} className="w-full h-full object-cover" />
-              </div>
-            </button>
-          ))}
-        </div>
-      </AccordionItem>
-
-        {/* Rabiscos (estilo hand-drawn) */}
-    <AccordionItem title="Rabiscos" icon={<Pen className="w-4 h-4" />} open={openKey === "rabiscos"} onToggle={() => toggle("rabiscos")}>
-        <div className="grid grid-cols-4 gap-3 mt-2">
-          {(["wave","waves2","spiral","scribble-circle","scribble-rect","scribble-star","scribble-heart","hatch","scribble-zigzag","arrow","lightning","cloud","starburst","flower","leaf"] as const).map((kind) => (
-            <button
-              key={kind}
-              type="button"
-              className={iconToggleClasses(false, !is2DActive)}
-              onClick={() => {
-                if (!onImageInsert || !is2DActive) return;
-                const url = generateScribblePngDataUrl({
-                  kind,
-                  size: 480,
-                  stroke: strokeColor || "#000000",
-                  background: "transparent",
-                });
-                onImageInsert(url, { scale: 0.8 });
-                setTool("select");
-              }}
-              disabled={!is2DActive}
-              aria-label={`Rabisco ${kind}`}
-              title={`Rabisco ${kind}`}
-            >
-              <div className="w-8 h-8">
-                <img src={generateScribblePngDataUrl({ kind, size: 64, stroke: strokeColor || "#000", background: "transparent" })} alt={kind} className="w-full h-full" />
-              </div>
-            </button>
-          ))}
-        </div>
-      </AccordionItem>
-
-        {/* Hero Patterns */}
-    <AccordionItem title="Hero Patterns" icon={<Wrench className="w-4 h-4" />} open={openKey === "hero-patterns"} onToggle={() => toggle("hero-patterns")}>
-        <div className="grid grid-cols-4 gap-3 mt-2">
-          {HERO_PATTERNS.map((pattern) => (
-            <button
-              key={pattern}
-              type="button"
-              className={iconToggleClasses(false, !is2DActive)}
-              onClick={() => {
-                if (!onImageInsert || !is2DActive) return;
-                const url = generateHeroPatternDataUrl({
-                  pattern,
-                  size: 512,
-                  bg: fillColor || "#ffffff",
-                  fg: strokeColor || "#000000",
-                });
-                onImageInsert(url, { scale: 0.6 });
-                setTool("select");
-              }}
-              disabled={!is2DActive}
-              aria-label={`Hero Pattern ${pattern}`}
-              title={`Hero Pattern ${pattern}`}
-            >
-              <div className="w-8 h-8 rounded overflow-hidden">
-                <img src={generateHeroPatternDataUrl({ pattern, size: 64, bg: fillColor || "#fff", fg: strokeColor || "#000" })} alt={pattern} className="w-full h-full object-cover" />
-              </div>
-            </button>
-          ))}
-        </div>
-      </AccordionItem>
+      )}
+    </AccordionItem>
 
         {/* Lápis */}
     <AccordionItem title="Lápis" icon={<Brush className="w-4 h-4" />} open={openKey === "pincel"} onToggle={() => toggle("pincel")}>
