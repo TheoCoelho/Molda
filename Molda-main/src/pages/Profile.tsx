@@ -689,49 +689,118 @@ const Profile = () => {
               </div>
             ) : (
               <div className="grid grid-cols-2 md:grid-cols-3 lg:grid-cols-4 gap-4">
-                {creations.map((item) => (
-                  <Card key={item.id} className="shadow-md hover:shadow-lg transition-shadow">
-                    <CardHeader className="p-3 pb-2">
-                      <div className="flex items-center justify-between gap-1">
-                        <CardTitle className="text-sm font-medium truncate">{item.title}</CardTitle>
-                        {getStatusBadge(item.status)}
-                      </div>
-                      <p className="text-xs text-gray-500">
-                        {item.date ? `Criado em ${item.date}` : ""}
-                      </p>
-                    </CardHeader>
-                    <CardContent className="p-3 pt-0">
-                      <div className="aspect-[3/4] w-full overflow-hidden rounded-md bg-transparent mb-3">
-                        <Canvas3DViewer
-                          baseColor={item.baseColor || "#ffffff"}
-                          externalDecals={item.externalDecals || []}
-                          interactive={false}
-                          selectionOverride={item.selection}
-                          className="h-full w-full"
-                        />
-                      </div>
-                      <div className="flex gap-1.5">
-                        <Button
-                          variant="outline"
-                          size="sm"
-                          className="w-full text-xs"
-                          onClick={() => item.draft && handleEditDraft(item.draft)}
-                          disabled={!item.draft}
-                        >
-                          Editar
-                        </Button>
-                        <Button
-                          size="sm"
-                          className="w-full text-xs"
-                          onClick={() => item.draft && handleProduceDraft(item.draft)}
-                          disabled={!item.draft}
-                        >
-                          Produzir
-                        </Button>
-                      </div>
-                    </CardContent>
-                  </Card>
-                ))}
+                {(() => {
+                  // Lógica de windowing: só renderiza 8 cards centrais
+                  const total = creations.length;
+                  if (total <= 8) {
+                    return creations.map((item) => (
+                      <Card key={item.id} className="shadow-md hover:shadow-lg transition-shadow">
+                        <CardHeader className="p-3 pb-2">
+                          <div className="flex items-center justify-between gap-1">
+                            <CardTitle className="text-sm font-medium truncate">{item.title}</CardTitle>
+                            {getStatusBadge(item.status)}
+                          </div>
+                          <p className="text-xs text-gray-500">
+                            {item.date ? `Criado em ${item.date}` : ""}
+                          </p>
+                        </CardHeader>
+                        <CardContent className="p-3 pt-0">
+                          <div className="aspect-[3/4] w-full overflow-hidden rounded-md bg-transparent mb-3">
+                            <Canvas3DViewer
+                              baseColor={item.baseColor || "#ffffff"}
+                              externalDecals={item.externalDecals || []}
+                              interactive={false}
+                              selectionOverride={item.selection}
+                              className="h-full w-full"
+                            />
+                          </div>
+                          <div className="flex gap-1.5">
+                            <Button
+                              variant="outline"
+                              size="sm"
+                              className="w-full text-xs"
+                              onClick={() => item.draft && handleEditDraft(item.draft)}
+                              disabled={!item.draft}
+                            >
+                              Editar
+                            </Button>
+                            <Button
+                              size="sm"
+                              className="w-full text-xs"
+                              onClick={() => item.draft && handleProduceDraft(item.draft)}
+                              disabled={!item.draft}
+                            >
+                              Produzir
+                            </Button>
+                          </div>
+                        </CardContent>
+                      </Card>
+                    ));
+                  }
+                  // Se houver mais de 8, só renderiza os 8 centrais
+                  // Calcula o centro da viewport (pode ser ajustado para scroll real)
+                  const [start, end] = (() => {
+                    // Para simplificação, centraliza na metade da lista
+                    const center = Math.floor(total / 2);
+                    let s = center - 4;
+                    let e = center + 4;
+                    if (s < 0) { s = 0; e = 8; }
+                    if (e > total) { e = total; s = total - 8; }
+                    return [s, e];
+                  })();
+                  return creations.map((item, idx) => {
+                    const isActive = idx >= start && idx < end;
+                    return (
+                      <Card key={item.id} className="shadow-md hover:shadow-lg transition-shadow">
+                        <CardHeader className="p-3 pb-2">
+                          <div className="flex items-center justify-between gap-1">
+                            <CardTitle className="text-sm font-medium truncate">{item.title}</CardTitle>
+                            {getStatusBadge(item.status)}
+                          </div>
+                          <p className="text-xs text-gray-500">
+                            {item.date ? `Criado em ${item.date}` : ""}
+                          </p>
+                        </CardHeader>
+                        <CardContent className="p-3 pt-0">
+                          <div className="aspect-[3/4] w-full overflow-hidden rounded-md bg-transparent mb-3">
+                            {isActive ? (
+                              <Canvas3DViewer
+                                baseColor={item.baseColor || "#ffffff"}
+                                externalDecals={item.externalDecals || []}
+                                interactive={false}
+                                selectionOverride={item.selection}
+                                className="h-full w-full"
+                              />
+                            ) : (
+                              <div className="h-full w-full bg-muted flex items-center justify-center text-xs text-muted-foreground select-none">
+                                Pré-visualização 3D
+                              </div>
+                            )}
+                          </div>
+                          <div className="flex gap-1.5">
+                            <Button
+                              variant="outline"
+                              size="sm"
+                              className="w-full text-xs"
+                              onClick={() => item.draft && handleEditDraft(item.draft)}
+                              disabled={!item.draft}
+                            >
+                              Editar
+                            </Button>
+                            <Button
+                              size="sm"
+                              className="w-full text-xs"
+                              onClick={() => item.draft && handleProduceDraft(item.draft)}
+                              disabled={!item.draft}
+                            >
+                              Produzir
+                            </Button>
+                          </div>
+                        </CardContent>
+                      </Card>
+                    );
+                  });
+                })()}
               </div>
             )}
           </TabsContent>

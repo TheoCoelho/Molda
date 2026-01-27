@@ -484,7 +484,14 @@ const Creation = () => {
       try {
         const stored = localStorage.getItem("currentProject");
         if (!stored) return;
-        const parsed = JSON.parse(stored);
+        let parsed = null;
+        try {
+          parsed = JSON.parse(stored);
+        } catch (err) {
+          console.warn("[Creation] JSON inválido em currentProject, limpando localStorage", err);
+          localStorage.removeItem("currentProject");
+          return;
+        }
         if (!parsed || typeof parsed !== "object") return;
         if (!draftKeyRef.current && typeof parsed.draftKey === "string") draftKeyRef.current = parsed.draftKey;
         if (!draftKeyRef.current && typeof parsed.projectKey === "string") draftKeyRef.current = parsed.projectKey;
@@ -576,7 +583,14 @@ const Creation = () => {
       try {
         const stored = localStorage.getItem("currentProject");
         if (!stored) return;
-        const project = JSON.parse(stored);
+        let project = null;
+        try {
+          project = JSON.parse(stored);
+        } catch (err) {
+          console.warn("[Creation] JSON inválido em currentProject, limpando localStorage", err);
+          localStorage.removeItem("currentProject");
+          return;
+        }
         if (!project || typeof project !== "object") return;
 
         if (typeof project.draftKey === "string" && !draftKeyRef.current) draftKeyRef.current = project.draftKey;
@@ -585,8 +599,7 @@ const Creation = () => {
           if (typeof project.draftId === "string") {
             draftIdRef.current = project.draftId;
             setDraftId(project.draftId);
-          }
-          else if (typeof project.draftId === "number") {
+          } else if (typeof project.draftId === "number") {
             draftIdRef.current = String(project.draftId);
             setDraftId(String(project.draftId));
           }

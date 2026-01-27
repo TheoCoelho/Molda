@@ -47,6 +47,118 @@ import {
 } from "../lib/shapeGenerators";
 import type { BrushVariant } from "./Editor2D";
 
+// Componentes SVG customizados para formas
+const ShapeIcon = ({ 
+  type, 
+  fillColor, 
+  strokeColor, 
+  fillEnabled 
+}: { 
+  type: "rect" | "ellipse" | "triangle" | "polygon" | "star";
+  fillColor: string;
+  strokeColor: string;
+  fillEnabled: boolean;
+}) => {
+  const size = 24;
+  const center = size / 2;
+  const fill = fillEnabled ? strokeColor : "none";
+  const stroke = strokeColor;
+  const strokeWidth = fillEnabled ? 0 : 2;
+
+  if (type === "rect") {
+    return (
+      <svg width={size} height={size} viewBox={`0 0 ${size} ${size}`} className="w-6 h-6">
+        <rect
+          x={4}
+          y={4}
+          width={16}
+          height={16}
+          fill={fill}
+          stroke={stroke}
+          strokeWidth={strokeWidth}
+          rx={1}
+        />
+      </svg>
+    );
+  }
+
+  if (type === "ellipse") {
+    return (
+      <svg width={size} height={size} viewBox={`0 0 ${size} ${size}`} className="w-6 h-6">
+        <ellipse
+          cx={center}
+          cy={center}
+          rx={8}
+          ry={6}
+          fill={fill}
+          stroke={stroke}
+          strokeWidth={strokeWidth}
+        />
+      </svg>
+    );
+  }
+
+  if (type === "triangle") {
+    return (
+      <svg width={size} height={size} viewBox={`0 0 ${size} ${size}`} className="w-6 h-6">
+        <polygon
+          points={`${center},4 ${size - 4},${size - 4} 4,${size - 4}`}
+          fill={fill}
+          stroke={stroke}
+          strokeWidth={strokeWidth}
+        />
+      </svg>
+    );
+  }
+
+  if (type === "polygon") {
+    // Hexágono
+    const points: string[] = [];
+    const radius = 7;
+    for (let i = 0; i < 6; i++) {
+      const angle = (Math.PI / 3) * i - Math.PI / 2;
+      const x = center + radius * Math.cos(angle);
+      const y = center + radius * Math.sin(angle);
+      points.push(`${x},${y}`);
+    }
+    return (
+      <svg width={size} height={size} viewBox={`0 0 ${size} ${size}`} className="w-6 h-6">
+        <polygon
+          points={points.join(" ")}
+          fill={fill}
+          stroke={stroke}
+          strokeWidth={strokeWidth}
+        />
+      </svg>
+    );
+  }
+
+  if (type === "star") {
+    const points: string[] = [];
+    const outerRadius = 8;
+    const innerRadius = 4;
+    for (let i = 0; i < 10; i++) {
+      const angle = -Math.PI / 2 + i * (Math.PI / 5);
+      const r = i % 2 === 0 ? outerRadius : innerRadius;
+      const x = center + r * Math.cos(angle);
+      const y = center + r * Math.sin(angle);
+      points.push(`${x},${y}`);
+    }
+    return (
+      <svg width={size} height={size} viewBox={`0 0 ${size} ${size}`} className="w-6 h-6">
+        <polygon
+          points={points.join(" ")}
+          fill={fill}
+          stroke={stroke}
+          strokeWidth={strokeWidth}
+        />
+      </svg>
+    );
+  }
+
+  return null;
+};
+
 interface ExpandableSidebarProps {
   // dados do projeto
   projectId?: string | null;
@@ -77,7 +189,7 @@ interface ExpandableSidebarProps {
   setStrokeWidth: (n: number) => void;
   opacity: number;
   setOpacity: (n: number) => void;
-  addShape: (shape: "rect" | "ellipse" | "triangle" | "polygon") => void;
+  addShape: (shape: "rect" | "ellipse" | "triangle" | "polygon" | "star", style?: { fillEnabled?: boolean; fillColor?: string; strokeColor?: string; strokeWidth?: number; opacity?: number }) => void;
   is2DActive: boolean;
 
   // Upload -> inserir imagem no canvas
@@ -374,7 +486,7 @@ function BrushSectionAccordion(props: {
   setStrokeWidth: (n: number) => void;
   opacity: number;
   setOpacity: (n: number) => void;
-  addShape: (shape: "rect" | "ellipse" | "triangle" | "polygon") => void;
+  addShape: (shape: "rect" | "ellipse" | "triangle" | "polygon", style?: { fillEnabled?: boolean; fillColor?: string; strokeColor?: string; strokeWidth?: number; opacity?: number }) => void;
   onImageInsert?: (src: string, opts?: { x?: number; y?: number; scale?: number; meta?: Record<string, unknown> }) => void;
   addText?: (value?: string) => void;
   applyTextStyle?: (patch: any) => void;
@@ -532,14 +644,15 @@ function BrushSectionAccordion(props: {
       type: "shape" | "blob";
       name: string;
       keywords: string[];
-      shapeKind?: "rect" | "ellipse" | "triangle" | "polygon";
+      shapeKind?: "rect" | "ellipse" | "triangle" | "polygon" | "star";
       blobSeed?: number;
     }> = [
       // Formas geométricas
-      { id: "shape-rect", type: "shape", name: "Retângulo", keywords: ["retângulo", "quadrado", "retangulo", "square", "rectangle"], shapeKind: "rect" },
+      { id: "shape-rect", type: "shape", name: "Quadrado", keywords: ["quadrado", "square"], shapeKind: "rect" },
       { id: "shape-ellipse", type: "shape", name: "Círculo", keywords: ["círculo", "circulo", "elipse", "ellipse", "circle"], shapeKind: "ellipse" },
       { id: "shape-triangle", type: "shape", name: "Triângulo", keywords: ["triângulo", "triangulo", "triangle"], shapeKind: "triangle" },
       { id: "shape-polygon", type: "shape", name: "Polígono", keywords: ["polígono", "poligono", "hexágono", "hexagono", "polygon", "hexagon"], shapeKind: "polygon" },
+      { id: "shape-star", type: "shape", name: "Estrela", keywords: ["estrela", "star"], shapeKind: "star" },
       // Blobs orgânicos
       ...Array.from({ length: 24 }).map((_, i) => ({
         id: `blob-${i}`,
@@ -657,8 +770,16 @@ function BrushSectionAccordion(props: {
       icon={<Shapes className="w-4 h-4" />} 
       open={openKey === "formas" || openKey === "blobs"} 
       onToggle={() => {
-        const targetKey = (openKey === "formas" || openKey === "blobs") ? null : "formas";
-        toggle(targetKey as SubKey);
+        if (openKey === "formas" || openKey === "blobs") {
+          toggle("formas");
+          const t = window.setTimeout(() => {
+            setOpenKey(null);
+            setEnabledKey(null);
+            window.clearTimeout(t);
+          }, 0);
+        } else {
+          toggle("formas");
+        }
       }}
     >
       {/* Barra de pesquisa com botão de filtros */}
@@ -769,15 +890,8 @@ function BrushSectionAccordion(props: {
               const isEnabled = is2DActive && (enabledKey === "formas" || enabledKey === "blobs");
               
               if (item.type === "shape") {
-                const IconComponent = 
-                  item.shapeKind === "rect" ? Square :
-                  item.shapeKind === "ellipse" ? Circle :
-                  item.shapeKind === "triangle" ? Triangle :
-                  Hexagon;
-
                 const fillColorValue = shapeFillEnabled ? (fillColor || strokeColor || "#000000") : "none";
                 const strokeColorValue = strokeColor || "#000000";
-                const strokeWidthValue = shapeFillEnabled ? 0 : 2;
 
                 return (
                   <button
@@ -799,17 +913,14 @@ function BrushSectionAccordion(props: {
                     aria-label={item.name}
                     title={item.name}
                   >
-                    <IconComponent 
-                      className="w-6 h-6" 
-                      fill={fillColorValue}
-                      stroke={strokeColorValue}
-                      strokeWidth={strokeWidthValue}
-                      style={{
-                        fill: fillColorValue !== "none" ? fillColorValue : undefined,
-                        stroke: strokeColorValue,
-                        strokeWidth: strokeWidthValue,
-                      }}
-                    />
+                    {item.shapeKind && (
+                      <ShapeIcon
+                        type={item.shapeKind}
+                        fillColor={fillColorValue}
+                        strokeColor={strokeColorValue}
+                        fillEnabled={shapeFillEnabled}
+                      />
+                    )}
                   </button>
                 );
               } else {

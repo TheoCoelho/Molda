@@ -162,7 +162,10 @@ export default function DecalEngineHost({
       const api = apiRef.current;
       if (api) {
         prevExternalIdsRef.current.forEach((id) => api.removeExternalDecal(id));
-        api.destroy?.();
+        if (typeof api.destroy === "function") {
+          console.log("[DecalEngineHost] Chamando destroy do engine 3D");
+          api.destroy();
+        }
       }
       prevExternalIdsRef.current = new Set();
       apiRef.current = null;

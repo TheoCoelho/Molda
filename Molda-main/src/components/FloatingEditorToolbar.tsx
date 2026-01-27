@@ -483,8 +483,8 @@ export default function FloatingEditorToolbar({
             </div>
           )}
 
-          {/* 3) Largura - só aparece para lápis (brush), linhas (line/curve) ou quando não há forma selecionada (gizmo) */}
-          {(tool === "brush" || tool === "line" || tool === "curve" || (tool === "select" && selectionKind !== "other")) && (
+          {/* 3) Largura - aparece para lápis, linhas/curvas e ao selecionar formas */}
+          {(tool === "brush" || tool === "line" || tool === "curve" || (tool === "select" && selectionKind !== "image")) && (
             <div className="h-9 min-w-[220px] px-3 flex items-center gap-2 bg-white/30 dark:bg-neutral-900/60 backdrop-blur-md border border-white/20 dark:border-black/20 shadow rounded-xl">
               <div className="flex flex-col gap-0.5 opacity-60">
                 <Minus className="h-2 w-3" strokeWidth={1} />

@@ -13,7 +13,7 @@ import { applyGizmoThemeToFabric, DEFAULT_GIZMO_THEME } from "../../../gizmo-the
 // Tipos alinhados com ExpandableSidebar
 export type Tool = "select" | "brush" | "line" | "curve" | "text" | "stamp";
 export type BrushVariant = "pencil" | "spray" | "marker" | "calligraphy" | "eraser";
-export type ShapeKind = "rect" | "triangle" | "ellipse" | "polygon";
+export type ShapeKind = "rect" | "triangle" | "ellipse" | "polygon" | "star";
 
 type LinePoint = { x: number; y: number };
 type LineMeta = {
@@ -7513,6 +7513,103 @@ const Editor2D = forwardRef<Editor2DHandle, Props>(function Editor2D(
     return distanceBetween(anchor, handle) > 0.75;
   };
 
+  // ==== Polygon vertex controls ====
+  const syncPolygonVertexControls = (target: any) => {
+    const fabric = fabricRef.current;
+    if (!fabric || !target) return;
+    const pts: Array<{ x: number; y: number }> | undefined = target.points;
+    if (!Array.isArray(pts) || pts.length < 3) return;
+
+    const { Control, Point } = fabric;
+
+    const drawCircle = (
+      ctx: CanvasRenderingContext2D,
+      left: number,
+      top: number,
+      radius: number,
+      fill: string,
+      stroke: string
+    ) => {
+      ctx.save();
+      ctx.beginPath();
+      ctx.arc(left, top, radius, 0, Math.PI * 2);
+      ctx.fillStyle = fill;
+      ctx.strokeStyle = stroke;
+      ctx.lineWidth = 1.1;
+      ctx.fill();
+      ctx.stroke();
+      ctx.restore();
+    };
+
+    const makePositionHandler = (index: number) =>
+      function positionHandler(_dim: any, finalMatrix: number[], controlTarget: any) {
+        const p = controlTarget.points[index];
+        return fabric.util.transformPoint(new Point(p.x, p.y), finalMatrix);
+      };
+
+    const createVertexControl = (index: number) =>
+      new Control({
+        cursorStyle: "crosshair",
+        actionName: `polygon-vertex-${index}`,
+        positionHandler: makePositionHandler(index),
+        render: (
+          ctx: CanvasRenderingContext2D,
+          left: number,
+          top: number,
+          _styleOverride: any,
+          _controlTarget: any
+        ) => {
+          drawCircle(ctx, left, top, GIZMO_THEME.handleRadius, GIZMO_THEME.primary, GIZMO_THEME.stroke);
+        },
+        actionHandler: (eventData: any, transform: any) => {
+          const controlTarget = transform.target as any;
+          const canvas = controlTarget?.canvas;
+          if (!controlTarget || !canvas) return false;
+          const pointerWorld = canvas.getPointer(eventData.e, false);
+          const inv = fabric.util.invertTransform(controlTarget.calcTransformMatrix());
+          const localPt = fabric.util.transformPoint(new Point(pointerWorld.x, pointerWorld.y), inv);
+          const nextPoints = controlTarget.points.slice();
+          nextPoints[index] = { x: localPt.x, y: localPt.y };
+          controlTarget.points = nextPoints;
+          controlTarget.dirty = true;
+          try { controlTarget.setCoords?.(); } catch {}
+          try { canvas.requestRenderAll?.(); } catch {}
+          transform.actionPerformed = true;
+          return true;
+        },
+      });
+
+    const controls: Record<string, any> = {};
+    pts.forEach((_p, i) => {
+      controls[`polygon_v_${i}`] = createVertexControl(i);
+    });
+
+    target.controls = controls;
+    target.hasBorders = false;
+    target.transparentCorners = true;
+    target.cornerStyle = "circle";
+    target.cornerColor = GIZMO_THEME.primary;
+    target.cornerStrokeColor = GIZMO_THEME.stroke;
+    target.lockScalingFlip = true;
+    target.objectCaching = false;
+  };
+
+  const applyDefaultPolygonControls = (target: any) => {
+    const fabric = fabricRef.current as any;
+    if (!fabric || !target) return;
+    target.controls = fabric.Object.prototype.controls;
+    target.hasBorders = true;
+    target.transparentCorners = false;
+    target.cornerStyle = "circle";
+    target.cornerColor = GIZMO_THEME.primary;
+    target.cornerStrokeColor = GIZMO_THEME.stroke;
+    target.lockScalingX = false;
+    target.lockScalingY = false;
+    target.lockScalingFlip = false;
+    target.lockRotation = false;
+    try { target.setCoords?.(); } catch {}
+  };
+
   const syncCurveControls = (target: any, meta: CurveMeta) => {
     const fabric = fabricRef.current;
     if (!fabric || !target) return;
@@ -8118,8 +8215,9 @@ const Editor2D = forwardRef<Editor2DHandle, Props>(function Editor2D(
     if (!c || !fabric) return;
 
     const useFill = style?.fillEnabled !== undefined ? style.fillEnabled : true;
-    const finalFillColor = useFill ? (style?.fillColor ?? fillColor) : null;
     const finalStrokeColor = style?.strokeColor ?? strokeColor;
+    const finalFillColor = useFill ? finalStrokeColor : null;
+    
     const finalStrokeWidth = style?.strokeWidth ?? strokeWidth;
     const finalOpacity = style?.opacity ?? opacity;
 
@@ -8130,31 +8228,39 @@ const Editor2D = forwardRef<Editor2DHandle, Props>(function Editor2D(
         left: 80,
         top: 60,
         width: 180,
-        height: 120,
+        height: 180,
         fill: finalFillColor || "transparent",
         stroke: finalStrokeColor,
         strokeWidth: finalStrokeWidth,
         opacity: finalOpacity,
         erasable: true,
+        lockUniScaling: true,
       });
     } else if (shape === "ellipse") {
-      obj = new fabric.Ellipse({
+      obj = new fabric.Circle({
         left: 80,
         top: 60,
-        rx: 90,
-        ry: 60,
+        radius: 90,
         fill: finalFillColor || "transparent",
         stroke: finalStrokeColor,
         strokeWidth: finalStrokeWidth,
         opacity: finalOpacity,
         erasable: true,
+        lockUniScaling: true,
       });
     } else if (shape === "triangle") {
-      obj = new fabric.Triangle({
-        left: 80,
-        top: 60,
-        width: 180,
-        height: 120,
+      const points: Array<{ x: number; y: number }> = [];
+      const centerX = 80 + 90;
+      const centerY = 60 + 60;
+      const radius = 80;
+      for (let i = 0; i < 3; i++) {
+        const angle = (Math.PI * 2 / 3) * i - Math.PI / 2;
+        points.push({
+          x: centerX + radius * Math.cos(angle),
+          y: centerY + radius * Math.sin(angle),
+        });
+      }
+      obj = new fabric.Polygon(points, {
         fill: finalFillColor || "transparent",
         stroke: finalStrokeColor,
         strokeWidth: finalStrokeWidth,
@@ -8181,12 +8287,35 @@ const Editor2D = forwardRef<Editor2DHandle, Props>(function Editor2D(
         opacity: finalOpacity,
         erasable: true,
       });
+    } else if (shape === "star") {
+      const points: Array<{ x: number; y: number }> = [];
+      const centerX = 80 + 90;
+      const centerY = 60 + 60;
+      const outerRadius = 70;
+      const innerRadius = 32;
+      const steps = 10; // 5-point star -> 10 vertices alternating radii
+      for (let i = 0; i < steps; i++) {
+        const angle = -Math.PI / 2 + i * (Math.PI / 5);
+        const r = i % 2 === 0 ? outerRadius : innerRadius;
+        points.push({ x: centerX + r * Math.cos(angle), y: centerY + r * Math.sin(angle) });
+      }
+      obj = new fabric.Polygon(points, {
+        fill: finalFillColor || "transparent",
+        stroke: finalStrokeColor,
+        strokeWidth: finalStrokeWidth,
+        opacity: finalOpacity,
+        erasable: true,
+      });
     }
 
     if (obj) {
       c.add(obj);
       c.setActiveObject(obj);
       c.renderAll();
+      if (String(obj.type || "").toLowerCase() === "polygon") {
+        (obj as any).__vertexMode = false;
+        try { applyDefaultPolygonControls(obj); } catch {}
+      }
       historyRef.current?.push(`add-shape-${shape}`);
       emitHistory();
     }
@@ -10776,8 +10905,23 @@ const Editor2D = forwardRef<Editor2DHandle, Props>(function Editor2D(
 
     c.on("object:added", __onAdded);
     c.on("object:removed", __onRemoved);
-    c.on("object:modified", __onModified);
-    c.on("object:modified", __onModifiedSyncControls);
+      c.on("object:modified", __onModified);
+      c.on("object:modified", __onModifiedSyncControls);
+        const __onSelectedSyncPolygon = (ev: any) => {
+          try {
+            const t = String(ev?.target?.type || "").toLowerCase();
+            if (t === "polygon") {
+              const trg = ev.target as any;
+              if (trg.__vertexMode) {
+                syncPolygonVertexControls(trg);
+              } else {
+                applyDefaultPolygonControls(trg);
+              }
+            }
+          } catch {}
+        };
+        c.on("object:selected", __onSelectedSyncPolygon);
+        c.on("selection:updated", __onSelectedSyncPolygon);
         c.on("object:selected", notifySelectionKind);
         c.on("selection:created", notifySelectionKind);
         c.on("selection:updated", notifySelectionKind);
@@ -10789,6 +10933,24 @@ const Editor2D = forwardRef<Editor2DHandle, Props>(function Editor2D(
         c.on("object:rotating", __onRotating);
         c.on("object:scaling", __onScaling);
         c.on("mouse:wheel", __onWheelScale);
+
+        const __onDoubleClick = (ev: any) => {
+          try {
+            const trg = ev?.target as any;
+            const t = String(trg?.type || "").toLowerCase();
+            if (t === "polygon" && trg) {
+              trg.__vertexMode = !trg.__vertexMode;
+              if (trg.__vertexMode) {
+                syncPolygonVertexControls(trg);
+              } else {
+                applyDefaultPolygonControls(trg);
+              }
+              try { c.setActiveObject?.(trg); } catch {}
+              try { c.requestRenderAll?.(); } catch {}
+            }
+          } catch {}
+        };
+        c.on("mouse:dblclick", __onDoubleClick);
 
         setCanvasReady(true);
         console.log("[Editor2D] Canvas ready set to true");
