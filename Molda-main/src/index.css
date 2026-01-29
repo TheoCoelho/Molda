@@ -141,7 +141,7 @@ body::before {
   will-change: transform;
 }
 .lcar-card {
-  background: hsl(var(--card));
+  background: color-mix(in srgb, hsl(var(--foreground)) 18%, hsl(var(--background)));
   border: 1px solid hsl(var(--border));
   border-radius: 16px;
   min-width: 128px;
@@ -580,4 +580,196 @@ body::before { display: none !important; }
 
 .line-mode-checkbox:active ~ .line-mode-slider::before {
   transform: translateX(0);
+}
+
+/* =========================================================
+   Create Wizard
+   ========================================================= */
+
+.wizard-step {
+  animation: wizard-in 0.35s ease both;
+}
+@keyframes wizard-in {
+  from {
+    opacity: 0;
+    transform: translateY(12px) scale(0.98);
+  }
+  to {
+    opacity: 1;
+    transform: translateY(0) scale(1);
+  }
+}
+.wizard-step__title {
+  font-size: 1.2rem;
+  font-weight: 700;
+  margin-bottom: 16px;
+  color: hsl(var(--foreground));
+}
+
+.wizard-cards-grid {
+  display: grid;
+  gap: 20px;
+  grid-template-columns: repeat(auto-fit, minmax(220px, 1fr));
+}
+.wizard-cards-grid--wide {
+  max-width: 1100px;
+  margin: 0 auto;
+}
+
+.wizard-card {
+  text-align: left;
+  border-radius: 18px;
+  border: 1px solid hsl(var(--border));
+  padding: 18px;
+  background: color-mix(in srgb, hsl(var(--foreground)) 18%, hsl(var(--background)));
+  box-shadow: 0 12px 24px -18px hsl(var(--foreground) / 0.25);
+  cursor: pointer;
+  aspect-ratio: 1 / 1;
+  min-height: 240px;
+  transition: transform 0.2s ease, box-shadow 0.2s ease, border-color 0.2s ease;
+  display: flex;
+  flex-direction: column;
+  gap: 12px;
+}
+.wizard-card:hover {
+  transform: translateY(-2px);
+  box-shadow: 0 16px 32px -20px hsl(var(--foreground) / 0.25);
+  border-color: hsl(var(--brand-blue));
+}
+.wizard-card:focus-visible {
+  outline: 2px solid hsl(var(--brand-blue));
+  outline-offset: 2px;
+}
+.wizard-card.is-selected {
+  border-color: hsl(var(--brand-blue));
+  box-shadow: 0 18px 36px -22px hsl(var(--brand-blue) / 0.45);
+}
+.wizard-card__header {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+}
+.wizard-card__title {
+  font-size: 1.05rem;
+  font-weight: 700;
+  color: hsl(var(--foreground));
+}
+.wizard-card__badge {
+  width: 34px;
+  height: 34px;
+  border-radius: 12px;
+  background: linear-gradient(135deg, hsl(var(--brand-uv)), hsl(var(--brand-blue)));
+  border: 1px solid hsl(var(--border));
+}
+.wizard-card__desc {
+  font-size: 0.9rem;
+  color: hsl(var(--muted-foreground));
+  margin-top: auto;
+  opacity: 0;
+  transform: translateY(6px);
+  transition: opacity 0.2s ease, transform 0.2s ease;
+}
+.wizard-card:hover .wizard-card__desc,
+.wizard-card:focus-visible .wizard-card__desc,
+.wizard-card.is-selected .wizard-card__desc {
+  opacity: 1;
+  transform: translateY(0);
+}
+.wizard-card__cta {
+  display: flex;
+  justify-content: flex-start;
+}
+.wizard-card__hint {
+  font-size: 0.8rem;
+  font-weight: 700;
+  color: hsl(var(--brand-blue));
+  text-transform: uppercase;
+  letter-spacing: 0.08em;
+}
+
+.wizard-card--expand .wizard-card__details {
+  max-height: 0;
+  opacity: 0;
+  overflow: hidden;
+  transition: max-height 0.25s ease, opacity 0.25s ease;
+}
+.wizard-card--expand[data-expanded="true"] .wizard-card__details {
+  max-height: 160px;
+  opacity: 1;
+}
+.wizard-card--expand[data-expanded="true"] {
+  aspect-ratio: auto;
+  min-height: 320px;
+}
+.wizard-card__detail-text {
+  font-size: 0.85rem;
+  color: hsl(var(--muted-foreground));
+  margin-bottom: 10px;
+}
+.wizard-card__action {
+  align-self: flex-start;
+}
+
+.wizard-empty {
+  margin-top: 18px;
+  padding: 16px;
+  border-radius: 14px;
+  font-size: 0.9rem;
+  color: hsl(var(--muted-foreground));
+}
+
+.wizard-static-grid {
+  display: grid;
+  gap: var(--gap, 24px);
+  grid-template-columns: repeat(3, minmax(0, 1fr));
+  max-width: calc((var(--item-size, 240px) * 3) + (var(--gap, 24px) * 2));
+  margin-inline: auto;
+}
+.wizard-static-card {
+  border-radius: 12px;
+  border: 1px solid hsl(var(--border));
+  background: color-mix(in srgb, hsl(var(--foreground)) 18%, hsl(var(--background)));
+  color: hsl(var(--foreground));
+  padding: 16px;
+  min-height: var(--item-size, 240px);
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+  align-items: flex-start;
+  justify-content: flex-start;
+  cursor: pointer;
+  transition: transform 180ms ease, box-shadow 180ms ease, border-color 180ms ease;
+}
+.wizard-static-card:hover {
+  transform: scale(1.02);
+  border-color: hsl(var(--brand-blue));
+  box-shadow: 0 12px 26px -18px rgba(0,0,0,0.35);
+}
+.wizard-static-card.is-selected {
+  border-color: hsl(var(--brand-blue));
+  box-shadow: 0 0 0 3px color-mix(in srgb, hsl(var(--brand-blue)) 22%, transparent);
+  background: hsl(var(--card));
+}
+.wizard-static-card.is-dimmed {
+  opacity: 0.4;
+  filter: saturate(0.7) brightness(0.85);
+}
+.wizard-static-card__label {
+  font-size: 1rem;
+  font-weight: 700;
+  line-height: 1.25;
+}
+.wizard-static-card__desc {
+  margin-top: auto;
+  font-size: 0.85rem;
+  color: hsl(var(--muted-foreground));
+}
+
+.mannequin-disabled canvas {
+  pointer-events: none;
+}
+.mannequin-disabled button {
+  pointer-events: none;
+  opacity: 0.6;
 }

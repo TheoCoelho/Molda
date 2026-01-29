@@ -1,5 +1,4 @@
 import { Suspense, useCallback, useEffect, useMemo, useRef, useState } from "react";
-import type { MouseEvent as ReactMouseEvent } from "react";
 import { useNavigate } from "react-router-dom";
 import Header from "@/components/Header";
 import { Button } from "@/components/ui/button";
@@ -80,6 +79,8 @@ const Create = () => {
   const [selectedPart, setSelectedPart] = useState<BodyPart | null>(null);
   const [selectedType, setSelectedType] = useState<string | null>(null);
   const [selectedSubtype, setSelectedSubtype] = useState<string | null>(null);
+  const showMannequin = false;
+  const [currentStep, setCurrentStep] = useState<1 | 2 | 3>(1);
 
   const [drafts, setDrafts] = useState<DraftRecord[]>([]);
   const [draftsLoading, setDraftsLoading] = useState(false);
@@ -362,10 +363,30 @@ const Create = () => {
   const colorize = (list: ModelItem[]) =>
     list.map((item, idx) => ({ ...item, color: item.color || PALETTE[idx % PALETTE.length] }));
 
+  const bodyPartOptions = useMemo(
+    () => [
+      { id: "head", label: "Cabeca", description: "Bones, toucas e chapeus" },
+      { id: "torso", label: "Tronco", description: "Camisetas, camisas e jaquetas" },
+      { id: "legs", label: "Pernas", description: "Calcas, shorts e bermudas" },
+    ],
+    []
+  );
+
   const typeOptions = useMemo(() => {
     if (!selectedPart) return [];
     return colorize(clothingTypes[selectedPart] || []);
   }, [selectedPart]);
+
+  const typeCarouselItems = useMemo(
+    () =>
+      typeOptions.map((item) => ({
+        id: item.name,
+        label: item.name,
+        color: item.color,
+        description: "Passe o mouse para ver detalhes desta peca.",
+      })),
+    [typeOptions]
+  );
 
   const subtypeOptions = useMemo(() => {
     if (!selectedType) return [];
@@ -373,9 +394,120 @@ const Create = () => {
     return colorize(list);
   }, [selectedType]);
 
+  const subtypeCarouselItems = useMemo(
+    () =>
+      subtypeOptions.map((item) => ({
+        id: item.name,
+        label: item.name,
+        color: item.color,
+        description: "Variacoes e ajustes disponiveis para este modelo.",
+      })),
+    [subtypeOptions]
+  );
+
   const requiresSubtype = selectedType ? (specificModels[selectedType]?.length ?? 0) > 0 : false;
   const canContinue =
     !!selectedPart && !!selectedType && (requiresSubtype ? !!selectedSubtype : true);
+
+  const totalSteps = requiresSubtype ? 3 : 2;
+  const progressPercent = Math.round((currentStep / totalSteps) * 100);
+
+  useEffect(() => {
+    if (!requiresSubtype && currentStep === 3) {
+      setCurrentStep(2);
+    }
+  }, [currentStep, requiresSubtype]);
+
+  const handleSelectPart = (part: BodyPart) => {
+    setSelected(part);
+    setSelectedPart(part);
+    setSelectedType(null);
+    setSelectedSubtype(null);
+  };
+
+  const handleSelectType = (typeName: string) => {
+    setSelectedType(typeName);
+    setSelectedSubtype(null);
+    const needsSubtype = (specificModels[typeName]?.length ?? 0) > 0;
+    if (needsSubtype) {
+      setCurrentStep(3);
+    }
+  };
+
+  const handleSelectSubtype = (subtypeName: string) => {
+    setSelectedSubtype(subtypeName);
+  };
+
+  const CARD_SIZE = 300;
+  const CARD_GAP = 24;
+  const STATIC_CARD_SIZE = 320;
+  const STATIC_CARD_GAP = 24;
+
+  const renderStaticCards = (
+    items: { id: string; label: string; description?: string }[],
+    selectedId: string | null,
+    onSelect: (id: string) => void
+  ) => (
+    <div
+      className="wizard-static-grid"
+      style={{
+        ["--item-size" as any]: `${STATIC_CARD_SIZE}px`,
+        ["--gap" as any]: `${STATIC_CARD_GAP}px`,
+      }}
+    >
+      {items.map((item) => (
+        <button
+          key={item.id}
+          type="button"
+          className={cn(
+            "wizard-static-card",
+            selectedId === item.id ? "is-selected" : undefined,
+            selectedId && selectedId !== item.id ? "is-dimmed" : undefined
+          )}
+          onClick={() => (selectedId === item.id ? handleStepContinue() : onSelect(item.id))}
+        >
+          <span className="wizard-static-card__label">{item.label}</span>
+          {item.description && <span className="wizard-static-card__desc">{item.description}</span>}
+        </button>
+      ))}
+    </div>
+  );
+
+  const handleStepContinue = () => {
+    if (currentStep === 1) {
+      if (!selectedPart) return;
+      setCurrentStep(2);
+      return;
+    }
+    if (currentStep === 2) {
+      if (!selectedType) return;
+      if (requiresSubtype) {
+        setCurrentStep(3);
+        return;
+      }
+      handleContinue();
+      return;
+    }
+    if (currentStep === 3) {
+      if (!requiresSubtype || selectedSubtype) {
+        handleContinue();
+      }
+    }
+  };
+
+  const handleStepBack = () => {
+    if (currentStep === 1) {
+      navigate(-1);
+      return;
+    }
+    if (currentStep === 2) {
+      setCurrentStep(1);
+      return;
+    }
+    if (currentStep === 3) {
+      setCurrentStep(2);
+    }
+  };
 
   const handleContinue = () => {
     if (!canContinue) return;
@@ -414,80 +546,92 @@ const Create = () => {
             </TabsList>
 
             <TabsContent value="create" className="mt-6">
-              <div className="text-base md:text-lg font-semibold text-slate-800 pl-3 border-l-4 border-indigo-400 w-fit">
-                Selecione o local da peça desejada
-              </div>
-
-              {/* GRID: em telas grandes vira 2 colunas (boneco fixo à esquerda) */}
-              <div className="mt-3 grid w-full grid-cols-1 items-start gap-10 lg:grid-cols-[360px,1fr]">
-                {/* ESQUERDA: boneco (sticky em lg+) */}
-                <aside className="lg:sticky lg:top-24">
-                  <Mannequin3D
-                    selected={selected}
-                    setSelected={setSelected}
-                    setSelectedPart={(p: BodyPart) => {
-                      setSelectedPart(p);
-                      setSelectedType(null);
-                      setSelectedSubtype(null);
-                    }}
-                  />
-                </aside>
-
-                {/* DIREITA: carrosséis lineares */}
-                <section className="w-full">
-                  {/* Tipos */}
-                  {selectedPart ? (
-                    <div className="md:min-h-[260px]">
-                      <h2 className="mb-3 text-lg font-medium">Tipo de peça</h2>
-                      <div className="flex w-full justify-center">
+              <div key={`step-${currentStep}`} className="wizard-step mt-8">
+                {currentStep === 1 && (
+                  <div>
+                    {showMannequin && (
+                      <div className="mb-8">
+                        <Mannequin3D
+                          selected={selected}
+                          setSelected={setSelected}
+                          setSelectedPart={handleSelectPart}
+                          disableInteraction={true}
+                        />
+                      </div>
+                    )}
+                    <div className="wizard-step__title">Escolha a parte do corpo</div>
+                    {bodyPartOptions.length <= 3
+                      ? renderStaticCards(bodyPartOptions, selectedPart, (id) =>
+                          handleSelectPart(id as BodyPart)
+                        )
+                      : (
                         <LinearInfiniteCarousel
-                          className="w-full"
-                          items={typeOptions.map((it) => ({ id: it.name, label: it.name }))}
+                          className="wizard-carousel"
+                          items={bodyPartOptions}
+                          selectedId={selectedPart}
+                          onSelect={(id: string) => handleSelectPart(id as BodyPart)}
+                          cardSize={CARD_SIZE}
+                          cardGapPx={CARD_GAP}
+                        />
+                      )}
+                  </div>
+                )}
+
+                {currentStep === 2 && (
+                  <div>
+                    <div className="wizard-step__title">Escolha o tipo de peca</div>
+                    {typeCarouselItems.length <= 3
+                      ? renderStaticCards(typeCarouselItems, selectedType, (id) => handleSelectType(id))
+                      : (
+                        <LinearInfiniteCarousel
+                          className="wizard-carousel"
+                          items={typeCarouselItems}
                           selectedId={selectedType}
-                          onSelect={(id: string | null) => {
-                            setSelectedType(id);
-                            if (!id) setSelectedSubtype(null);
-                          }}
-                          cardSize={128}
-                          cardGapPx={20}
-                          dragSensitivity={1}
-                          scaleAmplitude={0.2}
-                          sigmaSteps={1.2}
+                          onSelect={(id: string) => handleSelectType(id)}
+                          cardSize={CARD_SIZE}
+                          cardGapPx={CARD_GAP}
                         />
+                      )}
+                    {!selectedPart && (
+                      <div className="wizard-empty glass">
+                        Selecione uma parte do corpo antes de escolher o tipo de peca.
                       </div>
-                    </div>
-                  ) : (
-                    <div />
-                  )}
+                    )}
+                  </div>
+                )}
 
-                  {/* Subtipo */}
-                  {selectedType && subtypeOptions.length > 0 && (
-                    <div className="mt-10 md:min-h-[260px]">
-                      <h2 className="mb-3 text-lg font-medium">Modelo específico</h2>
-                      <div className="flex w-full justify-center">
+                {currentStep === 3 && (
+                  <div>
+                    <div className="wizard-step__title">Escolha a especificacao</div>
+                    {subtypeCarouselItems.length <= 3
+                      ? renderStaticCards(subtypeCarouselItems, selectedSubtype, (id) => handleSelectSubtype(id))
+                      : (
                         <LinearInfiniteCarousel
-                          className="w-full"
-                          items={subtypeOptions.map((it) => ({ id: it.name, label: it.name }))}
+                          className="wizard-carousel"
+                          items={subtypeCarouselItems}
                           selectedId={selectedSubtype}
-                          onSelect={(id: string | null) => setSelectedSubtype(id)}
-                          cardSize={128}
-                          cardGapPx={20}
-                          dragSensitivity={1}
-                          scaleAmplitude={0.2}
-                          sigmaSteps={1.2}
+                          onSelect={(id: string) => handleSelectSubtype(id)}
+                          cardSize={CARD_SIZE}
+                          cardGapPx={CARD_GAP}
                         />
-                      </div>
-                    </div>
-                  )}
-                </section>
+                      )}
+                  </div>
+                )}
               </div>
 
-              {/* Rodapé de ações */}
-              <div className="mt-12 flex items-center gap-3">
-                <Button variant="outline" className="px-6" onClick={() => navigate(-1)}>
+              <div className="mt-12 flex flex-wrap items-center gap-3">
+                <Button variant="outline" className="px-6" onClick={handleStepBack}>
                   Voltar
                 </Button>
-                <Button className="px-6" disabled={!canContinue} onClick={handleContinue}>
+                <Button
+                  className="px-6"
+                  disabled={
+                    (currentStep === 1 && !selectedPart) ||
+                    (currentStep === 2 && !selectedType) ||
+                    (currentStep === 3 && requiresSubtype && !selectedSubtype)
+                  }
+                  onClick={handleStepContinue}
+                >
                   Continuar
                 </Button>
               </div>
@@ -627,19 +771,22 @@ function Mannequin3D({
   selected,
   setSelected,
   setSelectedPart,
+  disableInteraction = false,
 }: {
   selected: BodyPart | null;
   setSelected: (b: BodyPart | null) => void;
   setSelectedPart: (b: BodyPart) => void;
+  disableInteraction?: boolean;
 }) {
   const [hovered, setHovered] = useState<BodyPart | null>(null);
 
   const handleSelect = useCallback(
     (part: BodyPart) => {
+      if (disableInteraction) return;
       setSelected(part);
       setSelectedPart(part);
     },
-    [setSelected, setSelectedPart]
+    [disableInteraction, setSelected, setSelectedPart]
   );
 
   const overlaySectionClass = useCallback(
@@ -657,7 +804,7 @@ function Mannequin3D({
   );
 
   return (
-    <div className="pl-1">
+    <div className={cn("pl-1", disableInteraction ? "mannequin-disabled" : undefined)}>
       <div className="relative mx-auto w-full max-w-[420px]" style={{ height: "560px" }}>
         <Canvas
           camera={{ position: [0, 0.35, 2.2], fov: 36 }}
@@ -709,9 +856,11 @@ function Mannequin3D({
       <div className="mt-4 flex justify-center gap-4 text-xs font-semibold uppercase tracking-[0.18em] text-slate-500">
         <button
           type="button"
+          disabled={disableInteraction}
+          aria-disabled={disableInteraction}
           onClick={() => handleSelect("head")}
-          onMouseEnter={() => setHovered("head")}
-          onMouseLeave={() => setHovered(null)}
+          onMouseEnter={() => (disableInteraction ? undefined : setHovered("head"))}
+          onMouseLeave={() => (disableInteraction ? undefined : setHovered(null))}
           className={cn(
             "transition-colors hover:text-slate-200",
             selected === "head" ? "text-indigo-300" : undefined
@@ -721,9 +870,11 @@ function Mannequin3D({
         </button>
         <button
           type="button"
+          disabled={disableInteraction}
+          aria-disabled={disableInteraction}
           onClick={() => handleSelect("torso")}
-          onMouseEnter={() => setHovered("torso")}
-          onMouseLeave={() => setHovered(null)}
+          onMouseEnter={() => (disableInteraction ? undefined : setHovered("torso"))}
+          onMouseLeave={() => (disableInteraction ? undefined : setHovered(null))}
           className={cn(
             "transition-colors hover:text-slate-200",
             selected === "torso" ? "text-indigo-300" : undefined
@@ -733,9 +884,11 @@ function Mannequin3D({
         </button>
         <button
           type="button"
+          disabled={disableInteraction}
+          aria-disabled={disableInteraction}
           onClick={() => handleSelect("legs")}
-          onMouseEnter={() => setHovered("legs")}
-          onMouseLeave={() => setHovered(null)}
+          onMouseEnter={() => (disableInteraction ? undefined : setHovered("legs"))}
+          onMouseLeave={() => (disableInteraction ? undefined : setHovered(null))}
           className={cn(
             "transition-colors hover:text-slate-200",
             selected === "legs" ? "text-indigo-300" : undefined

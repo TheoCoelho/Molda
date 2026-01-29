@@ -1,26 +1,20 @@
-/* Viewport mantém overflow horizontal escondido, mas permite overflow vertical
-   para que o scale() no hover/selecionado não seja cortado. */
+/* Viewport mantem overflow horizontal escondido, mas permite overflow vertical
+   para que o scale() no hover/selecionado nao seja cortado. */
 .marquee-viewport {
   position: relative;
   width: 100%;
-  /* antes: overflow: hidden; */
-  overflow-x: hidden;
-  overflow-y: visible;
+  overflow: hidden;
   outline: none;
-
-  /* respiro vertical para não encostar no container ao ampliar */
   padding-block: 12px;
 }
 
-/* Trilho principal — movimento controlado via JS (sem animação CSS) */
+/* Trilho principal ? movimento controlado via JS (sem animacao CSS) */
 .marquee-track {
   display: flex;
   align-items: stretch;
   gap: var(--gap, 12px);
   will-change: transform;
   animation: none !important;
-
-  /* pequeno respiro interno opcional */
   padding-block: 2px;
 }
 
@@ -28,48 +22,86 @@
   animation: none !important;
 }
 
-/* Célula do carrossel — mantém dimensões; fundo agora é transparente */
+/* Celula do carrossel ? cards quadrados */
 .marquee-cell {
   flex: 0 0 auto;
   width: var(--item-size, 120px);
   height: var(--item-size, 120px);
   border-radius: 12px;
-  border: 2px solid var(--cell-accent, #8884d8);
-
-  /* antes: background: var(--card-bg, white); */
-  background: transparent;
-  color: var(--card-fg, inherit);
+  border: 1px solid hsl(var(--border));
+  background: color-mix(in srgb, hsl(var(--foreground)) 18%, hsl(var(--background)));
+  color: hsl(var(--foreground));
 
   display: inline-flex;
-  align-items: center;
-  justify-content: center;
-  padding: 8px;
+  align-items: flex-start;
+  justify-content: flex-start;
+  padding: 16px;
+  gap: 10px;
+  flex-direction: column;
   cursor: pointer;
-  transition: transform 120ms ease, box-shadow 120ms ease, border-color 120ms ease;
+  transition: transform 160ms ease, box-shadow 180ms ease, border-color 180ms ease, opacity 160ms ease, filter 160ms ease;
   user-select: none;
+  transform: scale(var(--center-scale, 1));
+  opacity: var(--center-opacity, 1);
+  filter: saturate(var(--center-saturate, 1)) brightness(var(--center-brightness, 1));
 }
 
 .marquee-cell:hover {
-  transform: scale(1.04);
-  box-shadow: 0 4px 14px rgba(0,0,0,0.12);
+  transform: scale(calc(var(--center-scale, 1) + 0.02));
+  box-shadow: 0 12px 26px -18px rgba(0,0,0,0.35);
+  border-color: hsl(var(--brand-blue));
 }
 
 .marquee-cell.is-selected {
-  border-color: var(--cell-accent, #8884d8);
-  box-shadow: 0 0 0 4px color-mix(in srgb, var(--cell-accent, #8884d8) 18%, transparent);
-  transform: scale(1.06);
+  border-color: hsl(var(--brand-blue));
+  box-shadow: 0 0 0 3px color-mix(in srgb, hsl(var(--brand-blue)) 22%, transparent);
+  z-index: 2;
 }
 
-/* Rótulo interno */
+.marquee-cell.is-centered {
+  background: hsl(var(--card));
+  border-color: color-mix(in srgb, hsl(var(--brand-blue)) 45%, hsl(var(--border)));
+  box-shadow: 0 10px 24px -18px rgba(0,0,0,0.35);
+}
+
+.marquee-cell.is-edge {
+  opacity: calc(var(--center-opacity, 1) * 0.9);
+}
+
+.marquee-cell.is-dimmed {
+  opacity: calc(var(--center-opacity, 1) * 0.6);
+}
+
+/* Rotulo interno */
 .marquee-cell-label {
-  font-size: 0.95rem;
-  font-weight: 600;
-  text-align: center;
-  line-height: 1.2;
+  font-size: 1rem;
+  font-weight: 700;
+  text-align: left;
+  line-height: 1.25;
   word-break: break-word;
+  margin-bottom: auto;
+}
+
+.marquee-cell-desc {
+  font-size: 0.85rem;
+  color: hsl(var(--muted-foreground));
+  opacity: 0;
+  transform: translateY(6px);
+  transition: opacity 0.2s ease, transform 0.2s ease;
+}
+.marquee-cell:hover .marquee-cell-desc,
+.marquee-cell:focus-visible .marquee-cell-desc,
+.marquee-cell.is-selected .marquee-cell-desc {
+  opacity: 1;
+  transform: translateY(0);
 }
 
 /* Acessibilidade: foco via teclado */
 .marquee-viewport:focus .marquee-cell.is-selected {
   box-shadow: 0 0 0 4px color-mix(in srgb, var(--cell-accent, #8884d8) 28%, transparent);
+}
+
+.wizard-carousel {
+  width: min(100%, calc((var(--item-size, 120px) * 3) + (var(--gap, 12px) * 2)));
+  margin-inline: auto;
 }

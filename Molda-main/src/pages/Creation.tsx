@@ -484,14 +484,7 @@ const Creation = () => {
       try {
         const stored = localStorage.getItem("currentProject");
         if (!stored) return;
-        let parsed = null;
-        try {
-          parsed = JSON.parse(stored);
-        } catch (err) {
-          console.warn("[Creation] JSON inválido em currentProject, limpando localStorage", err);
-          localStorage.removeItem("currentProject");
-          return;
-        }
+        const parsed = JSON.parse(stored);
         if (!parsed || typeof parsed !== "object") return;
         if (!draftKeyRef.current && typeof parsed.draftKey === "string") draftKeyRef.current = parsed.draftKey;
         if (!draftKeyRef.current && typeof parsed.projectKey === "string") draftKeyRef.current = parsed.projectKey;
@@ -583,14 +576,7 @@ const Creation = () => {
       try {
         const stored = localStorage.getItem("currentProject");
         if (!stored) return;
-        let project = null;
-        try {
-          project = JSON.parse(stored);
-        } catch (err) {
-          console.warn("[Creation] JSON inválido em currentProject, limpando localStorage", err);
-          localStorage.removeItem("currentProject");
-          return;
-        }
+        const project = JSON.parse(stored);
         if (!project || typeof project !== "object") return;
 
         if (typeof project.draftKey === "string" && !draftKeyRef.current) draftKeyRef.current = project.draftKey;
@@ -599,7 +585,8 @@ const Creation = () => {
           if (typeof project.draftId === "string") {
             draftIdRef.current = project.draftId;
             setDraftId(project.draftId);
-          } else if (typeof project.draftId === "number") {
+          }
+          else if (typeof project.draftId === "number") {
             draftIdRef.current = String(project.draftId);
             setDraftId(String(project.draftId));
           }
@@ -912,12 +899,6 @@ const Creation = () => {
 
   const removeCanvasTab = (tabId: string) => {
     if (tabId === "3d") return;
-    setTabSnapshots((s) => {
-      const next = { ...s };
-      delete next[tabId];
-      tabSnapshotsRef.current = next;
-      return next;
-    });
     setTabDecalPreviews((prev) => {
       const next = { ...prev };
       delete next[tabId];
@@ -944,7 +925,10 @@ const Creation = () => {
     editorRefs.current[tabId] = null;
   };
 
-  const addShape = (shape: ShapeKind, style?: { fillEnabled?: boolean; fillColor?: string; strokeColor?: string; strokeWidth?: number; opacity?: number }) => {
+  const addShape = (
+    shape: ShapeKind,
+    style?: { fillEnabled?: boolean; fillColor?: string; strokeColor?: string; strokeWidth?: number; opacity?: number }
+  ) => {
     if (!activeIs2D) return;
     editorRefs.current[activeCanvasTab]?.addShape(shape, {
       strokeColor: style?.strokeColor ?? strokeColor,
