@@ -2,6 +2,7 @@ import { Suspense, useCallback, useEffect, useMemo, useRef, useState } from "rea
 import { useNavigate } from "react-router-dom";
 import Header from "@/components/Header";
 import { Button } from "@/components/ui/button";
+import { Input } from "@/components/ui/input";
 import LinearInfiniteCarousel from "@/components/LinearInfiniteCarousel";
 import { Tabs, TabsContent, TabsList, TabsTrigger } from "@/components/ui/tabs";
 import Canvas3DViewer from "@/components/Canvas3DViewer";
@@ -81,6 +82,7 @@ const Create = () => {
   const [selectedSubtype, setSelectedSubtype] = useState<string | null>(null);
   const showMannequin = false;
   const [currentStep, setCurrentStep] = useState<1 | 2 | 3>(1);
+  const [searchQuery, setSearchQuery] = useState("");
 
   const [drafts, setDrafts] = useState<DraftRecord[]>([]);
   const [draftsLoading, setDraftsLoading] = useState(false);
@@ -360,8 +362,103 @@ const Create = () => {
     Boné: [{ name: "Aba curva" }, { name: "Aba reta" }],
   };
 
+  const normalizeText = useCallback(
+    (value: string) =>
+      value
+        .toLowerCase()
+        .normalize("NFD")
+        .replace(/[\u0300-\u036f]/g, "")
+        .replace(/\s+/g, " ")
+        .trim(),
+    []
+  );
+
   const colorize = (list: ModelItem[]) =>
     list.map((item, idx) => ({ ...item, color: item.color || PALETTE[idx % PALETTE.length] }));
+
+  const typeEntries = useMemo(() => {
+    const entries: {
+      part: BodyPart;
+      type: string;
+      normalized: string;
+    }[] = [];
+    (Object.entries(clothingTypes) as [BodyPart, ModelItem[]][]).forEach(([part, items]) => {
+      items.forEach((item) => {
+        entries.push({
+          part,
+          type: item.name,
+          normalized: normalizeText(item.name),
+        });
+      });
+    });
+    return entries;
+  }, [normalizeText]);
+
+  const typePartMap = useMemo(() => {
+    const map = new Map<string, BodyPart>();
+    typeEntries.forEach((entry) => {
+      map.set(entry.type, entry.part);
+    });
+    return map;
+  }, [typeEntries]);
+
+  const subtypeEntries = useMemo(() => {
+    const entries: {
+      part: BodyPart;
+      type: string;
+      subtype: string;
+      normalized: string;
+      comboNormalized: string;
+    }[] = [];
+    Object.entries(specificModels).forEach(([typeName, list]) => {
+      const part = typePartMap.get(typeName);
+      if (!part) return;
+      list.forEach((item) => {
+        const subtypeName = item.name;
+        entries.push({
+          part,
+          type: typeName,
+          subtype: subtypeName,
+          normalized: normalizeText(subtypeName),
+          comboNormalized: normalizeText(`${typeName} ${subtypeName}`),
+        });
+      });
+    });
+    return entries;
+  }, [normalizeText, typePartMap]);
+
+  const normalizedSearch = useMemo(() => normalizeText(searchQuery), [normalizeText, searchQuery]);
+
+  const searchMatch = useMemo(() => {
+    if (!normalizedSearch) {
+      return { mode: "none" as const };
+    }
+
+    const matchSubtype =
+      subtypeEntries.find((entry) => entry.comboNormalized === normalizedSearch) ??
+      subtypeEntries.find((entry) => entry.normalized === normalizedSearch) ??
+      subtypeEntries.find(
+        (entry) =>
+          entry.normalized.includes(normalizedSearch) || normalizedSearch.includes(entry.normalized)
+      );
+
+    if (matchSubtype) {
+      return { mode: "subtype" as const, entry: matchSubtype };
+    }
+
+    const matchType =
+      typeEntries.find((entry) => entry.normalized === normalizedSearch) ??
+      typeEntries.find(
+        (entry) =>
+          entry.normalized.includes(normalizedSearch) || normalizedSearch.includes(entry.normalized)
+      );
+
+    if (matchType) {
+      return { mode: "type" as const, entry: matchType };
+    }
+
+    return { mode: "empty" as const };
+  }, [normalizedSearch, subtypeEntries, typeEntries]);
 
   const bodyPartOptions = useMemo(
     () => [
@@ -405,18 +502,61 @@ const Create = () => {
     [subtypeOptions]
   );
 
+  const searchSubtypeCardItems = useMemo(() => {
+    if (searchMatch.mode !== "subtype") return [];
+    return [
+      {
+        id: searchMatch.entry.subtype,
+        label: searchMatch.entry.subtype,
+        description: searchMatch.entry.type,
+      },
+    ];
+  }, [searchMatch]);
+
   const requiresSubtype = selectedType ? (specificModels[selectedType]?.length ?? 0) > 0 : false;
   const canContinue =
     !!selectedPart && !!selectedType && (requiresSubtype ? !!selectedSubtype : true);
 
   const totalSteps = requiresSubtype ? 3 : 2;
   const progressPercent = Math.round((currentStep / totalSteps) * 100);
+  const searchActive = normalizedSearch.length > 0;
 
   useEffect(() => {
+    if (!selectedType) return;
     if (!requiresSubtype && currentStep === 3) {
       setCurrentStep(2);
     }
-  }, [currentStep, requiresSubtype]);
+  }, [currentStep, requiresSubtype, selectedType]);
+
+  useEffect(() => {
+    if (!searchActive) return;
+    if (searchMatch.mode === "type") {
+      const entry = searchMatch.entry;
+      setSelected(entry.part);
+      setSelectedPart(entry.part);
+      setSelectedType(entry.type);
+      setSelectedSubtype(null);
+      const needsSubtype = (specificModels[entry.type]?.length ?? 0) > 0;
+      setCurrentStep(needsSubtype ? 3 : 2);
+    }
+    if (searchMatch.mode === "subtype") {
+      const entry = searchMatch.entry;
+      setSelected(entry.part);
+      setSelectedPart(entry.part);
+      setSelectedType(entry.type);
+      setSelectedSubtype(entry.subtype);
+      setCurrentStep(3);
+    }
+  }, [searchActive, searchMatch, specificModels]);
+
+  useEffect(() => {
+    if (searchActive) return;
+    setSelected(null);
+    setSelectedPart(null);
+    setSelectedType(null);
+    setSelectedSubtype(null);
+    setCurrentStep(1);
+  }, [searchActive]);
 
   const handleSelectPart = (part: BodyPart) => {
     setSelected(part);
@@ -438,9 +578,10 @@ const Create = () => {
     setSelectedSubtype(subtypeName);
   };
 
-  const CARD_SIZE = 300;
-  const CARD_GAP = 24;
-  const STATIC_CARD_SIZE = 320;
+
+  const CARD_SIZE = 400;
+  const CARD_GAP = 40;
+  const STATIC_CARD_SIZE = 420;
   const STATIC_CARD_GAP = 24;
 
   const renderStaticCards = (
@@ -540,12 +681,28 @@ const Create = () => {
             onValueChange={(value: string) => setViewMode(value as ViewMode)}
             className="mt-6"
           >
-            <TabsList className="w-fit">
-              <TabsTrigger value="create">Criar</TabsTrigger>
-              <TabsTrigger value="drafts">Rascunhos</TabsTrigger>
-            </TabsList>
+            <div className="flex flex-col gap-4 md:flex-row md:items-center md:justify-between">
+              <div className="w-full md:max-w-xl">
+                <Input
+                  value={searchQuery}
+                  onChange={(event) => setSearchQuery(event.target.value)}
+                  placeholder="Pesquisar modelo direto: ex. camiseta, camiseta oversized, jaqueta..."
+                  aria-label="Pesquisar modelos"
+                />
+              </div>
+              <TabsList className="w-fit md:ml-auto">
+                <TabsTrigger value="create">Criar</TabsTrigger>
+                <TabsTrigger value="drafts">Rascunhos</TabsTrigger>
+              </TabsList>
+            </div>
 
             <TabsContent value="create" className="mt-6">
+              {searchActive && searchMatch.mode === "empty" && (
+                <div className="wizard-empty glass">
+                  Nenhum modelo encontrado para "{searchQuery}".
+                </div>
+              )}
+
               <div key={`step-${currentStep}`} className="wizard-step mt-8">
                 {currentStep === 1 && (
                   <div>
@@ -588,6 +745,7 @@ const Create = () => {
                           items={typeCarouselItems}
                           selectedId={selectedType}
                           onSelect={(id: string) => handleSelectType(id)}
+                          autoCenterSelected={searchActive}
                           cardSize={CARD_SIZE}
                           cardGapPx={CARD_GAP}
                         />
@@ -603,18 +761,25 @@ const Create = () => {
                 {currentStep === 3 && (
                   <div>
                     <div className="wizard-step__title">Escolha a especificacao</div>
-                    {subtypeCarouselItems.length <= 3
-                      ? renderStaticCards(subtypeCarouselItems, selectedSubtype, (id) => handleSelectSubtype(id))
-                      : (
-                        <LinearInfiniteCarousel
-                          className="wizard-carousel"
-                          items={subtypeCarouselItems}
-                          selectedId={selectedSubtype}
-                          onSelect={(id: string) => handleSelectSubtype(id)}
-                          cardSize={CARD_SIZE}
-                          cardGapPx={CARD_GAP}
-                        />
-                      )}
+                    {searchActive && searchMatch.mode === "subtype"
+                      ? renderStaticCards(
+                          searchSubtypeCardItems,
+                          selectedSubtype,
+                          (id) => handleSelectSubtype(id)
+                        )
+                      : subtypeCarouselItems.length <= 3
+                        ? renderStaticCards(subtypeCarouselItems, selectedSubtype, (id) => handleSelectSubtype(id))
+                        : (
+                          <LinearInfiniteCarousel
+                            className="wizard-carousel"
+                            items={subtypeCarouselItems}
+                            selectedId={selectedSubtype}
+                            onSelect={(id: string) => handleSelectSubtype(id)}
+                            autoCenterSelected={searchActive}
+                            cardSize={CARD_SIZE}
+                            cardGapPx={CARD_GAP}
+                          />
+                        )}
                   </div>
                 )}
               </div>

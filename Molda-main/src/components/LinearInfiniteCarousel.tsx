@@ -22,6 +22,7 @@ type Props = {
   onConfirm?: (id: string) => void;
   ariaLabel?: string;
   className?: string;
+  autoCenterSelected?: boolean;
 
   cardSize?: number;
   cardGapPx?: number;
@@ -40,6 +41,7 @@ export default function LinearInfiniteCarousel({
   onConfirm,
   ariaLabel = "Carrossel",
   className,
+  autoCenterSelected = false,
   cardSize = 120,
   cardGapPx = 12,
   durationSec = 30,
@@ -342,6 +344,14 @@ export default function LinearInfiniteCarousel({
     };
     rafRef.current = requestAnimationFrame(step);
   }, [stopRaf]);
+
+  useEffect(() => {
+    if (!autoCenterSelected || !selectedId || !items.length) return;
+    if (!viewportWidthRef.current) return;
+    const info = getBestIndexForId(selectedId, offsetRef.current);
+    if (!info) return;
+    smoothToOffset(offsetRef.current + info.snapOffset);
+  }, [autoCenterSelected, getBestIndexForId, items.length, selectedId, smoothToOffset]);
 
   const makeCellClick = useCallback(
     (id: string) =>
