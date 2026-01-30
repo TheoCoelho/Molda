@@ -46,6 +46,21 @@
   filter: saturate(var(--center-saturate, 1)) brightness(var(--center-brightness, 1));
 }
 
+.marquee-cell-image {
+  width: 100%;
+  height: 58%;
+  border-radius: 10px;
+  overflow: hidden;
+  border: 1px solid hsl(var(--border));
+  background: color-mix(in srgb, hsl(var(--foreground)) 8%, hsl(var(--background)));
+}
+.marquee-cell-image img {
+  width: 100%;
+  height: 100%;
+  object-fit: cover;
+  display: block;
+}
+
 .marquee-cell:hover {
   transform: scale(calc(var(--center-scale, 1) + 0.02));
   box-shadow: 0 12px 26px -18px rgba(0,0,0,0.35);

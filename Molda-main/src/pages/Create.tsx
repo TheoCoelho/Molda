@@ -11,16 +11,49 @@ import { supabase } from "@/integrations/supabase/client";
 import { cn } from "@/lib/utils";
 import type { ExternalDecalData, DecalTransform } from "../types/decals";
 import { getProjectDisplayName } from "@/lib/creativeNames";
+import { PRODUCT_IMAGES_BUCKET } from "@/lib/constants/storage";
 import { Canvas, type ThreeEvent } from "@react-three/fiber";
 import { Bounds, Center, Environment, Html, OrbitControls, useGLTF } from "@react-three/drei";
 import * as THREE from "three";
 import { DEFAULT_GIZMO_THEME } from "../../../gizmo-theme";
 
 type BodyPart = "head" | "torso" | "legs";
+type PartKey = string;
 
 type ModelItem = {
   name: string;
   color?: string;
+  description?: string;
+  imageUrl?: string;
+};
+
+type CatalogPart = {
+  id: string;
+  slug: string;
+  name: string;
+  description?: string | null;
+  sort_order?: number | null;
+  is_active?: boolean | null;
+};
+
+type CatalogType = {
+  id: string;
+  part_id: string;
+  name: string;
+  description?: string | null;
+  card_image_path?: string | null;
+  sort_order?: number | null;
+  is_active?: boolean | null;
+};
+
+type CatalogSubtype = {
+  id: string;
+  type_id: string;
+  name: string;
+  description?: string | null;
+  card_image_path?: string | null;
+  sort_order?: number | null;
+  is_active?: boolean | null;
 };
 
 const PALETTE = [
@@ -30,11 +63,17 @@ const PALETTE = [
   "#14b8a6", "#06b6d4", "#2563eb", "#7c3aed", "#9333ea",
 ];
 
-const clothingTypes: Record<BodyPart, ModelItem[]> = {
+const fallbackClothingTypes: Record<string, ModelItem[]> = {
   head: [{ name: "BonÃ©" }, { name: "Touca" }, { name: "ChapÃ©u" }],
   torso: [{ name: "Camiseta" }, { name: "Camisa" }, { name: "Jaqueta" }, { name: "Moletom" }],
   legs: [{ name: "CalÃ§a" }, { name: "Short" }, { name: "Bermuda" }],
 };
+
+const fallbackParts: CatalogPart[] = [
+  { id: "head", slug: "head", name: "Cabeça", description: "Bonés, toucas e chapéus", sort_order: 1 },
+  { id: "torso", slug: "torso", name: "Tronco", description: "Camisetas, camisas e jaquetas", sort_order: 2 },
+  { id: "legs", slug: "legs", name: "Pernas", description: "Calças, shorts e bermudas", sort_order: 3 },
+];
 
 type ViewMode = "create" | "drafts";
 
@@ -77,12 +116,24 @@ const Create = () => {
 
   const [viewMode, setViewMode] = useState<ViewMode>("create");
   const [selected, setSelected] = useState<BodyPart | null>(null);
-  const [selectedPart, setSelectedPart] = useState<BodyPart | null>(null);
+  const [selectedPart, setSelectedPart] = useState<PartKey | null>(null);
   const [selectedType, setSelectedType] = useState<string | null>(null);
   const [selectedSubtype, setSelectedSubtype] = useState<string | null>(null);
   const showMannequin = false;
   const [currentStep, setCurrentStep] = useState<1 | 2 | 3>(1);
   const [searchQuery, setSearchQuery] = useState("");
+
+  const [catalogParts, setCatalogParts] = useState<CatalogPart[]>([]);
+  const [catalogTypes, setCatalogTypes] = useState<CatalogType[]>([]);
+  const [catalogSubtypes, setCatalogSubtypes] = useState<CatalogSubtype[]>([]);
+  const [catalogLoading, setCatalogLoading] = useState(false);
+  const [catalogError, setCatalogError] = useState<string | null>(null);
+
+  const resolveCatalogImage = useCallback((path?: string | null) => {
+    if (!path) return undefined;
+    const { data } = supabase.storage.from(PRODUCT_IMAGES_BUCKET).getPublicUrl(path);
+    return data?.publicUrl || undefined;
+  }, []);
 
   const [drafts, setDrafts] = useState<DraftRecord[]>([]);
   const [draftsLoading, setDraftsLoading] = useState(false);
@@ -94,6 +145,55 @@ const Create = () => {
   useEffect(() => {
     const id = window.setInterval(() => setNowTs(Date.now()), COUNTDOWN_TICK_MS);
     return () => window.clearInterval(id);
+  }, []);
+
+  useEffect(() => {
+    let cancelled = false;
+
+    const loadCatalog = async () => {
+      setCatalogLoading(true);
+      setCatalogError(null);
+
+      if (!supabase) {
+        setCatalogError("Supabase nao configurado no frontend.");
+        setCatalogParts([]);
+        setCatalogTypes([]);
+        setCatalogSubtypes([]);
+        setCatalogLoading(false);
+        return;
+      }
+
+      try {
+        const [partsRes, typesRes, subtypesRes] = await Promise.all([
+          supabase.from("parts").select("id, slug, name, description, sort_order, is_active").order("sort_order", { ascending: true }),
+          supabase.from("product_types").select("id, part_id, name, description, card_image_path, sort_order, is_active").order("sort_order", { ascending: true }),
+          supabase.from("product_subtypes").select("id, type_id, name, description, card_image_path, sort_order, is_active").order("sort_order", { ascending: true }),
+        ]);
+
+        if (partsRes.error) throw partsRes.error;
+        if (typesRes.error) throw typesRes.error;
+        if (subtypesRes.error) throw subtypesRes.error;
+
+        if (cancelled) return;
+
+        setCatalogParts((partsRes.data as CatalogPart[]) || []);
+        setCatalogTypes((typesRes.data as CatalogType[]) || []);
+        setCatalogSubtypes((subtypesRes.data as CatalogSubtype[]) || []);
+      } catch (err) {
+        if (!cancelled) {
+          console.error("Erro ao carregar catalogo dinamico:", err);
+          setCatalogError("Nao foi possivel carregar o catalogo dinamico.");
+        }
+      } finally {
+        if (!cancelled) setCatalogLoading(false);
+      }
+    };
+
+    void loadCatalog();
+
+    return () => {
+      cancelled = true;
+    };
   }, []);
 
   useEffect(() => {
@@ -341,7 +441,7 @@ const Create = () => {
   };
 
   // Subtipos opcionais por tipo
-  const specificModels: Record<string, ModelItem[]> = {
+  const fallbackSpecificModels: Record<string, ModelItem[]> = {
     Camiseta: [
       { name: "BÃ¡sica" },
       { name: "Oversized" },
@@ -373,16 +473,70 @@ const Create = () => {
     []
   );
 
-  const colorize = (list: ModelItem[]) =>
-    list.map((item, idx) => ({ ...item, color: item.color || PALETTE[idx % PALETTE.length] }));
+  const toMannequinPart = useCallback(
+    (value: string | null): BodyPart | null =>
+      value === "head" || value === "torso" || value === "legs" ? value : null,
+    []
+  );
+
+  const colorize = useCallback(
+    (list: ModelItem[]) =>
+      list.map((item, idx) => ({ ...item, color: item.color || PALETTE[idx % PALETTE.length] })),
+    []
+  );
+
+  const clothingTypes = useMemo<Record<string, ModelItem[]>>(() => {
+    if (!catalogParts.length || !catalogTypes.length) return fallbackClothingTypes;
+    const partById = new Map(catalogParts.map((part) => [part.id, part]));
+    const map: Record<PartKey, ModelItem[]> = {};
+
+    catalogParts.forEach((part) => {
+      if (part.is_active === false) return;
+      map[part.slug] = [];
+    });
+
+    catalogTypes.forEach((typeItem) => {
+      if (typeItem.is_active === false) return;
+      const part = partById.get(typeItem.part_id);
+      if (!part || part.is_active === false) return;
+      const list = map[part.slug] ?? (map[part.slug] = []);
+      list.push({
+        name: typeItem.name,
+        description: typeItem.description || undefined,
+        imageUrl: resolveCatalogImage(typeItem.card_image_path),
+      });
+    });
+
+    return map;
+  }, [catalogParts, catalogTypes, resolveCatalogImage]);
+
+  const specificModels = useMemo<Record<string, ModelItem[]>>(() => {
+    if (!catalogTypes.length || !catalogSubtypes.length) return fallbackSpecificModels;
+    const typeById = new Map(catalogTypes.map((typeItem) => [typeItem.id, typeItem]));
+    const map: Record<string, ModelItem[]> = {};
+
+    catalogSubtypes.forEach((subtype) => {
+      if (subtype.is_active === false) return;
+      const typeItem = typeById.get(subtype.type_id);
+      if (!typeItem || typeItem.is_active === false) return;
+      const list = map[typeItem.name] ?? (map[typeItem.name] = []);
+      list.push({
+        name: subtype.name,
+        description: subtype.description || undefined,
+        imageUrl: resolveCatalogImage(subtype.card_image_path),
+      });
+    });
+
+    return map;
+  }, [catalogTypes, catalogSubtypes, resolveCatalogImage]);
 
   const typeEntries = useMemo(() => {
     const entries: {
-      part: BodyPart;
+      part: PartKey;
       type: string;
       normalized: string;
     }[] = [];
-    (Object.entries(clothingTypes) as [BodyPart, ModelItem[]][]).forEach(([part, items]) => {
+    (Object.entries(clothingTypes) as [PartKey, ModelItem[]][]).forEach(([part, items]) => {
       items.forEach((item) => {
         entries.push({
           part,
@@ -392,10 +546,10 @@ const Create = () => {
       });
     });
     return entries;
-  }, [normalizeText]);
+  }, [normalizeText, clothingTypes]);
 
   const typePartMap = useMemo(() => {
-    const map = new Map<string, BodyPart>();
+    const map = new Map<string, PartKey>();
     typeEntries.forEach((entry) => {
       map.set(entry.type, entry.part);
     });
@@ -404,11 +558,13 @@ const Create = () => {
 
   const subtypeEntries = useMemo(() => {
     const entries: {
-      part: BodyPart;
+      part: PartKey;
       type: string;
       subtype: string;
       normalized: string;
       comboNormalized: string;
+      description?: string;
+      imageUrl?: string;
     }[] = [];
     Object.entries(specificModels).forEach(([typeName, list]) => {
       const part = typePartMap.get(typeName);
@@ -421,11 +577,13 @@ const Create = () => {
           subtype: subtypeName,
           normalized: normalizeText(subtypeName),
           comboNormalized: normalizeText(`${typeName} ${subtypeName}`),
+          description: item.description,
+          imageUrl: item.imageUrl,
         });
       });
     });
     return entries;
-  }, [normalizeText, typePartMap]);
+  }, [normalizeText, typePartMap, specificModels]);
 
   const normalizedSearch = useMemo(() => normalizeText(searchQuery), [normalizeText, searchQuery]);
 
@@ -461,18 +619,26 @@ const Create = () => {
   }, [normalizedSearch, subtypeEntries, typeEntries]);
 
   const bodyPartOptions = useMemo(
-    () => [
-      { id: "head", label: "Cabeca", description: "Bones, toucas e chapeus" },
-      { id: "torso", label: "Tronco", description: "Camisetas, camisas e jaquetas" },
-      { id: "legs", label: "Pernas", description: "Calcas, shorts e bermudas" },
-    ],
-    []
+    () => {
+      const parts = (catalogParts.length ? catalogParts : fallbackParts).filter(
+        (part) => part.is_active !== false
+      );
+      const sorted = [...parts].sort((a, b) => (a.sort_order ?? 0) - (b.sort_order ?? 0));
+      return sorted.map((part) => ({
+        id: part.slug,
+        label: part.name,
+        description: part.description || "Sem descricao",
+      }));
+    },
+    [catalogParts]
   );
+
+  
 
   const typeOptions = useMemo(() => {
     if (!selectedPart) return [];
     return colorize(clothingTypes[selectedPart] || []);
-  }, [selectedPart]);
+  }, [selectedPart, clothingTypes, colorize]);
 
   const typeCarouselItems = useMemo(
     () =>
@@ -480,7 +646,8 @@ const Create = () => {
         id: item.name,
         label: item.name,
         color: item.color,
-        description: "Passe o mouse para ver detalhes desta peca.",
+        description: item.description || "Passe o mouse para ver detalhes desta peca.",
+        imageUrl: item.imageUrl,
       })),
     [typeOptions]
   );
@@ -489,7 +656,7 @@ const Create = () => {
     if (!selectedType) return [];
     const list = specificModels[selectedType] || [];
     return colorize(list);
-  }, [selectedType]);
+  }, [selectedType, specificModels, colorize]);
 
   const subtypeCarouselItems = useMemo(
     () =>
@@ -497,7 +664,8 @@ const Create = () => {
         id: item.name,
         label: item.name,
         color: item.color,
-        description: "Variacoes e ajustes disponiveis para este modelo.",
+        description: item.description || "Variacoes e ajustes disponiveis para este modelo.",
+        imageUrl: item.imageUrl,
       })),
     [subtypeOptions]
   );
@@ -508,7 +676,8 @@ const Create = () => {
       {
         id: searchMatch.entry.subtype,
         label: searchMatch.entry.subtype,
-        description: searchMatch.entry.type,
+        description: searchMatch.entry.description || searchMatch.entry.type,
+        imageUrl: searchMatch.entry.imageUrl,
       },
     ];
   }, [searchMatch]);
@@ -532,7 +701,7 @@ const Create = () => {
     if (!searchActive) return;
     if (searchMatch.mode === "type") {
       const entry = searchMatch.entry;
-      setSelected(entry.part);
+      setSelected(toMannequinPart(entry.part));
       setSelectedPart(entry.part);
       setSelectedType(entry.type);
       setSelectedSubtype(null);
@@ -541,13 +710,13 @@ const Create = () => {
     }
     if (searchMatch.mode === "subtype") {
       const entry = searchMatch.entry;
-      setSelected(entry.part);
+      setSelected(toMannequinPart(entry.part));
       setSelectedPart(entry.part);
       setSelectedType(entry.type);
       setSelectedSubtype(entry.subtype);
       setCurrentStep(3);
     }
-  }, [searchActive, searchMatch, specificModels]);
+  }, [searchActive, searchMatch, specificModels, toMannequinPart]);
 
   useEffect(() => {
     if (searchActive) return;
@@ -558,8 +727,8 @@ const Create = () => {
     setCurrentStep(1);
   }, [searchActive]);
 
-  const handleSelectPart = (part: BodyPart) => {
-    setSelected(part);
+  const handleSelectPart = (part: PartKey) => {
+    setSelected(toMannequinPart(part));
     setSelectedPart(part);
     setSelectedType(null);
     setSelectedSubtype(null);
@@ -585,7 +754,7 @@ const Create = () => {
   const STATIC_CARD_GAP = 24;
 
   const renderStaticCards = (
-    items: { id: string; label: string; description?: string }[],
+    items: { id: string; label: string; description?: string; imageUrl?: string }[],
     selectedId: string | null,
     onSelect: (id: string) => void
   ) => (
@@ -607,6 +776,11 @@ const Create = () => {
           )}
           onClick={() => (selectedId === item.id ? handleStepContinue() : onSelect(item.id))}
         >
+          {item.imageUrl && (
+            <span className="wizard-static-card__image">
+              <img src={item.imageUrl} alt={item.label} loading="lazy" />
+            </span>
+          )}
           <span className="wizard-static-card__label">{item.label}</span>
           {item.description && <span className="wizard-static-card__desc">{item.description}</span>}
         </button>
@@ -703,6 +877,17 @@ const Create = () => {
                 </div>
               )}
 
+              {catalogLoading && (
+                <div className="mt-4 rounded-xl border border-dashed px-4 py-3 text-xs text-muted-foreground">
+                  Carregando catalogo dinamico...
+                </div>
+              )}
+              {catalogError && (
+                <div className="mt-4 rounded-xl border border-destructive/40 bg-destructive/10 px-4 py-3 text-xs text-destructive">
+                  {catalogError}
+                </div>
+              )}
+
               <div key={`step-${currentStep}`} className="wizard-step mt-8">
                 {currentStep === 1 && (
                   <div>
@@ -719,14 +904,14 @@ const Create = () => {
                     <div className="wizard-step__title">Escolha a parte do corpo</div>
                     {bodyPartOptions.length <= 3
                       ? renderStaticCards(bodyPartOptions, selectedPart, (id) =>
-                          handleSelectPart(id as BodyPart)
+                          handleSelectPart(id)
                         )
                       : (
                         <LinearInfiniteCarousel
                           className="wizard-carousel"
                           items={bodyPartOptions}
                           selectedId={selectedPart}
-                          onSelect={(id: string) => handleSelectPart(id as BodyPart)}
+                          onSelect={(id: string) => handleSelectPart(id)}
                           cardSize={CARD_SIZE}
                           cardGapPx={CARD_GAP}
                         />
@@ -940,7 +1125,7 @@ function Mannequin3D({
 }: {
   selected: BodyPart | null;
   setSelected: (b: BodyPart | null) => void;
-  setSelectedPart: (b: BodyPart) => void;
+  setSelectedPart: (b: PartKey) => void;
   disableInteraction?: boolean;
 }) {
   const [hovered, setHovered] = useState<BodyPart | null>(null);
