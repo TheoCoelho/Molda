@@ -9,6 +9,7 @@ export type Profile = {
   phone?: string | null;
   birth_date?: string | null; // yyyy-mm-dd
   cpf?: string | null;
+  role?: "admin" | "editor" | "viewer" | null;
   created_at?: string | null;
   updated_at?: string | null;
   avatar_path?: string | null;

@@ -13,6 +13,8 @@ type Item = {
   label: string;
   color?: string;
   description?: string;
+  imageUrl?: string;
+  imageAlt?: string;
 };
 
 type Props = {
@@ -414,6 +416,11 @@ export default function LinearInfiniteCarousel({
             onClick={makeCellClick(item.id)}
             style={{ ...cellStyle(item), ...getVisualStyle(i) }}
           >
+            {item.imageUrl && (
+              <span className="marquee-cell-image">
+                <img src={item.imageUrl} alt={item.imageAlt || item.label} loading="lazy" />
+              </span>
+            )}
             <span className="marquee-cell-label">{item.label}</span>
             {item.description && <span className="marquee-cell-desc">{item.description}</span>}
           </button>
@@ -428,6 +435,11 @@ export default function LinearInfiniteCarousel({
             onClick={makeCellClick(item.id)}
             style={{ ...cellStyle(item), ...getVisualStyle(i + items.length) }}
           >
+            {item.imageUrl && (
+              <span className="marquee-cell-image">
+                <img src={item.imageUrl} alt={item.imageAlt || item.label} loading="lazy" />
+              </span>
+            )}
             <span className="marquee-cell-label">{item.label}</span>
             {item.description && <span className="marquee-cell-desc">{item.description}</span>}
           </button>
@@ -442,6 +454,11 @@ export default function LinearInfiniteCarousel({
             onClick={makeCellClick(item.id)}
             style={{ ...cellStyle(item), ...getVisualStyle(i + items.length * 2) }}
           >
+            {item.imageUrl && (
+              <span className="marquee-cell-image">
+                <img src={item.imageUrl} alt={item.imageAlt || item.label} loading="lazy" />
+              </span>
+            )}
             <span className="marquee-cell-label">{item.label}</span>
             {item.description && <span className="marquee-cell-desc">{item.description}</span>}
           </button>

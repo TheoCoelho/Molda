@@ -14,6 +14,8 @@ import Finalize from "./pages/Finalize";
 import Profile from "./pages/Profile";
 import Login from "./pages/Login";
 import Register from "./pages/Register";
+import Admin from "./pages/Admin";
+import RequireAdmin from "@/components/RequireAdmin";
 // import ShaderBackground from "@/components/ShaderBackground"; // temporariamente desabilitado
 // ⬇️ Barra de progresso no topo
 import TopProgressBar from "@/components/TopProgressBar";
@@ -59,6 +61,14 @@ const App = () => {
                 <Route path="/profile" element={<Profile />} />
                 <Route path="/login" element={<Login />} />
                 <Route path="/register" element={<Register />} />
+                <Route
+                  path="/admin"
+                  element={
+                    <RequireAdmin>
+                      <Admin />
+                    </RequireAdmin>
+                  }
+                />
                 <Route path="*" element={<NotFound />} />
               </Routes>
             </BrowserRouter>
