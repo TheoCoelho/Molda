@@ -6,6 +6,7 @@
   overflow: hidden;
   outline: none;
   padding-block: 12px;
+  perspective: 1000px;
 }
 
 /* Trilho principal ? movimento controlado via JS (sem animacao CSS) */
@@ -41,9 +42,11 @@
   cursor: pointer;
   transition: transform 160ms ease, box-shadow 180ms ease, border-color 180ms ease, opacity 160ms ease, filter 160ms ease;
   user-select: none;
-  transform: scale(var(--center-scale, 1));
+  transform: scale(var(--center-scale, 1)) rotateY(0deg);
   opacity: var(--center-opacity, 1);
   filter: saturate(var(--center-saturate, 1)) brightness(var(--center-brightness, 1));
+  transform-style: preserve-3d;
+  backface-visibility: hidden;
 }
 
 .marquee-cell-image {
@@ -77,6 +80,7 @@
   background: hsl(var(--card));
   border-color: color-mix(in srgb, hsl(var(--brand-blue)) 45%, hsl(var(--border)));
   box-shadow: 0 10px 24px -18px rgba(0,0,0,0.35);
+  animation: carouselFlipIn 0.6s cubic-bezier(0.34, 1.56, 0.64, 1);
 }
 
 .marquee-cell.is-edge {
@@ -119,4 +123,15 @@
 .wizard-carousel {
   width: min(100%, calc((var(--item-size, 120px) * 3) + (var(--gap, 12px) * 2)));
   margin-inline: auto;
+}
+
+@keyframes carouselFlipIn {
+  from {
+    transform: scale(var(--center-scale, 1)) rotateY(45deg);
+    opacity: 0.7;
+  }
+  to {
+    transform: scale(var(--center-scale, 1)) rotateY(0deg);
+    opacity: 1;
+  }
 }

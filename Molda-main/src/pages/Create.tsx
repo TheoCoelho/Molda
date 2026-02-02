@@ -109,6 +109,9 @@ const Create = () => {
   const navigate = useNavigate();
 
   const [viewMode, setViewMode] = useState<ViewMode>("create");
+  const [viewTransitionDirection, setViewTransitionDirection] = useState<"left" | "right" | null>(null);
+  const [render3DViewer, setRender3DViewer] = useState(false);
+  const prevViewModeRef = useRef<ViewMode>("create");
   const [selected, setSelected] = useState<BodyPart | null>(null);
   const [selectedPart, setSelectedPart] = useState<PartKey | null>(null);
   const [selectedType, setSelectedType] = useState<string | null>(null);
@@ -135,6 +138,39 @@ const Create = () => {
   const [selectedDraftId, setSelectedDraftId] = useState<string | null>(null);
   const [nowTs, setNowTs] = useState(() => Date.now());
   const pendingDeletionRef = useRef<Set<string>>(new Set());
+
+  useEffect(() => {
+    const prev = prevViewModeRef.current;
+    if (prev !== viewMode) {
+      setViewTransitionDirection(viewMode === "drafts" ? "left" : "right");
+      
+      // Reset 3D viewer quando sair de rascunhos
+      if (prev === "drafts" && viewMode === "create") {
+        setRender3DViewer(false);
+      }
+      
+      // Delay para renderizar o 3D após a transição
+      if (viewMode === "drafts") {
+        const timer3D = window.setTimeout(() => {
+          setRender3DViewer(true);
+        }, 200);
+        const timerTransition = window.setTimeout(() => {
+          setViewTransitionDirection(null);
+        }, 500);
+        prevViewModeRef.current = viewMode;
+        return () => {
+          window.clearTimeout(timer3D);
+          window.clearTimeout(timerTransition);
+        };
+      } else {
+        const timer = window.setTimeout(() => {
+          setViewTransitionDirection(null);
+        }, 500);
+        prevViewModeRef.current = viewMode;
+        return () => window.clearTimeout(timer);
+      }
+    }
+  }, [viewMode]);
 
   useEffect(() => {
     const id = window.setInterval(() => setNowTs(Date.now()), COUNTDOWN_TICK_MS);
@@ -837,12 +873,31 @@ const Create = () => {
                 />
               </div>
               <TabsList className="w-fit md:ml-auto">
-                <TabsTrigger value="create">Criar</TabsTrigger>
-                <TabsTrigger value="drafts">Rascunhos</TabsTrigger>
+                <TabsTrigger
+                  value="create"
+                  className={`transition-all duration-300 origin-center transform-gpu data-[state=active]:shadow-lg ${
+                    viewTransitionDirection === "right" && viewMode === "create" ? "slide-in-right" : ""
+                  }`}
+                >
+                  Criar
+                </TabsTrigger>
+                <TabsTrigger
+                  value="drafts"
+                  className={`transition-all duration-300 origin-center transform-gpu data-[state=active]:shadow-lg ${
+                    viewTransitionDirection === "left" && viewMode === "drafts" ? "slide-in-left" : ""
+                  }`}
+                >
+                  Rascunhos
+                </TabsTrigger>
               </TabsList>
             </div>
 
-            <TabsContent value="create" className="mt-6">
+            <TabsContent
+              value="create"
+              className={`mt-6 ${
+                viewTransitionDirection === "right" && viewMode === "create" ? "slide-in-right" : ""
+              }`}
+            >
               {searchActive && searchMatch.mode === "empty" && (
                 <div className="wizard-empty glass">
                   Nenhum modelo encontrado para "{searchQuery}".
@@ -959,7 +1014,12 @@ const Create = () => {
               </div>
             </TabsContent>
 
-            <TabsContent value="drafts" className="mt-6">
+            <TabsContent
+              value="drafts"
+              className={`mt-6 ${
+                viewTransitionDirection === "left" && viewMode === "drafts" ? "slide-in-left" : ""
+              }`}
+            >
               <div className="grid gap-6 lg:grid-cols-[minmax(260px,320px)_1fr] lg:items-start">
                 <div className="space-y-3 max-h-[calc(100vh-280px)] overflow-y-auto pr-2 scrollbar-soft">
                   {draftsLoading ? (
@@ -1048,7 +1108,12 @@ const Create = () => {
                 </div>
 
                 <div className="glass relative flex items-center justify-center rounded-2xl border shadow-sm h-[calc(100vh-280px)] min-h-[500px]">
-                  {selectedDraft ? (
+                  {!render3DViewer ? (
+                    <div className="flex flex-col items-center gap-3">
+                      <div className="h-10 w-10 animate-spin rounded-full border-4 border-muted border-t-primary" />
+                      <p className="text-sm text-muted-foreground">Carregando visualização 3D...</p>
+                    </div>
+                  ) : selectedDraft ? (
                     <div className="relative h-full w-full">
                       <Canvas3DViewer
                         key={selectedDraft.id}
