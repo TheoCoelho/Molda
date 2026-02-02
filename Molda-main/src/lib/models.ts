@@ -209,13 +209,11 @@ const REGISTRY: Record<string, ModelConfig> = {
 /* ---------- API ---------- */
 
 export function getModelConfigFromSelection(sel: Selection): ModelConfig {
-  const canon = canonicalize(sel);
-  const key = keyFrom(canon);
-  const cfg = REGISTRY[key];
-
-  // debug removido para evitar dependência de import.meta.env
+  // Por enquanto, todas as pe?as usam o modelo padr?o de camiseta.
+  const cfg = REGISTRY["torso:shirt:basic"];
   return cfg ?? {};
 }
+
 
 export function hasModelForSelection(sel: Selection): boolean {
   const canon = canonicalize(sel);
