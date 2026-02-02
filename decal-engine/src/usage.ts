@@ -269,7 +269,7 @@ export async function initDecalDemo(container: HTMLElement, opts?: InitDecalDemo
       height,
       depth
     );
-    proj.setTransform(position, normal, scaledW, scaledH, scaledD, angleRad);
+    proj.setTransform(position, normal, scaledW, scaledH, scaledD, -angleRad);
   };
 
   let defaultWidth = 0.3;
@@ -1170,10 +1170,16 @@ export async function initDecalDemo(container: HTMLElement, opts?: InitDecalDemo
     const hx = decalWidth * 0.5;
     const hy = decalHeight * 0.5;
 
-    const pTL = center.clone().add(right.clone().multiplyScalar(-hx)).add(up.clone().multiplyScalar(hy));
-    const pTR = center.clone().add(right.clone().multiplyScalar(hx)).add(up.clone().multiplyScalar(hy));
-    const pBR = center.clone().add(right.clone().multiplyScalar(hx)).add(up.clone().multiplyScalar(-hy));
-    const pBL = center.clone().add(right.clone().multiplyScalar(-hx)).add(up.clone().multiplyScalar(-hy));
+    // Aplica rotação (decalAngle) aos pontos do gizmo
+    const c = Math.cos(decalAngle);
+    const s = Math.sin(decalAngle);
+    const rotRight = right.clone().multiplyScalar(c).add(up.clone().multiplyScalar(s));
+    const rotUp = right.clone().multiplyScalar(-s).add(up.clone().multiplyScalar(c));
+
+    const pTL = center.clone().add(rotRight.clone().multiplyScalar(-hx)).add(rotUp.clone().multiplyScalar(hy));
+    const pTR = center.clone().add(rotRight.clone().multiplyScalar(hx)).add(rotUp.clone().multiplyScalar(hy));
+    const pBR = center.clone().add(rotRight.clone().multiplyScalar(hx)).add(rotUp.clone().multiplyScalar(-hy));
+    const pBL = center.clone().add(rotRight.clone().multiplyScalar(-hx)).add(rotUp.clone().multiplyScalar(-hy));
 
     const sTL = toScreen(pTL), sTR = toScreen(pTR),
       sBR = toScreen(pBR), sBL = toScreen(pBL);
@@ -1334,6 +1340,8 @@ export async function initDecalDemo(container: HTMLElement, opts?: InitDecalDemo
   let dragPlane: THREE.Plane | null = null;
   let startCenter = new THREE.Vector3();
   let startW = 0, startH = 0, startA = 0;
+  let startHandleLocal = new THREE.Vector2();
+  let startHandleAngle = 0;
 
   function startDrag(mode: DragMode, ev: PointerEvent) {
     if (!projector || !selected) return;
@@ -1344,6 +1352,21 @@ export async function initDecalDemo(container: HTMLElement, opts?: InitDecalDemo
 
     // para scale/rotate, manter uma referência de plano; para move usaremos raycast
     dragPlane = new THREE.Plane().setFromNormalAndCoplanarPoint(decalNormal, decalCenter);
+
+    if (mode && mode !== "move") {
+      const p = planeHit(ev.clientX, ev.clientY, dragPlane);
+      if (p) {
+        const { right, up } = cameraBillboardBasis();
+        const rel = p.clone().sub(startCenter);
+        const x = rel.dot(right), y = rel.dot(up);
+        startHandleAngle = Math.atan2(y, x);
+
+        // posição local do handle no gizmo (considera rotação inicial do decal)
+        const c = Math.cos(startA);
+        const s = Math.sin(startA);
+        startHandleLocal.set(x * c + y * s, -x * s + y * c);
+      }
+    }
     (ev.target as Element).setPointerCapture?.(ev.pointerId);
   }
 
@@ -1399,32 +1422,38 @@ export async function initDecalDemo(container: HTMLElement, opts?: InitDecalDemo
       const p = planeHit(ev.clientX, ev.clientY, dragPlane);
       if (!p) return;
 
-      // base do decal (não do gizmo)
-      const upCand =
-        Math.abs(startCenter.y) > 0.9 ? new THREE.Vector3(1, 0, 0) : new THREE.Vector3(0, 1, 0);
-      const right0 = upCand.clone().cross(decalNormal).normalize();
-      const up0 = decalNormal.clone().cross(right0).normalize();
-      const c = Math.cos(startA), s = Math.sin(startA);
-      const right = right0.clone().multiplyScalar(c).add(up0.clone().multiplyScalar(s)).normalize();
-      const up = up0.clone().multiplyScalar(c).sub(right0.clone().multiplyScalar(s)).normalize();
+      // <<< usar base da câmera (gizmo billboard)
+      const { right, up } = cameraBillboardBasis();
 
       const rel = p.clone().sub(startCenter);
-      const x = rel.dot(right), y = rel.dot(up);
+      let x = rel.dot(right), y = rel.dot(up);
 
-      if (dragMode.startsWith("scale-")) {
+      if (dragMode === "rotate") {
+        // Rotação: calcula delta de ângulo no espaço da câmera
+        const currentAngle = Math.atan2(y, x);
+        const deltaAngle = currentAngle - startHandleAngle;
+        decalAngle = startA + deltaAngle;
+      } else if (dragMode.startsWith("scale-")) {
+        // <<< desrotacionar para espaço local do gizmo usando a rotação inicial
+        const c = Math.cos(startA);
+        const s = Math.sin(startA);
+        const xLocal = x * c + y * s;
+        const yLocal = -x * s + y * c;
+
+        const dx = startHandleLocal.x - xLocal;
+        const dy = startHandleLocal.y - yLocal;
+
         if (dragMode === "scale-tm" || dragMode === "scale-bm") {
           decalWidth = startW;
-          decalHeight = Math.max(1e-4, 2 * Math.abs(y));
+          decalHeight = Math.max(1e-4, startH + 2 * dy);
         } else if (dragMode === "scale-ml" || dragMode === "scale-mr") {
-          decalWidth = Math.max(1e-4, 2 * Math.abs(x));
+          decalWidth = Math.max(1e-4, startW + 2 * dx);
           decalHeight = startH;
         } else {
-          decalWidth = Math.max(1e-4, 2 * Math.abs(x));
-          decalHeight = Math.max(1e-4, 2 * Math.abs(y));
+          decalWidth = Math.max(1e-4, startW + 2 * dx);
+          decalHeight = Math.max(1e-4, startH + 2 * dy);
         }
   decalDepth = computeBaseDepth(decalWidth, decalHeight);
-      } else if (dragMode === "rotate") {
-        decalAngle = Math.atan2(y, x);
       }
     }
 
