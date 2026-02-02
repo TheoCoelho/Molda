@@ -15,6 +15,7 @@ import Profile from "./pages/Profile";
 import Login from "./pages/Login";
 import Register from "./pages/Register";
 import Admin from "./pages/Admin";
+import TransitionsPlayground from "./pages/TransitionsPlayground";
 import RequireAdmin from "@/components/RequireAdmin";
 // import ShaderBackground from "@/components/ShaderBackground"; // temporariamente desabilitado
 // ⬇️ Barra de progresso no topo
@@ -61,6 +62,7 @@ const App = () => {
                 <Route path="/profile" element={<Profile />} />
                 <Route path="/login" element={<Login />} />
                 <Route path="/register" element={<Register />} />
+                <Route path="/transitions-test" element={<TransitionsPlayground />} />
                 <Route
                   path="/admin"
                   element={

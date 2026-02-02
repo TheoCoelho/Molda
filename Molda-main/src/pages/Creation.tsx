@@ -169,6 +169,8 @@ const Creation = () => {
     { id: "3d", name: "3D", type: "3d" },
   ]);
   const [activeCanvasTab, setActiveCanvasTab] = useState("3d");
+  const [tabTransitionDirection, setTabTransitionDirection] = useState<"left" | "right">("right");
+  const [isTransitioning, setIsTransitioning] = useState(false);
   const canvasTabsRef = useRef<CanvasTab[]>(canvasTabs);
   useEffect(() => {
     canvasTabsRef.current = canvasTabs;
@@ -272,6 +274,27 @@ const Creation = () => {
   const lastEditorTabRef = useRef<string | null>(null);
   // Mantém refs estáveis para evitar loops com callback ref inline
   const prevTabRef = useRef<string>(activeCanvasTab);
+
+  // Efeito para detectar mudança de tab e disparar transição
+  useEffect(() => {
+    const prevTab = prevTabRef.current;
+    if (prevTab !== activeCanvasTab) {
+      // Determina a direção da transição baseado na posição das tabs
+      const prevIndex = canvasTabs.findIndex((t) => t.id === prevTab);
+      const currentIndex = canvasTabs.findIndex((t) => t.id === activeCanvasTab);
+      
+      setTabTransitionDirection(currentIndex > prevIndex ? "right" : "left");
+      setIsTransitioning(true);
+      
+      // Remove o estado de transição após a animação
+      const timer = setTimeout(() => {
+        setIsTransitioning(false);
+      }, 400);
+      
+      prevTabRef.current = activeCanvasTab;
+      return () => clearTimeout(timer);
+    }
+  }, [activeCanvasTab, canvasTabs]);
 
   // Salva a tab anterior sempre que a tab ativa muda
   const prevEditorInstRef = useRef<Editor2DHandle | null>(null);
@@ -1331,7 +1354,7 @@ const Creation = () => {
                 </div>
               )}
               {/* Abas do canvas dentro da área */}
-              <div className="absolute left-4 top-4 z-20 glass rounded-xl border p-1 shadow-md">
+              <div className="absolute left-4 top-4 z-20 glass rounded-xl border p-1 shadow-md carousel-item-enter">
                 <div className="flex items-center gap-1">
                   {canvasTabs.map((tab) => {
                     const active = tab.id === activeCanvasTab;
@@ -1339,9 +1362,9 @@ const Creation = () => {
                     return (
                       <div
                         key={tab.id}
-                        className={`flex items-center gap-1 rounded-md px-3 h-8 text-sm transition ${
-                          active ? "glass-strong" : "hover:bg-white/20"
-                        }`}
+                        className={`flex items-center gap-1 rounded-md px-3 h-8 text-sm transition-all duration-300 ${
+                          active ? "glass-strong scale-105 shadow-lg" : "hover:bg-white/20"
+                        } ${active && isTransitioning ? "bounce-in" : ""}`}
                       >
                         <span
                           className="flex-1 h-full px-1 text-left font-medium focus:outline-none inline-flex items-center cursor-pointer"
@@ -1435,7 +1458,13 @@ const Creation = () => {
               {/* opcional: “chip” com part/subtype SEM deslocar o layout */}
               {/* Canvas ocupa toda a área — manter 3D e 2D sempre montados */}
               <div
-                className="absolute inset-0"
+                className={`absolute inset-0 ${
+                  activeCanvasTab === "3d" && isTransitioning
+                    ? tabTransitionDirection === "right"
+                      ? "slide-in-right"
+                      : "slide-in-left"
+                    : ""
+                }`}
                 style={{
                   visibility: activeCanvasTab === "3d" ? "visible" : "hidden",
                   pointerEvents: activeCanvasTab === "3d" ? "auto" : "none",
@@ -1478,7 +1507,13 @@ const Creation = () => {
               </div>
 
               <div
-                className="absolute inset-0"
+                className={`absolute inset-0 ${
+                  activeCanvasTab !== "3d" && isTransitioning
+                    ? tabTransitionDirection === "left"
+                      ? "slide-in-left"
+                      : "slide-in-right"
+                    : ""
+                }`}
                 style={{
                   visibility: activeCanvasTab !== "3d" ? "visible" : "hidden",
                   pointerEvents: activeCanvasTab !== "3d" ? "auto" : "none",

@@ -109,6 +109,8 @@ const Create = () => {
   const navigate = useNavigate();
 
   const [viewMode, setViewMode] = useState<ViewMode>("create");
+  const [viewTransitionDirection, setViewTransitionDirection] = useState<"left" | "right" | null>(null);
+  const prevViewModeRef = useRef<ViewMode>("create");
   const [selected, setSelected] = useState<BodyPart | null>(null);
   const [selectedPart, setSelectedPart] = useState<PartKey | null>(null);
   const [selectedType, setSelectedType] = useState<string | null>(null);
@@ -135,6 +137,18 @@ const Create = () => {
   const [selectedDraftId, setSelectedDraftId] = useState<string | null>(null);
   const [nowTs, setNowTs] = useState(() => Date.now());
   const pendingDeletionRef = useRef<Set<string>>(new Set());
+
+  useEffect(() => {
+    const prev = prevViewModeRef.current;
+    if (prev !== viewMode) {
+      setViewTransitionDirection(viewMode === "drafts" ? "left" : "right");
+      const timer = window.setTimeout(() => {
+        setViewTransitionDirection(null);
+      }, 500);
+      prevViewModeRef.current = viewMode;
+      return () => window.clearTimeout(timer);
+    }
+  }, [viewMode]);
 
   useEffect(() => {
     const id = window.setInterval(() => setNowTs(Date.now()), COUNTDOWN_TICK_MS);
@@ -842,7 +856,12 @@ const Create = () => {
               </TabsList>
             </div>
 
-            <TabsContent value="create" className="mt-6">
+            <TabsContent
+              value="create"
+              className={`mt-6 ${
+                viewTransitionDirection === "right" && viewMode === "create" ? "slide-in-right" : ""
+              }`}
+            >
               {searchActive && searchMatch.mode === "empty" && (
                 <div className="wizard-empty glass">
                   Nenhum modelo encontrado para "{searchQuery}".
@@ -959,7 +978,12 @@ const Create = () => {
               </div>
             </TabsContent>
 
-            <TabsContent value="drafts" className="mt-6">
+            <TabsContent
+              value="drafts"
+              className={`mt-6 ${
+                viewTransitionDirection === "left" && viewMode === "drafts" ? "slide-in-left" : ""
+              }`}
+            >
               <div className="grid gap-6 lg:grid-cols-[minmax(260px,320px)_1fr] lg:items-start">
                 <div className="space-y-3 max-h-[calc(100vh-280px)] overflow-y-auto pr-2 scrollbar-soft">
                   {draftsLoading ? (
