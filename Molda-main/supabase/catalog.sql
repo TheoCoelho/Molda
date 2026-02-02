@@ -18,6 +18,29 @@ create table if not exists public.parts (
   created_at timestamptz default now()
 );
 
+-- Fixed body parts (seed)
+-- Reset catalog data so parts/types/subtypes/products are recreated manually.
+delete from public.product_images;
+delete from public.inventory;
+delete from public.product_materials;
+delete from public.stock_movements;
+delete from public.products;
+delete from public.product_subtypes;
+delete from public.product_types;
+delete from public.parts;
+
+insert into public.parts (slug, name, description, sort_order, is_active)
+values
+  ('head', 'Cabeça', 'Bonés, toucas e chapéus', 1, true),
+  ('torso', 'Tronco', 'Camisetas, camisas e jaquetas', 2, true),
+  ('legs', 'Pernas', 'Calças, shorts e bermudas', 3, true)
+on conflict (slug) do update
+set
+  name = excluded.name,
+  description = excluded.description,
+  sort_order = excluded.sort_order,
+  is_active = excluded.is_active;
+
 create table if not exists public.product_types (
   id uuid primary key default gen_random_uuid(),
   part_id uuid not null references public.parts(id) on delete cascade,
@@ -132,54 +155,70 @@ alter table public.inventory enable row level security;
 alter table public.stock_movements enable row level security;
 
 -- Admin full access
+drop policy if exists "admin all parts" on public.parts;
 create policy "admin all parts" on public.parts
 for all using (public.is_admin()) with check (public.is_admin());
 
+drop policy if exists "admin all types" on public.product_types;
 create policy "admin all types" on public.product_types
 for all using (public.is_admin()) with check (public.is_admin());
 
+drop policy if exists "admin all subtypes" on public.product_subtypes;
 create policy "admin all subtypes" on public.product_subtypes
 for all using (public.is_admin()) with check (public.is_admin());
 
+drop policy if exists "admin all products" on public.products;
 create policy "admin all products" on public.products
 for all using (public.is_admin()) with check (public.is_admin());
 
+drop policy if exists "admin all product_images" on public.product_images;
 create policy "admin all product_images" on public.product_images
 for all using (public.is_admin()) with check (public.is_admin());
 
+drop policy if exists "admin all materials" on public.materials;
 create policy "admin all materials" on public.materials
 for all using (public.is_admin()) with check (public.is_admin());
 
+drop policy if exists "admin all suppliers" on public.suppliers;
 create policy "admin all suppliers" on public.suppliers
 for all using (public.is_admin()) with check (public.is_admin());
 
+drop policy if exists "admin all product_materials" on public.product_materials;
 create policy "admin all product_materials" on public.product_materials
 for all using (public.is_admin()) with check (public.is_admin());
 
+drop policy if exists "admin all inventory" on public.inventory;
 create policy "admin all inventory" on public.inventory
 for all using (public.is_admin()) with check (public.is_admin());
 
+drop policy if exists "admin all stock_movements" on public.stock_movements;
 create policy "admin all stock_movements" on public.stock_movements
 for all using (public.is_admin()) with check (public.is_admin());
 
 -- Public read (only active/available)
+drop policy if exists "public read parts" on public.parts;
 create policy "public read parts" on public.parts
 for select using (is_active = true);
 
+drop policy if exists "public read types" on public.product_types;
 create policy "public read types" on public.product_types
 for select using (is_active = true);
 
+drop policy if exists "public read subtypes" on public.product_subtypes;
 create policy "public read subtypes" on public.product_subtypes
 for select using (is_active = true);
 
+drop policy if exists "public read products" on public.products;
 create policy "public read products" on public.products
 for select using (available = true and visible = true);
 
 -- Storage policies (bucket: product-images)
 -- Note: storage.objects uses bucket_id for bucket name
+drop policy if exists "public read product images" on storage.objects;
 create policy "public read product images" on storage.objects
 for select using (bucket_id = 'product-images');
 
+drop policy if exists "admin write product images" on storage.objects;
 create policy "admin write product images" on storage.objects
 for all using (bucket_id = 'product-images' and public.is_admin())
 with check (bucket_id = 'product-images' and public.is_admin());

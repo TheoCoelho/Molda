@@ -63,17 +63,11 @@ const PALETTE = [
   "#14b8a6", "#06b6d4", "#2563eb", "#7c3aed", "#9333ea",
 ];
 
-const fallbackClothingTypes: Record<string, ModelItem[]> = {
-  head: [{ name: "Bon√©" }, { name: "Touca" }, { name: "Chap√©u" }],
-  torso: [{ name: "Camiseta" }, { name: "Camisa" }, { name: "Jaqueta" }, { name: "Moletom" }],
-  legs: [{ name: "Cal√ßa" }, { name: "Short" }, { name: "Bermuda" }],
-};
+const EMPTY_MODEL_MAP: Record<string, ModelItem[]> = {};
 
-const fallbackParts: CatalogPart[] = [
-  { id: "head", slug: "head", name: "CabeÁa", description: "BonÈs, toucas e chapÈus", sort_order: 1 },
-  { id: "torso", slug: "torso", name: "Tronco", description: "Camisetas, camisas e jaquetas", sort_order: 2 },
-  { id: "legs", slug: "legs", name: "Pernas", description: "CalÁas, shorts e bermudas", sort_order: 3 },
-];
+
+
+
 
 type ViewMode = "create" | "drafts";
 
@@ -440,27 +434,7 @@ const Create = () => {
     });
   };
 
-  // Subtipos opcionais por tipo
-  const fallbackSpecificModels: Record<string, ModelItem[]> = {
-    Camiseta: [
-      { name: "B√°sica" },
-      { name: "Oversized" },
-      { name: "Manga Longa" },
-      { name: "Masculino + Shorts" },
-      { name: "Manga Longa Feminina" },
-      { name: "Low Poly (GLB)" },
-      { name: "Low Poly (USDZ)" },
-      { name: "TShirt (GLTF)" },
-      { name: "TShirt 3D Free" },
-    ],
-    Camisa: [{ name: "Social" }, { name: "Casual" }],
-    Jaqueta: [{ name: "Couro" }, { name: "Jeans" }, { name: "Corta-vento" }],
-    Moletom: [{ name: "Com capuz" }, { name: "Sem capuz" }],
-    Cal√ßa: [{ name: "Jeans" }, { name: "Moletom" }, { name: "Cargo" }],
-    Short: [{ name: "Esportivo" }, { name: "Casual" }],
-    Bermuda: [{ name: "Jeans" }, { name: "Sarja" }],
-    Bon√©: [{ name: "Aba curva" }, { name: "Aba reta" }],
-  };
+
 
   const normalizeText = useCallback(
     (value: string) =>
@@ -486,7 +460,7 @@ const Create = () => {
   );
 
   const clothingTypes = useMemo<Record<string, ModelItem[]>>(() => {
-    if (!catalogParts.length || !catalogTypes.length) return fallbackClothingTypes;
+    if (!catalogParts.length || !catalogTypes.length) return EMPTY_MODEL_MAP;
     const partById = new Map(catalogParts.map((part) => [part.id, part]));
     const map: Record<PartKey, ModelItem[]> = {};
 
@@ -511,7 +485,7 @@ const Create = () => {
   }, [catalogParts, catalogTypes, resolveCatalogImage]);
 
   const specificModels = useMemo<Record<string, ModelItem[]>>(() => {
-    if (!catalogTypes.length || !catalogSubtypes.length) return fallbackSpecificModels;
+    if (!catalogTypes.length || !catalogSubtypes.length) return EMPTY_MODEL_MAP;
     const typeById = new Map(catalogTypes.map((typeItem) => [typeItem.id, typeItem]));
     const map: Record<string, ModelItem[]> = {};
 
@@ -620,9 +594,7 @@ const Create = () => {
 
   const bodyPartOptions = useMemo(
     () => {
-      const parts = (catalogParts.length ? catalogParts : fallbackParts).filter(
-        (part) => part.is_active !== false
-      );
+      const parts = catalogParts.filter((part) => part.is_active !== false);
       const sorted = [...parts].sort((a, b) => (a.sort_order ?? 0) - (b.sort_order ?? 0));
       return sorted.map((part) => ({
         id: part.slug,

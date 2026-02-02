@@ -7,6 +7,8 @@ import { Tabs, TabsContent, TabsList, TabsTrigger } from "@/components/ui/tabs";
 import { Textarea } from "@/components/ui/textarea";
 import { Switch } from "@/components/ui/switch";
 import { Label } from "@/components/ui/label";
+import { Accordion, AccordionContent, AccordionItem, AccordionTrigger } from "@/components/ui/accordion";
+import { RadioGroup, RadioGroupItem } from "@/components/ui/radio-group";
 import { supabase } from "@/integrations/supabase/client";
 import { PRODUCT_IMAGES_BUCKET } from "@/lib/constants/storage";
 import { toast } from "sonner";
@@ -100,15 +102,6 @@ const Admin = () => {
   const [materials, setMaterials] = useState<Material[]>([]);
   const [suppliers, setSuppliers] = useState<Supplier[]>([]);
 
-  const [partForm, setPartForm] = useState({
-    id: "",
-    name: "",
-    slug: "",
-    description: "",
-    sort_order: "0",
-    is_active: true,
-  });
-
   const [typeForm, setTypeForm] = useState({
     id: "",
     part_id: "",
@@ -165,6 +158,19 @@ const Admin = () => {
     phone: "",
     is_active: true,
   });
+
+  const [carouselForm, setCarouselForm] = useState({
+    level: "type" as "type" | "subtype",
+    part_slug: "",
+    parent_type_id: "",
+    name: "",
+    slug: "",
+    description: "",
+    sort_order: "0",
+    is_active: true,
+  });
+  const [carouselImageFile, setCarouselImageFile] = useState<File | null>(null);
+  const [carouselImagePreview, setCarouselImagePreview] = useState<string | null>(null);
 
   const loadCatalog = useCallback(async () => {
     setLoading(true);
@@ -233,12 +239,50 @@ const Admin = () => {
     setProductImagePreview(null);
   }, [productImageFile]);
 
+  useEffect(() => {
+    if (carouselImageFile) {
+      const url = URL.createObjectURL(carouselImageFile);
+      setCarouselImagePreview(url);
+      return () => URL.revokeObjectURL(url);
+    }
+    setCarouselImagePreview(null);
+  }, [carouselImageFile]);
+
   const partById = useMemo(() => new Map(parts.map((p) => [p.id, p])), [parts]);
   const typeById = useMemo(() => new Map(types.map((t) => [t.id, t])), [types]);
+  const bodyPartOptions = [
+    { slug: "head", label: "Cabeca" },
+    { slug: "torso", label: "Tronco" },
+    { slug: "legs", label: "Pernas" },
+  ];
+
+  const selectedPartId = useMemo(() => {
+    if (!carouselForm.part_slug) return "";
+    return parts.find((part) => part.slug === carouselForm.part_slug)?.id || "";
+  }, [carouselForm.part_slug, parts]);
+
   const inventoryByProductId = useMemo(
     () => new Map(inventory.map((inv) => [inv.product_id, inv])),
     [inventory]
   );
+  const typesByPart = useMemo(() => {
+    const map = new Map<string, ProductType[]>();
+    types.forEach((typeItem) => {
+      const list = map.get(typeItem.part_id) ?? [];
+      list.push(typeItem);
+      map.set(typeItem.part_id, list);
+    });
+    return map;
+  }, [types]);
+  const subtypesByType = useMemo(() => {
+    const map = new Map<string, ProductSubtype[]>();
+    subtypes.forEach((subtype) => {
+      const list = map.get(subtype.type_id) ?? [];
+      list.push(subtype);
+      map.set(subtype.type_id, list);
+    });
+    return map;
+  }, [subtypes]);
 
   useEffect(() => {
     const next: Record<string, { on_hand: number; reserved: number }> = {};
@@ -252,10 +296,36 @@ const Admin = () => {
     setInventoryEdits(next);
   }, [inventoryByProductId, products]);
 
+  useEffect(() => {
+    if (!selectedPartId) {
+      if (carouselForm.parent_type_id) {
+        setCarouselForm((prev) => ({ ...prev, parent_type_id: "" }));
+      }
+      return;
+    }
+    const existsInPart = types.some(
+      (typeItem) => typeItem.id === carouselForm.parent_type_id && typeItem.part_id === selectedPartId
+    );
+    if (!existsInPart && carouselForm.parent_type_id) {
+      setCarouselForm((prev) => ({ ...prev, parent_type_id: "" }));
+    }
+  }, [carouselForm.parent_type_id, selectedPartId, types]);
+
   const getPublicUrl = useCallback((path?: string | null) => {
     if (!path) return null;
     const { data } = supabase.storage.from(PRODUCT_IMAGES_BUCKET).getPublicUrl(path);
     return data?.publicUrl || null;
+  }, []);
+
+  const resolvePartIdBySlug = useCallback(async (slug: string) => {
+    if (!slug) return "";
+    const { data, error } = await supabase
+      .from("parts")
+      .select("id")
+      .eq("slug", slug)
+      .maybeSingle();
+    if (error) throw error;
+    return data?.id || "";
   }, []);
 
   const uploadImage = useCallback(async (file: File, folder: string) => {
@@ -269,9 +339,6 @@ const Admin = () => {
     if (error) throw error;
     return path;
   }, []);
-
-  const resetPartForm = () =>
-    setPartForm({ id: "", name: "", slug: "", description: "", sort_order: "0", is_active: true });
 
   const resetTypeForm = () => {
     setTypeForm({
@@ -334,37 +401,19 @@ const Admin = () => {
       is_active: true,
     });
   };
-  const handleSavePart = async (event: React.FormEvent) => {
-    event.preventDefault();
-    const payload = {
-      name: partForm.name.trim(),
-      slug: (partForm.slug || partForm.name).trim() ? slugify(partForm.slug || partForm.name) : "",
-      description: partForm.description.trim() || null,
-      sort_order: toNumber(partForm.sort_order),
-      is_active: partForm.is_active,
-    };
 
-    if (!payload.name || !payload.slug) {
-      toast.error("Nome e slug sao obrigatorios.");
-      return;
-    }
-
-    try {
-      if (partForm.id) {
-        const { error } = await supabase.from("parts").update(payload).eq("id", partForm.id);
-        if (error) throw error;
-        toast.success("Peca atualizada.");
-      } else {
-        const { error } = await supabase.from("parts").insert(payload);
-        if (error) throw error;
-        toast.success("Peca criada.");
-      }
-      resetPartForm();
-      await loadCatalog();
-    } catch (err: any) {
-      console.error("[admin.savePart]", err);
-      toast.error(err?.message || "Falha ao salvar peca.");
-    }
+  const resetCarouselForm = () => {
+    setCarouselForm({
+      level: "type",
+      part_slug: "",
+      parent_type_id: "",
+      name: "",
+      slug: "",
+      description: "",
+      sort_order: "0",
+      is_active: true,
+    });
+    setCarouselImageFile(null);
   };
 
   const handleSaveType = async (event: React.FormEvent) => {
@@ -445,6 +494,71 @@ const Admin = () => {
     } catch (err: any) {
       console.error("[admin.saveSubtype]", err);
       toast.error(err?.message || "Falha ao salvar subtipo.");
+    }
+  };
+
+  const handleSaveCarouselItem = async (event: React.FormEvent) => {
+    event.preventDefault();
+    const basePayload = {
+      name: carouselForm.name.trim(),
+      slug: (carouselForm.slug || carouselForm.name).trim()
+        ? slugify(carouselForm.slug || carouselForm.name)
+        : "",
+      description: carouselForm.description.trim() || null,
+      sort_order: toNumber(carouselForm.sort_order),
+      is_active: carouselForm.is_active,
+    };
+
+    if (!basePayload.name || !basePayload.slug) {
+      toast.error("Nome e slug sao obrigatorios.");
+      return;
+    }
+
+    try {
+      if (carouselForm.level === "type") {
+        if (!carouselForm.part_slug) {
+          toast.error("Selecione a parte do corpo.");
+          return;
+        }
+        const resolvedPartId = await resolvePartIdBySlug(carouselForm.part_slug);
+        if (!resolvedPartId) {
+          toast.error("Parte do corpo nao encontrada no banco. Rode o SQL para criar head/torso/legs.");
+          return;
+        }
+        const payload = {
+          ...basePayload,
+          part_id: resolvedPartId,
+          card_image_path: null as string | null,
+        };
+        if (carouselImageFile) {
+          payload.card_image_path = await uploadImage(carouselImageFile, "types");
+        }
+        const { error } = await supabase.from("product_types").insert(payload);
+        if (error) throw error;
+        toast.success("Tipo criado no carrossel.");
+      } else {
+        if (!carouselForm.parent_type_id) {
+          toast.error("Selecione o tipo pai no acordeon.");
+          return;
+        }
+        const payload = {
+          ...basePayload,
+          type_id: carouselForm.parent_type_id,
+          card_image_path: null as string | null,
+        };
+        if (carouselImageFile) {
+          payload.card_image_path = await uploadImage(carouselImageFile, "subtypes");
+        }
+        const { error } = await supabase.from("product_subtypes").insert(payload);
+        if (error) throw error;
+        toast.success("Subtipo criado no carrossel.");
+      }
+
+      resetCarouselForm();
+      await loadCatalog();
+    } catch (err: any) {
+      console.error("[admin.saveCarouselItem]", err);
+      toast.error(err?.message || "Falha ao salvar item do carrossel.");
     }
   };
 
@@ -574,6 +688,10 @@ const Admin = () => {
     () => subtypes.filter((subtype) => subtype.type_id === productForm.type_id),
     [subtypes, productForm.type_id]
   );
+  const typesForCarouselPart = useMemo(
+    () => (selectedPartId ? typesByPart.get(selectedPartId) ?? [] : []),
+    [selectedPartId, typesByPart]
+  );
   return (
     <div className="min-h-screen bg-background text-foreground">
       <Header />
@@ -599,104 +717,178 @@ const Admin = () => {
           </TabsList>
 
           <TabsContent value="parts" className="mt-6">
-            <div className="grid gap-6 lg:grid-cols-[320px_1fr]">
-              <form onSubmit={handleSavePart} className="glass rounded-2xl border p-5 space-y-4">
+            <div className="grid gap-6 lg:grid-cols-[360px_1fr]">
+              <form onSubmit={handleSaveCarouselItem} className="glass rounded-2xl border p-5 space-y-4">
                 <div>
-                  <h2 className="text-lg font-semibold">Nova peca</h2>
+                  <h2 className="text-lg font-semibold">Nova peca do carrossel</h2>
                   <p className="text-xs text-muted-foreground">
-                    Ex: Cabeca, Tronco, Pernas.
+                    Escolha a parte do corpo e defina se o item sera um tipo (nivel 1) ou subtipo.
                   </p>
                 </div>
                 <div className="space-y-2">
+                  <Label>Parte do corpo</Label>
+                  <select
+                    value={carouselForm.part_slug}
+                    onChange={(e) => setCarouselForm((prev) => ({ ...prev, part_slug: e.target.value }))}
+                    className="w-full rounded-md border bg-background px-3 py-2 text-sm"
+                  >
+                    <option value="">Selecione</option>
+                    {bodyPartOptions.map((part) => (
+                      <option key={part.slug} value={part.slug}>
+                        {part.label}
+                      </option>
+                    ))}
+                  </select>
+                </div>
+                <div className="space-y-2">
+                  <Label>Nivel do carrossel</Label>
+                  <RadioGroup
+                    value={carouselForm.level}
+                    onValueChange={(value) =>
+                      setCarouselForm((prev) => ({ ...prev, level: value as "type" | "subtype" }))
+                    }
+                  >
+                    <div className="flex items-center gap-2">
+                      <RadioGroupItem value="type" id="carousel-level-type" />
+                      <Label htmlFor="carousel-level-type">Primeiro nivel (tipo)</Label>
+                    </div>
+                    <div className="flex items-center gap-2">
+                      <RadioGroupItem value="subtype" id="carousel-level-subtype" />
+                      <Label htmlFor="carousel-level-subtype">Subtipo de outro tipo</Label>
+                    </div>
+                  </RadioGroup>
+                </div>
+                {carouselForm.level === "subtype" && (
+                  <div className="rounded-lg border px-3 py-2 text-xs text-muted-foreground">
+                    {carouselForm.parent_type_id
+                      ? `Tipo pai selecionado: ${typeById.get(carouselForm.parent_type_id)?.name || "Selecionado"}`
+                      : "Selecione o tipo pai no acordeon ao lado."}
+                  </div>
+                )}
+                <div className="space-y-2">
                   <Label>Nome</Label>
                   <Input
-                    value={partForm.name}
-                    onChange={(e) => setPartForm((prev) => ({ ...prev, name: e.target.value }))}
-                    placeholder="Cabeca"
+                    value={carouselForm.name}
+                    onChange={(e) => setCarouselForm((prev) => ({ ...prev, name: e.target.value }))}
+                    placeholder="Ex: Camiseta, Oversized"
                   />
                 </div>
                 <div className="space-y-2">
                   <Label>Slug</Label>
                   <Input
-                    value={partForm.slug}
-                    onChange={(e) => setPartForm((prev) => ({ ...prev, slug: e.target.value }))}
-                    placeholder="head"
+                    value={carouselForm.slug}
+                    onChange={(e) => setCarouselForm((prev) => ({ ...prev, slug: e.target.value }))}
+                    placeholder="deixe vazio para gerar automaticamente"
                   />
                 </div>
                 <div className="space-y-2">
                   <Label>Descricao</Label>
                   <Textarea
-                    value={partForm.description}
-                    onChange={(e) => setPartForm((prev) => ({ ...prev, description: e.target.value }))}
-                    placeholder="Breve descricao da peca"
+                    value={carouselForm.description}
+                    onChange={(e) => setCarouselForm((prev) => ({ ...prev, description: e.target.value }))}
+                    placeholder="Descricao curta para o card"
                   />
                 </div>
                 <div className="space-y-2">
                   <Label>Ordem</Label>
                   <Input
                     type="number"
-                    value={partForm.sort_order}
-                    onChange={(e) => setPartForm((prev) => ({ ...prev, sort_order: e.target.value }))}
+                    value={carouselForm.sort_order}
+                    onChange={(e) => setCarouselForm((prev) => ({ ...prev, sort_order: e.target.value }))}
                   />
+                </div>
+                <div className="space-y-2">
+                  <Label>Imagem do card</Label>
+                  <Input type="file" accept="image/*" onChange={(e) => setCarouselImageFile(e.target.files?.[0] || null)} />
+                  {carouselImagePreview && (
+                    <img src={carouselImagePreview} alt="Preview" className="h-28 w-full rounded-lg object-cover" />
+                  )}
                 </div>
                 <div className="flex items-center justify-between">
                   <Label>Ativo</Label>
                   <Switch
-                    checked={partForm.is_active}
-                    onCheckedChange={(value) => setPartForm((prev) => ({ ...prev, is_active: value }))}
+                    checked={carouselForm.is_active}
+                    onCheckedChange={(value) => setCarouselForm((prev) => ({ ...prev, is_active: value }))}
                   />
                 </div>
                 <div className="flex items-center gap-2">
                   <Button type="submit" disabled={loading}>
-                    {partForm.id ? "Atualizar" : "Salvar"}
+                    Criar peca
                   </Button>
-                  {partForm.id && (
-                    <Button type="button" variant="ghost" onClick={resetPartForm}>
-                      Cancelar
-                    </Button>
-                  )}
+                  <Button type="button" variant="ghost" onClick={resetCarouselForm}>
+                    Limpar
+                  </Button>
                 </div>
               </form>
 
-              <div className="space-y-3">
-                {parts.length === 0 ? (
-                  <div className="rounded-xl border border-dashed px-4 py-6 text-sm text-muted-foreground">
-                    Nenhuma peca cadastrada.
+              <div className="glass rounded-2xl border p-5">
+                <div className="flex items-center justify-between">
+                  <h3 className="text-sm font-semibold">Arvore do carrossel</h3>
+                  <span className="text-[11px] uppercase tracking-[0.18em] text-muted-foreground">
+                    por parte do corpo
+                  </span>
+                </div>
+                {!carouselForm.part_slug ? (
+                  <div className="mt-4 rounded-xl border border-dashed px-4 py-6 text-xs text-muted-foreground">
+                    Selecione a parte do corpo para ver os tipos e subtipos.
+                  </div>
+                ) : !selectedPartId ? (
+                  <div className="mt-4 rounded-xl border border-dashed px-4 py-6 text-xs text-destructive">
+                    As partes fixas nao foram encontradas no banco. Rode o SQL para criar head/torso/legs.
+                  </div>
+                ) : typesForCarouselPart.length === 0 ? (
+                  <div className="mt-4 rounded-xl border border-dashed px-4 py-6 text-xs text-muted-foreground">
+                    Nenhum tipo cadastrado para esta parte.
                   </div>
                 ) : (
-                  parts.map((part) => (
-                    <div
-                      key={part.id}
-                      className={cn(
-                        "glass rounded-xl border px-4 py-3 flex items-center justify-between gap-3",
-                        !part.is_active && "opacity-60"
-                      )}
-                    >
-                      <div>
-                        <div className="text-sm font-semibold">{part.name}</div>
-                        <div className="text-xs text-muted-foreground">{part.description || "Sem descricao"}</div>
-                      </div>
-                      <Button
-                        size="sm"
-                        variant="outline"
-                        onClick={() =>
-                          setPartForm({
-                            id: part.id,
-                            name: part.name,
-                            slug: part.slug,
-                            description: part.description || "",
-                            sort_order: String(part.sort_order ?? 0),
-                            is_active: part.is_active,
-                          })
-                        }
-                      >
-                        Editar
-                      </Button>
-                    </div>
-                  ))
+                  <Accordion type="multiple" className="mt-3">
+                    {typesForCarouselPart.map((typeItem) => {
+                      const subList = subtypesByType.get(typeItem.id) ?? [];
+                      const isSelectedParent = carouselForm.parent_type_id === typeItem.id;
+                      return (
+                        <AccordionItem key={typeItem.id} value={typeItem.id} className="border-b/60">
+                          <AccordionTrigger className="text-sm">{typeItem.name}</AccordionTrigger>
+                          <AccordionContent>
+                            <div className="flex items-center justify-between gap-3 text-xs">
+                              <span className="text-muted-foreground">
+                                {typeItem.description || "Sem descricao"}
+                              </span>
+                              <Button
+                                type="button"
+                                size="sm"
+                                variant={isSelectedParent ? "default" : "outline"}
+                                onClick={() =>
+                                  setCarouselForm((prev) => ({
+                                    ...prev,
+                                    level: "subtype",
+                                    parent_type_id: typeItem.id,
+                                  }))
+                                }
+                              >
+                                {isSelectedParent ? "Selecionado" : "Usar como pai"}
+                              </Button>
+                            </div>
+                            <div className="mt-3 space-y-2 pl-4 border-l border-border/60">
+                              {subList.length === 0 ? (
+                                <div className="text-xs text-muted-foreground">Sem subtipos</div>
+                              ) : (
+                                subList.map((subtype) => (
+                                  <div key={subtype.id} className="flex items-center justify-between text-xs">
+                                    <span className="font-medium">{subtype.name}</span>
+                                    <span className="text-muted-foreground">{subtype.description || "Subtipo"}</span>
+                                  </div>
+                                ))
+                              )}
+                            </div>
+                          </AccordionContent>
+                        </AccordionItem>
+                      );
+                    })}
+                  </Accordion>
                 )}
               </div>
             </div>
+
           </TabsContent>
           <TabsContent value="types" className="mt-6">
             <div className="grid gap-6 lg:grid-cols-[360px_1fr]">
