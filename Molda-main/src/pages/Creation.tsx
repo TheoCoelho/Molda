@@ -171,6 +171,8 @@ const Creation = () => {
   const [activeCanvasTab, setActiveCanvasTab] = useState("3d");
   const [tabTransitionDirection, setTabTransitionDirection] = useState<"left" | "right">("right");
   const [isTransitioning, setIsTransitioning] = useState(false);
+  const [isToolbarTransitioning, setIsToolbarTransitioning] = useState(false);
+  const [toolbarTransitionType, setToolbarTransitionType] = useState<"in" | "out">("in");
   const canvasTabsRef = useRef<CanvasTab[]>(canvasTabs);
   useEffect(() => {
     canvasTabsRef.current = canvasTabs;
@@ -655,6 +657,25 @@ const Creation = () => {
 
   const [selectionKind, setSelectionKind] = useState<SelectionKind>("none");
   const [selectionInfo, setSelectionInfo] = useState<SelectionInfo | null>(null);
+  const prevSelectionKindRef = useRef<SelectionKind>("none");
+
+  // Detecta mudança de toolbar e aplica transição flip
+  useEffect(() => {
+    if (prevSelectionKindRef.current !== selectionKind) {
+      setToolbarTransitionType("out");
+      setIsToolbarTransitioning(true);
+      
+      const timer = setTimeout(() => {
+        setToolbarTransitionType("in");
+        setTimeout(() => {
+          setIsToolbarTransitioning(false);
+        }, 600); // Duração da animação flip-in
+      }, 400); // Duração da animação flip-out
+      
+      prevSelectionKindRef.current = selectionKind;
+      return () => clearTimeout(timer);
+    }
+  }, [selectionKind]);
   const [cropModeActive, setCropModeActive] = useState(false);
   const [colorCutModeActive, setColorCutModeActive] = useState(false);
   const [effectsEditModeActive, setEffectsEditModeActive] = useState(false);
@@ -1458,62 +1479,63 @@ const Creation = () => {
               {/* opcional: “chip” com part/subtype SEM deslocar o layout */}
               {/* Canvas ocupa toda a área — manter 3D e 2D sempre montados */}
               <div
-                className={`absolute inset-0 ${
-                  activeCanvasTab === "3d" && isTransitioning
-                    ? tabTransitionDirection === "right"
-                      ? "slide-in-right"
-                      : "slide-in-left"
-                    : ""
-                }`}
+                className="absolute inset-0"
                 style={{
                   visibility: activeCanvasTab === "3d" ? "visible" : "hidden",
                   pointerEvents: activeCanvasTab === "3d" ? "auto" : "none",
                   zIndex: activeCanvasTab === "3d" ? 2 : 1,
                 }}
               >
-                <Canvas3DViewer
-                  baseColor={baseColor}
-                  externalDecals={decalsFor3D}
-                  onDecalsChange={handleDecalStateChange}
-                />
-                <div className="absolute bottom-3 left-3 text-xs text-gray-700 glass px-2 py-1 rounded">
-                  Arraste para rotacionar · Scroll para zoom
+                <div
+                  className={`${
+                    activeCanvasTab === "3d" && isTransitioning
+                      ? tabTransitionDirection === "right"
+                        ? "slide-in-right"
+                        : "slide-in-left"
+                      : ""
+                  }`}
+                  style={{ position: "absolute", inset: 0 }}
+                >
+                  <Canvas3DViewer
+                    baseColor={baseColor}
+                    externalDecals={decalsFor3D}
+                    onDecalsChange={handleDecalStateChange}
+                  />
+                  <div className="absolute bottom-3 left-3 text-xs text-gray-700 glass px-2 py-1 rounded">
+                    Arraste para rotacionar · Scroll para zoom
+                  </div>
                 </div>
 
                 <div className="absolute left-1/2 bottom-6 z-10 max-w-[95%] -translate-x-1/2">
-                  <FloatingEditorToolbar
-                    strokeColor={strokeColor}
-                    setStrokeColor={setStrokeColor}
-                    stampColor={stampColor}
-                    setStampColor={setStampColor}
-                    stampDensity={stampDensity}
-                    setStampDensity={setStampDensity}
-                    strokeWidth={strokeWidth}
-                    setStrokeWidth={setStrokeWidth}
-                    opacity={opacity}
-                    setOpacity={setOpacity}
-                    tool={tool}
-                    setTool={setTool}
-                    isTrashMode={isTrashMode}
-                    setTrashMode={setTrashMode}
-                    selectionKind="none"
-                    editor2DRef={editorRefs.current[activeCanvasTab] as Editor2DHandle}
-                    onUndo={activeIs2D ? () => editorRefs.current[activeCanvasTab]?.undo?.() : undefined}
-                    onRedo={activeIs2D ? () => editorRefs.current[activeCanvasTab]?.redo?.() : undefined}
-                    canUndo={canUndo}
-                    canRedo={canRedo}
-                  />
+                  <div className={isToolbarTransitioning ? (toolbarTransitionType === "in" ? "flip-in" : "flip-out") : ""}>
+                    <FloatingEditorToolbar
+                      strokeColor={strokeColor}
+                      setStrokeColor={setStrokeColor}
+                      stampColor={stampColor}
+                      setStampColor={setStampColor}
+                      stampDensity={stampDensity}
+                      setStampDensity={setStampDensity}
+                      strokeWidth={strokeWidth}
+                      setStrokeWidth={setStrokeWidth}
+                      opacity={opacity}
+                      setOpacity={setOpacity}
+                      tool={tool}
+                      setTool={setTool}
+                      isTrashMode={isTrashMode}
+                      setTrashMode={setTrashMode}
+                      selectionKind="none"
+                      editor2DRef={editorRefs.current[activeCanvasTab] as Editor2DHandle}
+                      onUndo={activeIs2D ? () => editorRefs.current[activeCanvasTab]?.undo?.() : undefined}
+                      onRedo={activeIs2D ? () => editorRefs.current[activeCanvasTab]?.redo?.() : undefined}
+                      canUndo={canUndo}
+                      canRedo={canRedo}
+                    />
+                  </div>
                 </div>
               </div>
 
               <div
-                className={`absolute inset-0 ${
-                  activeCanvasTab !== "3d" && isTransitioning
-                    ? tabTransitionDirection === "left"
-                      ? "slide-in-left"
-                      : "slide-in-right"
-                    : ""
-                }`}
+                className="absolute inset-0"
                 style={{
                   visibility: activeCanvasTab !== "3d" ? "visible" : "hidden",
                   pointerEvents: activeCanvasTab !== "3d" ? "auto" : "none",
@@ -1523,7 +1545,13 @@ const Creation = () => {
                 <ContextMenu>
                   <ContextMenuTrigger asChild>
                     <div
-                      className="absolute inset-0"
+                      className={`absolute inset-0 ${
+                        activeCanvasTab !== "3d" && isTransitioning
+                          ? tabTransitionDirection === "left"
+                            ? "slide-in-left"
+                            : "slide-in-right"
+                          : ""
+                      }`}
                       onContextMenu={handleContextMenu}
                       onDragOver={(e) => e.preventDefault()}
                       onDrop={(e) => {
@@ -1699,11 +1727,13 @@ const Creation = () => {
                         return (!cropModeActive && !effectToolActive && !effectsEditModeActive && !colorCutActive && selectionKind === "text");
                       })() && (
                         <div className="absolute left-1/2 bottom-6 z-10 max-w-[95%] -translate-x-1/2">
-                          <TextToolbar
-                            editor={{ current: editorRefs.current[activeCanvasTab] as Editor2DHandle }}
-                            visible={activeIs2D && selectionKind === "text"}
-                            position="inline"
-                          />
+                          <div className={isToolbarTransitioning ? (toolbarTransitionType === "in" ? "flip-in" : "flip-out") : ""}>
+                            <TextToolbar
+                              editor={{ current: editorRefs.current[activeCanvasTab] as Editor2DHandle }}
+                              visible={activeIs2D && selectionKind === "text"}
+                              position="inline"
+                            />
+                          </div>
                         </div>
                       )}
 
@@ -1716,11 +1746,13 @@ const Creation = () => {
                         return (!cropModeActive && !effectToolActive && !colorCutActive && (effectsEditModeActive || selectionKind === "image"));
                       })() && (
                         <div className="absolute left-1/2 bottom-6 z-10 max-w-[95%] -translate-x-1/2">
-                          <ImageToolbar
-                            editor={{ current: editorRefs.current[activeCanvasTab] as Editor2DHandle }}
-                            visible={activeIs2D && (effectsEditModeActive || selectionKind === "image")}
-                            position="inline"
-                          />
+                          <div className={isToolbarTransitioning ? (toolbarTransitionType === "in" ? "flip-in" : "flip-out") : ""}>
+                            <ImageToolbar
+                              editor={{ current: editorRefs.current[activeCanvasTab] as Editor2DHandle }}
+                              visible={activeIs2D && (effectsEditModeActive || selectionKind === "image")}
+                              position="inline"
+                            />
+                          </div>
                         </div>
                       )}
 
@@ -1733,28 +1765,30 @@ const Creation = () => {
                         return (!cropModeActive && !effectToolActive && !effectsEditModeActive && !colorCutActive && selectionKind !== "text" && selectionKind !== "image");
                       })() && (
                         <div className="absolute left-1/2 bottom-6 z-10 max-w-[95%] -translate-x-1/2">
-                          <FloatingEditorToolbar
-                            strokeColor={strokeColor}
-                            setStrokeColor={setStrokeColor}
-                            stampColor={stampColor}
-                            setStampColor={setStampColor}
-                            stampDensity={stampDensity}
-                            setStampDensity={setStampDensity}
-                            strokeWidth={strokeWidth}
-                            setStrokeWidth={setStrokeWidth}
-                            opacity={opacity}
-                            setOpacity={setOpacity}
-                            tool={tool}
-                            setTool={setTool}
-                            isTrashMode={isTrashMode}
-                            setTrashMode={setTrashMode}
-                            selectionKind={selectionKind}
-                            editor2DRef={editorRefs.current[activeCanvasTab] as Editor2DHandle}
-                            onUndo={activeIs2D ? () => editorRefs.current[activeCanvasTab]?.undo?.() : undefined}
-                            onRedo={activeIs2D ? () => editorRefs.current[activeCanvasTab]?.redo?.() : undefined}
-                            canUndo={canUndo}
-                            canRedo={canRedo}
-                          />
+                          <div className={isToolbarTransitioning ? (toolbarTransitionType === "in" ? "flip-in" : "flip-out") : ""}>
+                            <FloatingEditorToolbar
+                              strokeColor={strokeColor}
+                              setStrokeColor={setStrokeColor}
+                              stampColor={stampColor}
+                              setStampColor={setStampColor}
+                              stampDensity={stampDensity}
+                              setStampDensity={setStampDensity}
+                              strokeWidth={strokeWidth}
+                              setStrokeWidth={setStrokeWidth}
+                              opacity={opacity}
+                              setOpacity={setOpacity}
+                              tool={tool}
+                              setTool={setTool}
+                              isTrashMode={isTrashMode}
+                              setTrashMode={setTrashMode}
+                              selectionKind={selectionKind}
+                              editor2DRef={editorRefs.current[activeCanvasTab] as Editor2DHandle}
+                              onUndo={activeIs2D ? () => editorRefs.current[activeCanvasTab]?.undo?.() : undefined}
+                              onRedo={activeIs2D ? () => editorRefs.current[activeCanvasTab]?.redo?.() : undefined}
+                              canUndo={canUndo}
+                              canRedo={canRedo}
+                            />
+                          </div>
                         </div>
                       )}
                     </div>
