@@ -4,6 +4,7 @@ import { GLTFLoader } from "three/examples/jsm/loaders/GLTFLoader.js";
 import { USDLoader } from "three/examples/jsm/loaders/USDLoader.js";
 import { OrbitControls } from "three/examples/jsm/controls/OrbitControls.js";
 import MeshDecalAdapter from "./engine/three/MeshDecalAdapter";
+import ProjectedDecalAdapter from "./engine/three/ProjectedDecalAdapter";
 import { prepareMeshForDecals } from "./engine/three/MeshPreparation";
 import { resolveGizmoTheme, type GizmoTheme } from "../../gizmo-theme";
 
@@ -50,6 +51,7 @@ export async function initDecalDemo(container: HTMLElement, opts?: InitDecalDemo
   const models = [
     { label: "Manga Longa", value: "long_sleeve_t-_shirt/scene.gltf" },
     { label: "Oversized", value: "oversize_t-shirt_free/scene.gltf" },
+    { label: "Block Shape Abstract", value: "oversize_t-shirt/scene.gltf" },
     { label: "Low Poly", value: "t-shirt_low_poly/scene.gltf" },
     { label: "TShirt Model", value: "tshirt_model/scene.gltf" },
     { label: "Masculino + Shorts", value: "male_tshirt_and_shorts_-_plain_texture/scene.gltf" },
@@ -278,6 +280,9 @@ export async function initDecalDemo(container: HTMLElement, opts?: InitDecalDemo
   const defaultCenter = new THREE.Vector3(0, 0.5, 0.2);
   const defaultNormal = new THREE.Vector3(0, 0, 1);
 
+  // Flag para indicar se estamos usando modelo com projeção especial (block shape abstract)
+  let useProjectedDecal = false;
+
   const decalRaycaster = new THREE.Raycaster();
 
   // Ajustes voltados para reduzir deformação em relevos (curvatura alta):
@@ -424,7 +429,16 @@ export async function initDecalDemo(container: HTMLElement, opts?: InitDecalDemo
         if (ext.position) center.set(ext.position.x, ext.position.y, ext.position.z);
         if (ext.normal) normal.set(ext.normal.x, ext.normal.y, ext.normal.z).normalize();
       }
-      const adapter = new MeshDecalAdapter(scene, texture, projectorOptions) as unknown as ProjectorLike;
+
+      // Escolhe o adaptador baseado no tipo de modelo
+      let adapter: ProjectorLike;
+      if (useProjectedDecal) {
+        // Usa projeção de textura para modelos complexos (imagem inteira, não cortada por faces)
+        adapter = new ProjectedDecalAdapter(scene, texture, projectorOptions) as unknown as ProjectorLike;
+      } else {
+        // Usa MeshDecalAdapter para projeção de decal tradicional (igual ao Molda-main)
+        adapter = new MeshDecalAdapter(scene, texture, projectorOptions) as unknown as ProjectorLike;
+      }
       adapter.attachTo(root);
   applyScaledTransform(adapter, center, normal, width, height, depth, angle);
       const mesh = adapter.getMesh ? adapter.getMesh() : null;
@@ -824,6 +838,9 @@ export async function initDecalDemo(container: HTMLElement, opts?: InitDecalDemo
   // ---------------- Carregar modelo ----------------
   const params = new URLSearchParams(window.location.search);
   const modelFile = opts?.model || params.get("model") || "tshirt_model/scene.gltf";
+  // Detecta se é o modelo "block shape abstract" (usa projeção especial)
+  const isBlockShapeModel = modelFile.includes("oversize_t-shirt/") || modelFile.includes("block_shape_abstract");
+  useProjectedDecal = isBlockShapeModel;
   // Modo mesh (DecalGeometry) é o único disponível
   const modelUrl = `/models/${modelFile}`;
   const gltfLoader = new GLTFLoader();
