@@ -192,13 +192,18 @@ export async function initDecalDemo(container: HTMLElement, opts?: InitDecalDemo
       width: number,
       height: number,
       depth: number,
-      angleRad: number
+      angleRad: number,
+      isPreview?: boolean
     ) => void;
     attachTo: (obj: THREE.Object3D) => void;
     update: () => void;
     updateTexture?: (texture: THREE.Texture) => void;
     dispose?: () => void;
     getMesh?: () => THREE.Mesh | null;
+    /** Indica se está em modo de arrasto (para preview rápido) */
+    setDragging?: (dragging: boolean) => void;
+    /** Força reconstrução da geometria */
+    commitTransform?: () => void;
   };
 
   let root: THREE.Object3D | null = null;
@@ -264,14 +269,15 @@ export async function initDecalDemo(container: HTMLElement, opts?: InitDecalDemo
     width: number,
     height: number,
     depth: number,
-    angleRad: number
+    angleRad: number,
+    isPreview = false
   ) => {
     const { width: scaledW, height: scaledH, depth: scaledD } = getScaledDimensions(
       width,
       height,
       depth
     );
-    proj.setTransform(position, normal, scaledW, scaledH, scaledD, -angleRad);
+    proj.setTransform(position, normal, scaledW, scaledH, scaledD, -angleRad, isPreview);
   };
 
   let defaultWidth = 0.3;
@@ -1298,6 +1304,8 @@ export async function initDecalDemo(container: HTMLElement, opts?: InitDecalDemo
       if (!h) return;
       draggingMesh = true;
       isInteracting = true;
+      // Ativa modo de preview rápido no adapter
+      if (projector.setDragging) projector.setDragging(true);
       decalCenter.copy(h.point);
       decalNormal.copy(h.normal);
       applyScaledTransform(
@@ -1307,7 +1315,8 @@ export async function initDecalDemo(container: HTMLElement, opts?: InitDecalDemo
         decalWidth,
         decalHeight,
         decalDepth,
-        decalAngle
+        decalAngle,
+        true // isPreview
       );
       syncActiveDecalTransform();
       controls.enabled = false;
@@ -1326,18 +1335,29 @@ export async function initDecalDemo(container: HTMLElement, opts?: InitDecalDemo
         decalWidth,
         decalHeight,
         decalDepth,
-        decalAngle
+        decalAngle,
+        true // isPreview - movimentação fluida
       );
       syncActiveDecalTransform();
       updateOverlay();
     });
     el.addEventListener("pointerup", () => {
+      if (draggingMesh && projector) {
+        // Desativa modo preview e faz commit da geometria final
+        if (projector.setDragging) projector.setDragging(false);
+        if (projector.commitTransform) projector.commitTransform();
+      }
       draggingMesh = false;
       isInteracting = false;
       controls.enabled = true;
       emitDecalState();
     });
     el.addEventListener("pointerleave", () => {
+      if (draggingMesh && projector) {
+        // Desativa modo preview e faz commit da geometria final
+        if (projector.setDragging) projector.setDragging(false);
+        if (projector.commitTransform) projector.commitTransform();
+      }
       draggingMesh = false;
       isInteracting = false;
       controls.enabled = true;
@@ -1364,6 +1384,8 @@ export async function initDecalDemo(container: HTMLElement, opts?: InitDecalDemo
     if (!projector || !selected) return;
     isInteracting = true;
     dragMode = mode;
+    // Ativa modo de preview rápido no adapter
+    if (projector.setDragging) projector.setDragging(true);
     startCenter.copy(decalCenter);
     startW = decalWidth; startH = decalHeight; startA = decalAngle;
 
@@ -1403,6 +1425,11 @@ export async function initDecalDemo(container: HTMLElement, opts?: InitDecalDemo
   };
 
   function endDrag(ev: PointerEvent) {
+    // Desativa modo preview e faz commit da geometria final
+    if (projector) {
+      if (projector.setDragging) projector.setDragging(false);
+      if (projector.commitTransform) projector.commitTransform();
+    }
     dragMode = null;
     dragPlane = null;
     isInteracting = false;
@@ -1481,7 +1508,8 @@ export async function initDecalDemo(container: HTMLElement, opts?: InitDecalDemo
       decalWidth,
       decalHeight,
       decalDepth,
-      decalAngle
+      decalAngle,
+      true // isPreview - movimentação fluida durante arrasto
     );
     syncActiveDecalTransform();
     updateOverlay();

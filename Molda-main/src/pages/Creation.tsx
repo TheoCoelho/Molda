@@ -658,27 +658,56 @@ const Creation = () => {
   const [selectionKind, setSelectionKind] = useState<SelectionKind>("none");
   const [selectionInfo, setSelectionInfo] = useState<SelectionInfo | null>(null);
   const prevSelectionKindRef = useRef<SelectionKind>("none");
+  const [cropModeActive, setCropModeActive] = useState(false);
+  const [colorCutModeActive, setColorCutModeActive] = useState(false);
+  const [effectsEditModeActive, setEffectsEditModeActive] = useState(false);
+  const toolbarTransitionTimeoutRef = useRef<NodeJS.Timeout | null>(null);
 
-  // Detecta mudança de toolbar e aplica transição flip
+  // Detecta mudança de toolbar ativa (não de seleção geral) e aplica transição flip
   useEffect(() => {
-    if (prevSelectionKindRef.current !== selectionKind) {
+    const activeEditor = editorRefs.current[activeCanvasTab] as Editor2DHandle | undefined;
+    const effectBrushActive = !!activeEditor?.isEffectBrushActive?.();
+    const effectLassoActive = !!activeEditor?.isEffectLassoActive?.();
+    const effectToolActive = effectBrushActive || effectLassoActive;
+    const colorCutActive = colorCutModeActive || !!activeEditor?.isColorCutActive?.();
+    const cropActive = cropModeActive;
+
+    // Determina se há uma toolbar ativa (texto, imagem ou ferramentas especiais)
+    const hasActiveToolbar = 
+      selectionKind === "text" || 
+      selectionKind === "image" || 
+      effectToolActive || 
+      colorCutActive || 
+      cropActive || 
+      effectsEditModeActive;
+
+    // Só faz transição se há uma mudança real de toolbar ativa
+    if (prevSelectionKindRef.current !== selectionKind && hasActiveToolbar) {
+      // Limpar timeout anterior se existir
+      if (toolbarTransitionTimeoutRef.current) {
+        clearTimeout(toolbarTransitionTimeoutRef.current);
+      }
+
       setToolbarTransitionType("out");
       setIsToolbarTransitioning(true);
       
-      const timer = setTimeout(() => {
+      toolbarTransitionTimeoutRef.current = setTimeout(() => {
         setToolbarTransitionType("in");
-        setTimeout(() => {
+        toolbarTransitionTimeoutRef.current = setTimeout(() => {
           setIsToolbarTransitioning(false);
         }, 600); // Duração da animação flip-in
       }, 400); // Duração da animação flip-out
       
       prevSelectionKindRef.current = selectionKind;
-      return () => clearTimeout(timer);
     }
-  }, [selectionKind]);
-  const [cropModeActive, setCropModeActive] = useState(false);
-  const [colorCutModeActive, setColorCutModeActive] = useState(false);
-  const [effectsEditModeActive, setEffectsEditModeActive] = useState(false);
+
+    // Cleanup ao desmontar ou ao mudar de tab
+    return () => {
+      if (toolbarTransitionTimeoutRef.current) {
+        clearTimeout(toolbarTransitionTimeoutRef.current);
+      }
+    };
+  }, [selectionKind, cropModeActive, colorCutModeActive, effectsEditModeActive, activeCanvasTab]);
   const cropListenerGuard = useRef<WeakSet<Editor2DHandle>>(new WeakSet());
   const colorCutListenerGuard = useRef<WeakSet<Editor2DHandle>>(new WeakSet());
   const effectsListenerGuard = useRef<WeakSet<Editor2DHandle>>(new WeakSet());
@@ -1507,7 +1536,7 @@ const Creation = () => {
                 </div>
 
                 <div className="absolute left-1/2 bottom-6 z-10 max-w-[95%] -translate-x-1/2">
-                  <div className={isToolbarTransitioning ? (toolbarTransitionType === "in" ? "flip-in" : "flip-out") : ""}>
+                  {(tool !== "select" || isTrashMode) && (
                     <FloatingEditorToolbar
                       strokeColor={strokeColor}
                       setStrokeColor={setStrokeColor}
@@ -1530,7 +1559,7 @@ const Creation = () => {
                       canUndo={canUndo}
                       canRedo={canRedo}
                     />
-                  </div>
+                  )}
                 </div>
               </div>
 
