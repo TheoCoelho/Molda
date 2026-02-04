@@ -1,0 +1,11 @@
+Model Information:
+* title:	Block Shape Abstract
+* source:	https://sketchfab.com/3d-models/block-shape-abstract-d63f28d78a1c41449ff17169b9994465
+* author:	Tamiya (https://sketchfab.com/Tamiya)
+
+Model License:
+* license type:	CC-BY-4.0 (http://creativecommons.org/licenses/by/4.0/)
+* requirements:	Author must be credited. Commercial use is allowed.
+
+If you use this 3D model in your project be sure to copy paste this credit wherever you share it:
+This work is based on "Block Shape Abstract" (https://sketchfab.com/3d-models/block-shape-abstract-d63f28d78a1c41449ff17169b9994465) by Tamiya (https://sketchfab.com/Tamiya) licensed under CC-BY-4.0 (http://creativecommons.org/licenses/by/4.0/)

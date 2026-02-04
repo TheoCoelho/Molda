@@ -73,6 +73,14 @@ const SUBTYPE_ALIASES: Record<string, string[]> = {
     "t-shirt free",
     "tshirt 3d"
   ],
+  oversized: [
+    "oversized",
+    "oversize",
+    "over size",
+    "large",
+    "larga",
+    "ampla"
+  ],
   premium: ["premium"],
   classic: ["classic", "classica", "clássica"],
   "male-shorts": [
@@ -179,6 +187,15 @@ const REGISTRY: Record<string, ModelConfig> = {
     position: [0, 0, 0],
   },
 
+  "torso:shirt:oversized": {
+    src: "/models/block_shape_abstract/scene.gltf",
+    camera: { position: [0, 1.5, 5], fov: 45 },
+    controls: { minDistance: 3, maxDistance: 10, enableZoom: true, enablePan: false },
+    scale: 1.0,
+    rotation: [0, 0, 0],
+    position: [0, 0, 0],
+  },
+
   // Slots prontos p/ futuros arquivos:
   "torso:hoodie:basic": {
     src: "/models/hoodie.glb",
@@ -209,9 +226,11 @@ const REGISTRY: Record<string, ModelConfig> = {
 /* ---------- API ---------- */
 
 export function getModelConfigFromSelection(sel: Selection): ModelConfig {
-  // Por enquanto, todas as pe?as usam o modelo padr?o de camiseta.
-  const cfg = REGISTRY["torso:shirt:basic"];
-  return cfg ?? {};
+  const canon = canonicalize(sel);
+  const key = keyFrom(canon);
+  const cfg = REGISTRY[key];
+  // Se não encontrar a seleção específica, usa o modelo padrão
+  return cfg ?? REGISTRY["torso:shirt:basic"] ?? {};
 }
 
 
