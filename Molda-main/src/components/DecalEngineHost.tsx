@@ -24,7 +24,6 @@ export default function DecalEngineHost({
   interactive = true,
 }: Props) {
   const containerRef = useRef<HTMLDivElement | null>(null);
-  const initedRef = useRef(false);
   const apiRef = useRef<DecalDemoHandle | null>(null);
   const prevExternalIdsRef = useRef<Set<string>>(new Set());
   const prevPayloadsRef = useRef<Map<string, Parameters<DecalDemoHandle["upsertExternalDecal"]>[0]>>(new Map());
@@ -61,9 +60,21 @@ export default function DecalEngineHost({
   };
 
   useEffect(() => {
-    if (initedRef.current) return; // inicializa apenas uma vez por montagem
     if (!containerRef.current) return;
-    initedRef.current = true;
+    
+    // Sempre limpar engine anterior se existir
+    if (apiRef.current) {
+      console.log("[DecalEngineHost] Destruindo engine anterior para reinicializar com novo modelo");
+      prevExternalIdsRef.current.forEach((id) => apiRef.current?.removeExternalDecal(id));
+      if (typeof apiRef.current.destroy === "function") {
+        apiRef.current.destroy();
+      }
+      apiRef.current = null;
+      prevExternalIdsRef.current = new Set();
+      prevPayloadsRef.current = new Map();
+      setReady(false);
+    }
+
     let cancelled = false;
 
     // Escolhe o modelo com base na seleção inicial do Molda-main
@@ -75,6 +86,8 @@ export default function DecalEngineHost({
     const src = cfg.src || "/models/tshirt-low-poly/scene.gltf";
     // usage.ts espera caminho relativo a /models
     const modelParam = src.startsWith("/models/") ? src.replace("/models/", "") : src;
+
+    console.log("[DecalEngineHost] Inicializando engine com modelo:", modelParam);
 
     const mountEl = containerRef.current;
     const boot = async () => {
@@ -89,6 +102,7 @@ export default function DecalEngineHost({
         if (cancelled) return;
         apiRef.current = handle;
         setReady(true);
+        console.log("[DecalEngineHost] Engine inicializado com sucesso");
       } catch (err) {
         // eslint-disable-next-line no-console
         console.error("Falha ao inicializar decal-engine:", err);
@@ -169,7 +183,6 @@ export default function DecalEngineHost({
       }
       prevExternalIdsRef.current = new Set();
       apiRef.current = null;
-      initedRef.current = false;
     };
   }, []);
 
