@@ -1,9 +1,8 @@
-# Molda-13 / Molda-main: Documentação Detalhada
+# Molda-13 
 
 ## Visão Geral
 
-Este projeto é uma plataforma avançada para customização, visualização e manipulação de modelos 3D de camisetas, com foco em aplicações de design, moda e e-commerce. Ele integra múltiplos engines, bibliotecas modernas de frontend, renderização 3D, manipulação de texturas, decalques e integração com serviços externos. O objetivo é fornecer uma experiência rica e interativa para usuários finais e desenvolvedores.
-
+Este projeto é uma plataforma avançada para customização, visualização e manipulação de modelos 3D de camisetas, com foco em aplicações de design, moda e e-commerce. Ele integra múltiplos engines, bibliotecas modernas de frontend, renderização 3D, manipulação de texturas, decalques e integração com serviços externos. O objetivo é fornecer uma experiência rica e interativa para usuários finais.
 ## Estrutura do Projeto
 
 O repositório é composto por dois diretórios principais:
