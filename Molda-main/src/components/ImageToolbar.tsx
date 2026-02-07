@@ -1453,11 +1453,11 @@ export default function ImageToolbar({ visible, editor, position = "bottom" }: P
   );
 
   if (position === "top") {
-    return <div className="fixed left-1/2 -translate-x-1/2 top-4 z-[60]">{toolbar}</div>;
+    return <div className="fixed left-1/2 -translate-x-1/2 top-4 z-[60] max-w-[95vw] w-fit">{toolbar}</div>;
   }
   if (position === "bottom") {
     return (
-      <div className="absolute left-1/2 -translate-x-1/2 bottom-6 z-[60]" style={{ maxWidth: "95%" }}>
+      <div className="absolute left-1/2 -translate-x-1/2 bottom-6 z-[60] max-w-[95vw] w-fit" style={{ width: "fit-content" }}>
         {toolbar}
       </div>
     );

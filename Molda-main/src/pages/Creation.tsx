@@ -1291,15 +1291,15 @@ const Creation = () => {
   };
 
   return (
-    <div className="min-h-screen overflow-hidden">
+    <div className="h-[100dvh] overflow-hidden flex flex-col">
       <Header />
 
-      <main className="container mx-auto px-4 py-6">
-        {/* Mesma altura nas duas colunas */}
-  <section className="grid [grid-template-columns:max-content_minmax(0,1fr)] items-stretch gap-x-6 gap-y-6 h-[calc(100vh-140px)] min-h-[700px] overflow-hidden">
+      <main className="flex-1 min-h-0 w-full px-3 sm:px-4 lg:px-6 py-4">
+        {/* Layout responsivo: empilha no mobile, 2 colunas no desktop */}
+        <section className="grid h-full min-h-0 overflow-hidden gap-4 lg:gap-5 xl:gap-6 grid-cols-1 [grid-template-rows:auto_minmax(0,1fr)] lg:[grid-template-rows:1fr] lg:[grid-template-columns:max-content_minmax(0,1fr)]">
 
           {/* Sidebar toma 100% da altura do grid */}
-          <div className="h-full min-h-0 overflow-hidden">
+          <div className="h-auto lg:h-full min-h-0 min-w-0 max-h-[40dvh] lg:max-h-none overflow-y-hidden overflow-x-visible">
             <ExpandableSidebar
               projectId={draftId}
               projectName={projectName}
@@ -1404,8 +1404,8 @@ const Creation = () => {
                 </div>
               )}
               {/* Abas do canvas dentro da área */}
-              <div className="absolute left-4 top-4 z-20 glass rounded-xl border p-1 shadow-md carousel-item-enter">
-                <div className="flex items-center gap-1">
+              <div className="absolute left-4 top-4 z-20 glass rounded-xl border p-1 shadow-md carousel-item-enter max-w-[calc(100%-2rem)]">
+                <div className="flex items-center gap-1 max-w-full overflow-x-auto scrollbar-hide">
                   {canvasTabs.map((tab) => {
                     const active = tab.id === activeCanvasTab;
                     const visibleIn3D = !!tabVisibility[tab.id];
@@ -1535,7 +1535,7 @@ const Creation = () => {
                   </div>
                 </div>
 
-                <div className="absolute left-1/2 bottom-6 z-10 max-w-[95%] -translate-x-1/2">
+                <div className="absolute left-1/2 bottom-6 z-10 max-w-[95vw] -translate-x-1/2">
                   {(tool !== "select" || isTrashMode) && (
                     <FloatingEditorToolbar
                       strokeColor={strokeColor}
@@ -1699,7 +1699,7 @@ const Creation = () => {
                         const showToolConfirm = cropModeActive || effectBrushActive || effectLassoActive || colorCutActive;
                         if (!showToolConfirm) return null;
                         return (
-                        <div className="absolute left-1/2 bottom-6 z-10 max-w-[95%] -translate-x-1/2">
+                        <div className="absolute left-1/2 bottom-6 z-10 max-w-[95vw] -translate-x-1/2">
                           <div
                             className={[
                               "relative",
@@ -1755,7 +1755,7 @@ const Creation = () => {
                         const colorCutActive = colorCutModeActive || !!activeEditor?.isColorCutActive?.();
                         return (!cropModeActive && !effectToolActive && !effectsEditModeActive && !colorCutActive && selectionKind === "text");
                       })() && (
-                        <div className="absolute left-1/2 bottom-6 z-10 max-w-[95%] -translate-x-1/2">
+                        <div className="absolute left-1/2 bottom-6 z-10 max-w-[95vw] -translate-x-1/2">
                           <div className={isToolbarTransitioning ? (toolbarTransitionType === "in" ? "flip-in" : "flip-out") : ""}>
                             <TextToolbar
                               editor={{ current: editorRefs.current[activeCanvasTab] as Editor2DHandle }}
@@ -1774,7 +1774,7 @@ const Creation = () => {
                         const colorCutActive = colorCutModeActive || !!activeEditor?.isColorCutActive?.();
                         return (!cropModeActive && !effectToolActive && !colorCutActive && (effectsEditModeActive || selectionKind === "image"));
                       })() && (
-                        <div className="absolute left-1/2 bottom-6 z-10 max-w-[95%] -translate-x-1/2">
+                        <div className="absolute left-1/2 bottom-6 z-10 max-w-[95vw] -translate-x-1/2">
                           <div className={isToolbarTransitioning ? (toolbarTransitionType === "in" ? "flip-in" : "flip-out") : ""}>
                             <ImageToolbar
                               editor={{ current: editorRefs.current[activeCanvasTab] as Editor2DHandle }}
@@ -1793,7 +1793,7 @@ const Creation = () => {
                         const colorCutActive = colorCutModeActive || !!activeEditor?.isColorCutActive?.();
                         return (!cropModeActive && !effectToolActive && !effectsEditModeActive && !colorCutActive && selectionKind !== "text" && selectionKind !== "image");
                       })() && (
-                        <div className="absolute left-1/2 bottom-6 z-10 max-w-[95%] -translate-x-1/2">
+                        <div className="absolute left-1/2 bottom-6 z-10 max-w-[95vw] -translate-x-1/2">
                           <div className={isToolbarTransitioning ? (toolbarTransitionType === "in" ? "flip-in" : "flip-out") : ""}>
                             <FloatingEditorToolbar
                               strokeColor={strokeColor}
