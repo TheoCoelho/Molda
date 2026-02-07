@@ -456,7 +456,7 @@ async function ensureFontReady(
 
         {isColorPanelOpen && (
           <div className="absolute left-0 bottom-full mb-3 z-30">
-            <div className="rounded-2xl p-3 w-[320px] bg-white/90 dark:bg-neutral-900/95 border border-black/10 dark:border-white/10">
+            <div className="rounded-2xl p-3 w-[min(320px,95vw)] bg-white/90 dark:bg-neutral-900/95 border border-black/10 dark:border-white/10">
               {/* S/V */}
               <div
                 ref={svRef}
@@ -655,7 +655,7 @@ if (!visible) return null;
 
 if (position === "top") {
   return (
-    <div className="fixed left-1/2 -translate-x-1/2 top-4 z-[60]">
+    <div className="fixed left-1/2 -translate-x-1/2 top-4 z-[60] max-w-[95vw] w-fit">
       {toolbar}
     </div>
   );
@@ -663,8 +663,8 @@ if (position === "top") {
 if (position === "bottom") {
   return (
     <div
-      className="absolute left-1/2 -translate-x-1/2 bottom-6 z-[60]"
-      style={{ maxWidth: "95%" }}
+      className="absolute left-1/2 -translate-x-1/2 bottom-6 z-[60] max-w-[95vw] w-fit"
+      style={{ width: "fit-content" }}
     >
       {toolbar}
     </div>

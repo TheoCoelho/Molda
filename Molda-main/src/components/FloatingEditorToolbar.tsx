@@ -371,7 +371,7 @@ export default function FloatingEditorToolbar({
             {/* ===== PAINEL DE COR (ACIMA) ===== */}
             {isColorPanelOpen && (
               <div className="absolute left-0 bottom-full mb-3 z-30">
-                <div className="rounded-2xl p-3 w-[320px] bg-white/90 dark:bg-neutral-900/95 border border-black/10 dark:border-white/10">
+                <div className="rounded-2xl p-3 w-[min(320px,95vw)] bg-white/90 dark:bg-neutral-900/95 border border-black/10 dark:border-white/10">
                   {/* S/V */}
                   <div
                     ref={svRef}
@@ -485,7 +485,7 @@ export default function FloatingEditorToolbar({
 
           {/* 3) Largura - aparece para lápis, linhas/curvas e ao selecionar formas */}
           {(tool === "brush" || tool === "line" || tool === "curve" || (tool === "select" && selectionKind !== "image")) && (
-            <div className="h-9 min-w-[220px] px-3 flex items-center gap-2 bg-white/30 dark:bg-neutral-900/60 backdrop-blur-md border border-white/20 dark:border-black/20 shadow rounded-xl">
+            <div className="h-9 min-w-[min(220px,90vw)] px-3 flex items-center gap-2 bg-white/30 dark:bg-neutral-900/60 backdrop-blur-md border border-white/20 dark:border-black/20 shadow rounded-xl">
               <div className="flex flex-col gap-0.5 opacity-60">
                 <Minus className="h-2 w-3" strokeWidth={1} />
                 <Minus className="h-2 w-3" strokeWidth={2} />
@@ -507,7 +507,7 @@ export default function FloatingEditorToolbar({
           )}
 
           {/* 4) Opacidade */}
-          <div className="h-9 min-w-[220px] px-3 flex items-center gap-2 bg-white/30 dark:bg-neutral-900/60 backdrop-blur-md border border-white/20 dark:border-black/20 shadow rounded-xl">
+          <div className="h-9 min-w-[min(220px,90vw)] px-3 flex items-center gap-2 bg-white/30 dark:bg-neutral-900/60 backdrop-blur-md border border-white/20 dark:border-black/20 shadow rounded-xl">
             <Eye className="h-4 w-4 opacity-60" />
             <input
               type="range"
