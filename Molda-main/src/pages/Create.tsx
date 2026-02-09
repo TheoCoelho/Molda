@@ -856,7 +856,7 @@ const Create = () => {
     <div className="min-h-screen">
       <Header />
 
-      <main className="container mx-auto px-6 py-10">
+      <main className="mx-auto w-full max-w-6xl px-4 sm:px-6 lg:px-10 xl:px-16 2xl:px-24 py-10">
         <div className="flex flex-col">
           <Tabs
             value={viewMode}

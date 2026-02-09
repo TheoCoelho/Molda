@@ -695,7 +695,7 @@ const Admin = () => {
   return (
     <div className="min-h-screen bg-background text-foreground">
       <Header />
-      <main className="container mx-auto px-6 py-10">
+      <main className="mx-auto w-full max-w-7xl px-4 sm:px-6 lg:px-10 xl:px-16 2xl:px-24 py-10">
         <div className="mb-8">
           <p className="text-xs uppercase tracking-[0.3em] text-muted-foreground">Admin</p>
           <h1 className="text-3xl font-semibold">Catalogo e disponibilidade</h1>

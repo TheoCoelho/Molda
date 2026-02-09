@@ -35,7 +35,7 @@ const TransitionsPlayground = () => {
     <div className="min-h-screen overflow-hidden">
       <Header />
 
-      <main className="container mx-auto px-4 py-8">
+      <main className="mx-auto w-full max-w-6xl px-4 sm:px-6 lg:px-10 xl:px-16 2xl:px-24 py-8">
         <section className="glass rounded-2xl border shadow-xl p-6">
           <div className="flex flex-col gap-4">
             <div className="flex flex-col gap-2">

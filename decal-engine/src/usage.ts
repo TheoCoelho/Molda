@@ -818,27 +818,41 @@ export async function initDecalDemo(container: HTMLElement, opts?: InitDecalDemo
 
   const normalizeModelScale = (object: THREE.Object3D) => {
     const bbox = new THREE.Box3().setFromObject(object);
-    if (bbox.isEmpty()) return;
+    if (bbox.isEmpty()) {
+      console.warn("⚠️  [Decal Engine] Empty bounding box for model");
+      return;
+    }
     const size = bbox.getSize(new THREE.Vector3());
     const maxDim = Math.max(size.x, size.y, size.z);
-    const target = 4.0; // mantém escala consistente entre modelos variando de centímetros a metros
+    console.log(`📏 [Decal Engine] Bbox size: ${size.x.toFixed(2)} x ${size.y.toFixed(2)} x ${size.z.toFixed(2)}, maxDim: ${maxDim.toFixed(2)}`);
+    // Aumentado de 4.0 para 6.0 para acomodar modelos maiores como long_sleeve_t-_shirt
+    const target = 6.0;
     if (maxDim <= 0) return;
-    if (maxDim <= target) return;
+    if (maxDim <= target) {
+      console.log(`✅ [Decal Engine] Model scale OK (${maxDim.toFixed(2)} <= ${target})`);
+      return;
+    }
     const scale = target / maxDim;
+    console.log(`🔧 [Decal Engine] Scaling model by ${scale.toFixed(4)}`);
     object.scale.multiplyScalar(scale);
   };
 
   function centerOnGrid(object: THREE.Object3D) {
     const box = new THREE.Box3().setFromObject(object);
-    if (box.isEmpty()) return;
+    if (box.isEmpty()) {
+      console.warn("⚠️  [Decal Engine] Empty bbox in centerOnGrid");
+      return;
+    }
     const size = new THREE.Vector3();
     const center = new THREE.Vector3();
     box.getSize(size);
     box.getCenter(center);
+    console.log(`📍 [Decal Engine] Centering model. Center: (${center.x.toFixed(2)}, ${center.y.toFixed(2)}, ${center.z.toFixed(2)})`);
     object.position.x -= center.x;
     object.position.z -= center.z;
     const yMin = box.min.y - center.y;
     object.position.y -= yMin;
+    console.log(`✅ [Decal Engine] Model centered`);
   }
 
   // ---------------- Carregar modelo ----------------
@@ -898,6 +912,9 @@ export async function initDecalDemo(container: HTMLElement, opts?: InitDecalDemo
       onError
     );
   };
+
+  console.log("🔧 [Decal Engine] Carregando modelo:", modelUrl);
+  console.log("🔧 [Decal Engine] isBlockShapeModel:", isBlockShapeModel);
 
   // ---- decal: estado e dimensões ----
   let decalWidth = 0.3;
@@ -1651,9 +1668,40 @@ export async function initDecalDemo(container: HTMLElement, opts?: InitDecalDemo
     defaultHeight = defaultWidth;
   defaultDepth = computeBaseDepth(defaultWidth, defaultHeight);
 
+    // Default placement: prefer a raycast hit on the actually visible surface.
+    // Some imported models (ex: long_sleeve_t-_shirt) are not oriented with "front" on +Z,
+    // so using bbox.max.z can place decals behind/inside the mesh.
     const center = bbox.getCenter(new THREE.Vector3());
-    defaultCenter.set(center.x, center.y, bbox.max.z + 0.02);
-    defaultNormal.set(0, 0, 1);
+    let placedByRaycast = false;
+    try {
+      const raycaster = new THREE.Raycaster();
+      raycaster.setFromCamera(new THREE.Vector2(0, 0), camera);
+      const hits = raycaster.intersectObject(targetRoot, true);
+      if (hits.length) {
+        const h = hits[0];
+        const hitPoint = h.point.clone();
+        const hitNormal = new THREE.Vector3(0, 0, 1);
+        if (h.face) {
+          hitNormal.copy(h.face.normal).transformDirection(h.object.matrixWorld).normalize();
+        } else {
+          // Fallback: face the camera.
+          hitNormal.copy(camera.position).sub(hitPoint).normalize();
+        }
+
+        // Offset a touch above the surface to avoid z-fighting.
+        const surfaceEps = Math.max(0.003, base * 0.002);
+        defaultCenter.copy(hitPoint).add(hitNormal.clone().multiplyScalar(surfaceEps));
+        defaultNormal.copy(hitNormal);
+        placedByRaycast = true;
+      }
+    } catch {
+      // ignore and fallback
+    }
+
+    if (!placedByRaycast) {
+      defaultCenter.set(center.x, center.y, bbox.max.z + 0.02);
+      defaultNormal.set(0, 0, 1);
+    }
 
     ensureAllSelectedDecals();
     ensurePendingExternalDecals();
@@ -1663,6 +1711,15 @@ export async function initDecalDemo(container: HTMLElement, opts?: InitDecalDemo
   loadModel(
     modelUrl,
     (loadedRoot) => {
+      console.log("✅ [Decal Engine] Modelo carregado com sucesso:", loadedRoot);
+      console.log("✅ [Decal Engine] Children count:", loadedRoot.children.length);
+      
+      // IMPORTANTE: Para modelos com matrizes de transformação com escala embutida,
+      // precisamos flattenar as transformações para evitar problemas de renderização
+      // Isso é especialmente importante para long_sleeve_t-_shirt que tem escala 10x
+      console.log("🔧 [Decal Engine] Flatten transformations...");
+      loadedRoot.updateMatrixWorld(true);
+      
       modelContainer.clear();
       root = loadedRoot;
       prepareMeshForDecals(root, {
@@ -1670,6 +1727,7 @@ export async function initDecalDemo(container: HTMLElement, opts?: InitDecalDemo
         weldTolerance: 1e-4,
         recomputeNormals: "smooth",
       });
+      console.log("✅ [Decal Engine] Meshes preparados");
       normalizeModelScale(root);
       centerOnGrid(root);
       modelContainer.add(root);
@@ -1678,22 +1736,34 @@ export async function initDecalDemo(container: HTMLElement, opts?: InitDecalDemo
       const size = bbox.getSize(new THREE.Vector3());
       const center = bbox.getCenter(new THREE.Vector3());
 
+      console.log(`📐 [Decal Engine] Bbox: ${size.x.toFixed(2)} x ${size.y.toFixed(2)} x ${size.z.toFixed(2)}`);
+      console.log(`📍 [Decal Engine] Bbox center: (${center.x.toFixed(2)}, ${center.y.toFixed(2)}, ${center.z.toFixed(2)})`);
+
       const radius = size.length() * 0.5 || 1;
+      console.log(`🔍 [Decal Engine] Radius: ${radius.toFixed(2)}`);
       const fov = (camera.fov * Math.PI) / 180;
       const baseDist = radius / Math.sin(fov / 2);
       const zoomMult = opts?.zoomMultiplier ?? (isInteractive ? 1.0 : 0.55);
       const dist = baseDist * zoomMult;
+
+      console.log(`📷 [Decal Engine] FOV: ${(camera.fov).toFixed(2)}°, baseDist: ${baseDist.toFixed(2)}, zoomMult: ${zoomMult}, finalDist: ${dist.toFixed(2)}`);
 
       camera.position.set(0.8 * dist, center.y, dist);
       camera.lookAt(center.x, center.y, center.z);
       controls.target.copy(center);
       controls.update();
 
+      console.log(`✅ [Decal Engine] Camera positioned at (${camera.position.x.toFixed(2)}, ${camera.position.y.toFixed(2)}, ${camera.position.z.toFixed(2)})`);
+      console.log(`✅ [Decal Engine] Looking at (${center.x.toFixed(2)}, ${center.y.toFixed(2)}, ${center.z.toFixed(2)})`);
+
     configureDecalPlacement(root);
       if (isInteractive) attachDragHandlers();
     },
     undefined,
-    (err) => console.error("Falha ao carregar modelo:", err)
+    (err) => {
+      console.error("❌ [Decal Engine] Falha ao carregar modelo:", err);
+      console.error("❌ [Decal Engine] URL tentado:", modelUrl);
+    }
   );
 
   // ---------------- Resize ----------------
