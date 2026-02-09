@@ -273,9 +273,30 @@ const Creation = () => {
   }, [stampImageSrc, stampColor]);
 
   const editorRefs = useRef<Record<string, Editor2DHandle | null>>({});
+  const twoDViewportRef = useRef<HTMLDivElement | null>(null);
+  const squareCanvasRef = useRef<HTMLDivElement | null>(null);
+  const [twoDViewportSize, setTwoDViewportSize] = useState<{ width: number; height: number } | null>(null);
   const lastEditorTabRef = useRef<string | null>(null);
   // Mantém refs estáveis para evitar loops com callback ref inline
   const prevTabRef = useRef<string>(activeCanvasTab);
+
+  useEffect(() => {
+    const el = twoDViewportRef.current;
+    if (!el || typeof ResizeObserver === "undefined") return;
+    const ro = new ResizeObserver((entries) => {
+      const entry = entries[0];
+      if (!entry) return;
+      const { width, height } = entry.contentRect;
+      setTwoDViewportSize({ width, height });
+    });
+    ro.observe(el);
+    return () => ro.disconnect();
+  }, []);
+
+  const squareViewportSize = useMemo(() => {
+    if (!twoDViewportSize) return null;
+    return Math.max(1, Math.floor(Math.max(twoDViewportSize.width, twoDViewportSize.height)));
+  }, [twoDViewportSize]);
 
   // Efeito para detectar mudança de tab e disparar transição
   useEffect(() => {
@@ -742,10 +763,16 @@ const Creation = () => {
 
       // Tenta selecionar o objeto sob o cursor no clique direito (UX: "clicar com o botão direito sobre")
       try {
-        const rect = event.currentTarget.getBoundingClientRect();
+        const rect = squareCanvasRef.current?.getBoundingClientRect() ?? event.currentTarget.getBoundingClientRect();
+        const x = event.clientX - rect.left;
+        const y = event.clientY - rect.top;
+        if (x < 0 || y < 0 || x > rect.width || y > rect.height) {
+          event.preventDefault();
+          return;
+        }
         inst.selectObjectAt?.({
-          x: event.clientX - rect.left,
-          y: event.clientY - rect.top,
+          x,
+          y,
           containerWidth: rect.width,
           containerHeight: rect.height,
         });
@@ -1579,39 +1606,51 @@ const Creation = () => {
                 <ContextMenu>
                   <ContextMenuTrigger asChild>
                     <div
-                      className={`absolute inset-0 ${
-                        activeCanvasTab !== "3d" && isTransitioning
-                          ? tabTransitionDirection === "left"
-                            ? "slide-in-left"
-                            : "slide-in-right"
-                          : ""
-                      }`}
+                      ref={twoDViewportRef}
+                      className="absolute inset-0 flex items-center justify-center"
                       onContextMenu={handleContextMenu}
-                      onDragOver={(e) => e.preventDefault()}
-                      onDrop={(e) => {
-                        e.preventDefault();
-                        const src = e.dataTransfer.getData("text/plain");
-                        const rect = e.currentTarget.getBoundingClientRect();
-                        const x = e.clientX - rect.left;
-                        const y = e.clientY - rect.top;
-                        if (src && activeIs2D) {
-                          editorRefs.current[activeCanvasTab]?.addImage(src, { x, y });
-                        }
-                      }}
                     >
-                      {canvasTabs
-                        .filter((tab) => tab.type === "2d")
-                        .map((tab) => (
-                          <div
-                            key={tab.id}
-                            style={{
-                              position: "absolute",
-                              inset: 0,
-                              visibility: tab.id === activeCanvasTab ? "visible" : "hidden",
-                              pointerEvents: tab.id === activeCanvasTab ? "auto" : "none",
-                              zIndex: tab.id === activeCanvasTab ? 2 : 1,
-                            }}
-                          >
+                      <div
+                        ref={squareCanvasRef}
+                        className={`relative overflow-hidden ${
+                          activeCanvasTab !== "3d" && isTransitioning
+                            ? tabTransitionDirection === "left"
+                              ? "slide-in-left"
+                              : "slide-in-right"
+                            : ""
+                        }`}
+                        style={
+                          squareViewportSize
+                            ? { width: `${squareViewportSize}px`, height: `${squareViewportSize}px` }
+                            : { width: "100%", height: "100%" }
+                        }
+                        onDragOver={(e) => e.preventDefault()}
+                        onDrop={(e) => {
+                          e.preventDefault();
+                          const src = e.dataTransfer.getData("text/plain");
+                          const rect = squareCanvasRef.current?.getBoundingClientRect();
+                          if (!rect) return;
+                          const x = e.clientX - rect.left;
+                          const y = e.clientY - rect.top;
+                          if (x < 0 || y < 0 || x > rect.width || y > rect.height) return;
+                          if (src && activeIs2D) {
+                            editorRefs.current[activeCanvasTab]?.addImage(src, { x, y });
+                          }
+                        }}
+                      >
+                        {canvasTabs
+                          .filter((tab) => tab.type === "2d")
+                          .map((tab) => (
+                            <div
+                              key={tab.id}
+                              style={{
+                                position: "absolute",
+                                inset: 0,
+                                visibility: tab.id === activeCanvasTab ? "visible" : "hidden",
+                                pointerEvents: tab.id === activeCanvasTab ? "auto" : "none",
+                                zIndex: tab.id === activeCanvasTab ? 2 : 1,
+                              }}
+                            >
                             <Editor2D
                               ref={(inst) => {
                                 if (!inst) return;
@@ -1825,6 +1864,7 @@ const Creation = () => {
                           </div>
                         </div>
                       )}
+                    </div>
                     </div>
                   </ContextMenuTrigger>
                   <ContextMenuContent className="w-56">
