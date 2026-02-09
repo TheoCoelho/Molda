@@ -1294,7 +1294,7 @@ const Creation = () => {
     <div className="h-[100dvh] overflow-hidden flex flex-col">
       <Header />
 
-      <main className="flex-1 min-h-0 w-full px-3 sm:px-4 lg:px-6 py-4">
+      <main className="flex-1 min-h-0 w-full mx-auto max-w-[1400px] 2xl:max-w-[1680px] px-3 sm:px-4 md:px-6 lg:px-8 xl:px-10 2xl:px-12 py-4">
         {/* Layout responsivo: empilha no mobile, 2 colunas no desktop */}
         <section className="grid h-full min-h-0 overflow-hidden gap-4 lg:gap-5 xl:gap-6 grid-cols-1 [grid-template-rows:auto_minmax(0,1fr)] lg:[grid-template-rows:1fr] lg:[grid-template-columns:max-content_minmax(0,1fr)]">
 
@@ -1404,20 +1404,20 @@ const Creation = () => {
                 </div>
               )}
               {/* Abas do canvas dentro da área */}
-              <div className="absolute left-4 top-4 z-20 glass rounded-xl border p-1 shadow-md carousel-item-enter max-w-[calc(100%-2rem)]">
-                <div className="flex items-center gap-1 max-w-full overflow-x-auto scrollbar-hide">
+              <div className="absolute left-4 top-4 z-20 glass rounded-lg border p-0 shadow-md carousel-item-enter inline-flex min-w-0 max-w-[calc(100%-2rem)] overflow-x-auto overflow-y-hidden">
+                <div className="flex flex-nowrap items-center gap-0 min-w-0 max-w-full whitespace-nowrap">
                   {canvasTabs.map((tab) => {
                     const active = tab.id === activeCanvasTab;
                     const visibleIn3D = !!tabVisibility[tab.id];
                     return (
                       <div
                         key={tab.id}
-                        className={`flex items-center gap-1 rounded-md px-3 h-8 text-sm transition-all duration-300 ${
-                          active ? "glass-strong scale-105 shadow-lg" : "hover:bg-white/20"
+                        className={`shrink-0 flex items-center gap-0.5 rounded-md px-1.5 sm:px-2 h-9 text-xs transition-all duration-300 ${
+                          active ? "glass-strong shadow-sm" : "hover:bg-white/20"
                         } ${active && isTransitioning ? "bounce-in" : ""}`}
                       >
                         <span
-                          className="flex-1 h-full px-1 text-left font-medium focus:outline-none inline-flex items-center cursor-pointer"
+                          className="h-full px-0.5 text-left font-medium focus:outline-none inline-flex items-center cursor-pointer min-w-0 max-w-[8rem] sm:max-w-[10rem] truncate"
                           aria-pressed={active}
                           tabIndex={0}
                           role="button"
@@ -1472,14 +1472,14 @@ const Creation = () => {
                                   return next;
                                 });
                               }}
-                              className="p-1 rounded-full hover:bg-white/20 transition"
+                              className="p-0.5 sm:p-1 lg:p-1.5 rounded-full hover:bg-white/20 transition"
                               aria-label={visibleIn3D ? "Ocultar no 3D" : "Mostrar no 3D"}
                               title={visibleIn3D ? "Ocultar no 3D" : "Mostrar no 3D"}
                             >
                               {visibleIn3D ? (
-                                <Eye className="w-4 h-4" />
+                                <Eye className="w-3.5 h-3.5 sm:w-4 sm:h-4 lg:w-5 lg:h-5" />
                               ) : (
-                                <EyeOff className="w-4 h-4" />
+                                <EyeOff className="w-3.5 h-3.5 sm:w-4 sm:h-4 lg:w-5 lg:h-5" />
                               )}
                             </button>
                             <button
@@ -1488,19 +1488,24 @@ const Creation = () => {
                                 e.stopPropagation();
                                 removeCanvasTab(tab.id);
                               }}
-                              className="p-1 rounded-full hover:bg-white/20 transition"
+                              className="p-0.5 sm:p-1 lg:p-1.5 rounded-full hover:bg-white/20 transition"
                               aria-label="Fechar aba"
                               title="Fechar aba"
                             >
-                              <X className="w-4 h-4 opacity-60 hover:opacity-100" />
+                              <X className="w-3.5 h-3.5 sm:w-4 sm:h-4 lg:w-5 lg:h-5 opacity-60 hover:opacity-100" />
                             </button>
                           </div>
                         )}
                       </div>
                     );
                   })}
-                  <Button onClick={add2DTab} size="icon" variant="ghost" className="h-8 w-8 ml-1">
-                    <Plus className="w-4 h-4" />
+                  <Button
+                    onClick={add2DTab}
+                    size="icon"
+                    variant="ghost"
+                    className="shrink-0 h-7 w-7 sm:h-8 sm:w-8 lg:h-9 lg:w-9 ml-0.5 sm:ml-1"
+                  >
+                    <Plus className="w-3.5 h-3.5 sm:w-4 sm:h-4 lg:w-5 lg:h-5" />
                   </Button>
                 </div>
               </div>

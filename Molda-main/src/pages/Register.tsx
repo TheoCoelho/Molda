@@ -162,7 +162,7 @@ const { error } = await signUp({
     <div className="min-h-screen ">
       <Header />
       <main className="pt-24">
-        <div className="container mx-auto px-6">
+        <div className="mx-auto w-full max-w-6xl px-4 sm:px-6 lg:px-10 xl:px-16 2xl:px-24">
           <div className="max-w-xl mx-auto">
             <Card className="shadow-lg border border-gray-200/60">
               <CardHeader className="text-center">

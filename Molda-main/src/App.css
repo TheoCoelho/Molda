@@ -1,7 +1,8 @@
 #root {
-  max-width: 1280px;
-  margin: 0 auto;
-  padding: 2rem;
+  /* Removed global max-width constraint to allow full viewport responsiveness */
+  /* Pages handle their own max-width constraints via their layout */
+  width: 100%;
+  padding: 0;
   text-align: center;
 }
 

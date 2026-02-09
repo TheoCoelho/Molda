@@ -43,7 +43,7 @@ const Finalize = () => {
     return (
       <div className="min-h-screen ">
         <Header />
-        <div className="pt-24 container mx-auto px-6 text-center">
+        <div className="pt-24 mx-auto w-full max-w-6xl px-4 sm:px-6 lg:px-10 xl:px-16 2xl:px-24 text-center">
           <p className="text-gray-600">Nenhum projeto encontrado.</p>
           <Button onClick={() => navigate('/create')} className="mt-4">
             Criar Novo Projeto
@@ -57,7 +57,7 @@ const Finalize = () => {
     <div className="min-h-screen bg-gradient-to-br from-purple-50 via-white to-pink-50">
       <Header />
       
-      <main className="pt-24 container mx-auto px-6 py-12">
+      <main className="pt-24 mx-auto w-full max-w-6xl px-4 sm:px-6 lg:px-10 xl:px-16 2xl:px-24 py-12">
         <div className="max-w-4xl mx-auto">
           {/* Cabeçalho */}
           <div className="flex items-center gap-4 mb-8">

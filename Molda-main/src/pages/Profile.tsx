@@ -469,7 +469,7 @@ const Profile = () => {
     <div className="min-h-screen">
       <Header />
       <div className="h-20" /> {/* Espaçador para compensar o header fixo */}
-      <main className="container mx-auto px-4 py-8 max-w-6xl">
+      <main className="mx-auto w-full max-w-6xl px-4 sm:px-6 lg:px-10 xl:px-16 2xl:px-24 py-8">
         {/* Banner de perfil */}
         <Card className="mb-6">
           <CardHeader className="py-6">

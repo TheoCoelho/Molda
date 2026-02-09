@@ -8,7 +8,7 @@ export default function Index() {
       <Header />
 
       {/* HERO */}
-      <section className="relative mx-auto max-w-6xl px-6 pt-20 pb-16">
+      <section className="relative mx-auto max-w-6xl px-4 sm:px-6 lg:px-10 xl:px-16 2xl:px-24 pt-20 pb-16">
         {/* blobs decorativos */}
         <div aria-hidden className="pointer-events-none absolute inset-0 -z-10">
           <div className="absolute -top-10 -left-8 h-56 w-56 rounded-full blur-3xl opacity-70"
@@ -72,7 +72,7 @@ export default function Index() {
       </section>
 
       {/* FEATURES */}
-      <section className="mx-auto max-w-6xl px-6 pb-28">
+      <section className="mx-auto max-w-6xl px-4 sm:px-6 lg:px-10 xl:px-16 2xl:px-24 pb-28">
         <div className="grid gap-6 sm:grid-cols-2 lg:grid-cols-3">
           <Feature
             title="Pincéis divertidos"
