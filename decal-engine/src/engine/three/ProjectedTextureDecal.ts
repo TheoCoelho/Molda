@@ -12,6 +12,8 @@ export type ProjectedTextureOptions = {
   opacity?: number;
   /** Borda suave (feather) */
   feather?: number;
+  /** Limite minimo para alinhamento da normal (permite liberar backfaces quando negativo) */
+  minFacing?: number;
 };
 
 export default class ProjectedTextureDecal {
@@ -28,7 +30,8 @@ export default class ProjectedTextureDecal {
     this.opts = {
       depth: opts.depth ?? 10,
       opacity: opts.opacity ?? 1.0,
-      feather: opts.feather ?? 0.02,
+      feather: opts.feather ?? 0.05, // Feather suave nas bordas (efeito adesivo)
+      minFacing: opts.minFacing ?? 0.3, // Apenas faces bem alinhadas (evita distorção)
     };
   }
 
@@ -83,6 +86,7 @@ export default class ProjectedTextureDecal {
         decalDepth: { value: this.opts.depth },
         opacity: { value: this.opts.opacity },
         feather: { value: this.opts.feather },
+        minFacing: { value: this.opts.minFacing },
       },
       vertexShader: `
         varying vec3 vWorldPosition;
@@ -105,6 +109,7 @@ export default class ProjectedTextureDecal {
         uniform float decalDepth;
         uniform float opacity;
         uniform float feather;
+        uniform float minFacing;
         
         varying vec3 vWorldPosition;
         varying vec3 vWorldNormal;
@@ -124,15 +129,15 @@ export default class ProjectedTextureDecal {
             discard;
           }
           
-          // Verifica profundidade
+          // Verifica profundidade (corte mais abrupto para evitar distorção)
           float depth = abs(localPos.z);
-          if (depth > decalDepth) {
+          if (depth > decalDepth * 0.6) {
             discard;
           }
           
           // Verifica se a normal está voltada para o projetor
           float facing = dot(vWorldNormal, projectorNormal);
-          if (facing < -0.3) {
+          if (facing < minFacing) {
             discard;
           }
           
@@ -145,19 +150,20 @@ export default class ProjectedTextureDecal {
           float edge = min(edgeX, edgeY);
           float alpha = smoothstep(0.0, feather, edge);
           
-          // Fade baseado na profundidade
-          float depthFade = 1.0 - smoothstep(decalDepth * 0.7, decalDepth, depth);
+          // Fade baseado na profundidade (mais abrupto para manter formato)
+          float depthFade = 1.0 - smoothstep(decalDepth * 0.4, decalDepth * 0.6, depth);
           
           gl_FragColor = vec4(texColor.rgb, texColor.a * alpha * depthFade * opacity);
         }
       `,
       transparent: true,
-      side: THREE.DoubleSide,
+      side: THREE.FrontSide, // Renderiza apenas o lado voltado para a câmera do projetor
       depthTest: true,
       depthWrite: false,
       polygonOffset: true,
-      polygonOffsetFactor: -4,
-      polygonOffsetUnits: -4,
+      polygonOffsetFactor: -16,
+      polygonOffsetUnits: -16,
+      toneMapped: false,
     });
   }
 
@@ -183,22 +189,18 @@ export default class ProjectedTextureDecal {
     // Cria o material de projeção
     this.decalMaterial = this.createProjectionMaterial(position, normal, width, height, angleRad);
 
-    // Clona a geometria do target para criar o mesh do decal
+    // Clona a geometria do target para criar mesh que segue os contornos
+    // Mantém os vértices em espaço LOCAL (como original)
     const decalGeometry = target.geometry.clone();
     this.mesh = new THREE.Mesh(decalGeometry, this.decalMaterial);
+    this.mesh.renderOrder = 999;
+    this.mesh.visible = true;
     
-    // Copia transformações do target
-    this.mesh.position.copy(target.position);
-    this.mesh.rotation.copy(target.rotation);
-    this.mesh.scale.copy(target.scale);
-    this.mesh.matrixAutoUpdate = true;
-    this.mesh.updateMatrix();
-    this.mesh.updateMatrixWorld(true);
-
-    // Adiciona ao parent do target para herdar transformações
-    if (target.parent) {
-      target.parent.add(this.mesh);
-    }
+    // IMPORTANTE: Copia a matriz world completa do target
+    // Isso garante alinhamento PERFEITO, contabilizando transformações de pais
+    // O shader receberá vWorldPosition correto através da matrixWorld do mesh
+    this.mesh.matrix.copy(target.matrixWorld);
+    this.mesh.matrixAutoUpdate = false;
 
     return this.mesh;
   }
@@ -217,7 +219,9 @@ export default class ProjectedTextureDecal {
       if (this.mesh.parent) {
         this.mesh.parent.remove(this.mesh);
       }
-      this.mesh.geometry.dispose();
+      if (this.mesh.geometry) {
+        this.mesh.geometry.dispose();
+      }
       if (this.decalMaterial) {
         this.decalMaterial.dispose();
       }

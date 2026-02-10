@@ -35,6 +35,12 @@ export type InitDecalDemoOptions = {
   hideMenu?: boolean;
   /** Multiplier for camera distance (lower = closer). Defaults to 1.0 (normal) or 0.55 when non-interactive. */
   zoomMultiplier?: number;
+  /** Force decal mode (mesh = DecalGeometry, projected = shader projection). */
+  decalMode?: "mesh" | "projected";
+  /** Lock decal aspect ratio to the source texture. */
+  lockAspectRatio?: boolean;
+  /** Favor a flatter projection by limiting facing angles (may trim curved areas). */
+  preferFlatProjection?: boolean;
 };
 
 const DEFAULT_BACKGROUND_COLOR: THREE.ColorRepresentation = 0x111111;
@@ -229,6 +235,7 @@ export async function initDecalDemo(container: HTMLElement, opts?: InitDecalDemo
     galleryItemId: string;
     projector: ProjectorLike;
     texture: THREE.Texture;
+    aspect: number;
     width: number;
     height: number;
     depth: number;
@@ -245,6 +252,8 @@ export async function initDecalDemo(container: HTMLElement, opts?: InitDecalDemo
 
   const depthMultiplier = 1.0;
   const GIZMO_EXTENT_SCALE = 1.18; // margem extra para reduzir clipping nas bordas
+  const lockAspectRatio = opts?.lockAspectRatio ?? false;
+  const preferFlatProjection = opts?.preferFlatProjection ?? false;
 
   const computeBaseDepth = (width: number, height: number) =>
     Math.max(width, height) * depthMultiplier;
@@ -280,6 +289,30 @@ export async function initDecalDemo(container: HTMLElement, opts?: InitDecalDemo
     proj.setTransform(position, normal, scaledW, scaledH, scaledD, -angleRad, isPreview);
   };
 
+  const getTextureAspect = (texture: THREE.Texture) => {
+    const image = texture.image as
+      | { width?: number; height?: number; naturalWidth?: number; naturalHeight?: number }
+      | undefined;
+    const w = image?.naturalWidth ?? image?.width ?? 0;
+    const h = image?.naturalHeight ?? image?.height ?? 0;
+    if (!Number.isFinite(w) || !Number.isFinite(h) || w <= 0 || h <= 0) return 1;
+    return w / h;
+  };
+
+  const applyAspectLock = (
+    width: number,
+    height: number,
+    aspect: number,
+    mode: "keep-width" | "keep-height"
+  ) => {
+    if (!lockAspectRatio) return { width, height };
+    if (!Number.isFinite(aspect) || aspect <= 0) return { width, height };
+    if (mode === "keep-height") {
+      return { width: height * aspect, height };
+    }
+    return { width, height: width / aspect };
+  };
+
   let defaultWidth = 0.3;
   let defaultHeight = 0.3;
   let defaultDepth = computeBaseDepth(defaultWidth, defaultHeight);
@@ -296,35 +329,37 @@ export async function initDecalDemo(container: HTMLElement, opts?: InitDecalDemo
   // - profundidade máxima menor (reduz wrap em dobras)
   // - z-band mais curto (mantém só a camada frontal)
   // - limites de shear/skew (reduz estiramento)
-  const projectorOptions = {
+  const baseProjectorOptions = {
     // Mais permissivo para reduzir “cortes”, mas ainda limita deformação em relevos.
-    angleClampDeg: 86,
-    depthFromSizeScale: 0.2,
-    maxDepthScale: 0.45,
+    angleClampDeg: 88,
+    depthFromSizeScale: 0.25,
+    maxDepthScale: 0.6,
 
     frontOnly: true,
     // Evita sumir partes do decal em dobras/curvas (o filtro de zBand já ajuda a não pegar o verso)
     frontHalfOnly: false,
 
-    sliverAspectMin: 0.001,
-    areaMin: 1e-8,
+    sliverAspectMin: 0.0005,
+    areaMin: 1e-9,
 
     // Banda mais larga = menos buracos, ainda mantém preferência pela camada frontal
-    zBandFraction: 0.4,
-    zBandMin: 0.012,
-    zBandPadding: 0.012,
+    zBandFraction: 0.55,
+    zBandMin: 0.015,
+    zBandPadding: 0.02,
 
-    maxRadiusFraction: 1.0,
+    maxRadiusFraction: 1.1,
 
     // Filtros anti-estiramento mais suaves (menos descarte -> menos cortes)
-    normalAlignmentMin: 0.0,
-    maxShearRatio: 5.0,
-    maxDepthSkew: 0.6,
+    normalAlignmentMin: -0.2,
+    maxShearRatio: 8.0,
+    maxDepthSkew: 0.75,
 
     adaptiveDepth: true,
-    adaptiveDepthStrength: 0.7,
-    adaptiveDepthMinScale: 0.4,
+    adaptiveDepthStrength: 0.8,
+    adaptiveDepthMinScale: 0.35,
   };
+
+  let projectorOptions = { ...baseProjectorOptions };
 
   function getGalleryItemById(id: string): GalleryItem | null {
     return galleryState.items.find((g) => g.id === id) ?? null;
@@ -425,6 +460,7 @@ export async function initDecalDemo(container: HTMLElement, opts?: InitDecalDemo
       let height = defaultHeight;
       let depth = defaultDepth;
       let angle = 0;
+      const aspect = getTextureAspect(texture);
 
       const ext = pendingExternalPayloads.get(item.id);
       if (ext) {
@@ -436,11 +472,24 @@ export async function initDecalDemo(container: HTMLElement, opts?: InitDecalDemo
         if (ext.normal) normal.set(ext.normal.x, ext.normal.y, ext.normal.z).normalize();
       }
 
+      if (lockAspectRatio) {
+        const keepMode = ext?.height && !ext?.width ? "keep-height" : "keep-width";
+        const locked = applyAspectLock(width, height, aspect, keepMode);
+        width = locked.width;
+        height = locked.height;
+      }
+
       // Escolhe o adaptador baseado no tipo de modelo
       let adapter: ProjectorLike;
       if (useProjectedDecal) {
+        const projectedOptions = {
+          ...projectorOptions,
+          normalAlignmentMin: preferFlatProjection
+            ? Math.max(projectorOptions.normalAlignmentMin ?? 0, 0.2)
+            : -1,
+        };
         // Usa projeção de textura para modelos complexos (imagem inteira, não cortada por faces)
-        adapter = new ProjectedDecalAdapter(scene, texture, projectorOptions) as unknown as ProjectorLike;
+        adapter = new ProjectedDecalAdapter(scene, texture, projectedOptions) as unknown as ProjectorLike;
       } else {
         // Usa MeshDecalAdapter para projeção de decal tradicional (igual ao Molda-main)
         adapter = new MeshDecalAdapter(scene, texture, projectorOptions) as unknown as ProjectorLike;
@@ -457,6 +506,7 @@ export async function initDecalDemo(container: HTMLElement, opts?: InitDecalDemo
         galleryItemId: item.id,
         projector: adapter,
         texture,
+        aspect,
         width,
         height,
         depth,
@@ -514,8 +564,17 @@ export async function initDecalDemo(container: HTMLElement, opts?: InitDecalDemo
       const record = decals.get(id);
       if (record) {
         record.texture = texture;
-        if (payload.width) record.width = payload.width;
-        if (payload.height) record.height = payload.height;
+        record.aspect = getTextureAspect(texture);
+        const hasWidth = typeof payload.width === "number";
+        const hasHeight = typeof payload.height === "number";
+        if (hasWidth) record.width = payload.width as number;
+        if (hasHeight) record.height = payload.height as number;
+        if (lockAspectRatio) {
+          const keepMode = hasHeight && !hasWidth ? "keep-height" : "keep-width";
+          const locked = applyAspectLock(record.width, record.height, record.aspect, keepMode);
+          record.width = locked.width;
+          record.height = locked.height;
+        }
         if (payload.depth) record.depth = payload.depth;
         if (typeof payload.angle === "number") record.angle = payload.angle;
         if (payload.position) record.center.set(payload.position.x, payload.position.y, payload.position.z);
@@ -587,6 +646,13 @@ export async function initDecalDemo(container: HTMLElement, opts?: InitDecalDemo
     decalAngle = record.angle;
     decalCenter = record.center;
     decalNormal = record.normal;
+    decalAspect = record.aspect || (decalWidth / (decalHeight || 1));
+    if (lockAspectRatio) {
+      const locked = applyAspectLock(decalWidth, decalHeight, decalAspect, "keep-width");
+      decalWidth = locked.width;
+      decalHeight = locked.height;
+      decalDepth = computeBaseDepth(decalWidth, decalHeight);
+    }
     select();
     updateOverlay();
   }
@@ -818,49 +884,53 @@ export async function initDecalDemo(container: HTMLElement, opts?: InitDecalDemo
 
   const normalizeModelScale = (object: THREE.Object3D) => {
     const bbox = new THREE.Box3().setFromObject(object);
-    if (bbox.isEmpty()) {
-      console.warn("⚠️  [Decal Engine] Empty bounding box for model");
-      return;
-    }
+    if (bbox.isEmpty()) return;
     const size = bbox.getSize(new THREE.Vector3());
     const maxDim = Math.max(size.x, size.y, size.z);
-    console.log(`📏 [Decal Engine] Bbox size: ${size.x.toFixed(2)} x ${size.y.toFixed(2)} x ${size.z.toFixed(2)}, maxDim: ${maxDim.toFixed(2)}`);
-    // Aumentado de 4.0 para 6.0 para acomodar modelos maiores como long_sleeve_t-_shirt
-    const target = 6.0;
+    const target = 4.0; // mantém escala consistente entre modelos variando de centímetros a metros
     if (maxDim <= 0) return;
-    if (maxDim <= target) {
-      console.log(`✅ [Decal Engine] Model scale OK (${maxDim.toFixed(2)} <= ${target})`);
-      return;
-    }
+    if (maxDim <= target) return;
     const scale = target / maxDim;
-    console.log(`🔧 [Decal Engine] Scaling model by ${scale.toFixed(4)}`);
     object.scale.multiplyScalar(scale);
   };
 
   function centerOnGrid(object: THREE.Object3D) {
     const box = new THREE.Box3().setFromObject(object);
-    if (box.isEmpty()) {
-      console.warn("⚠️  [Decal Engine] Empty bbox in centerOnGrid");
-      return;
-    }
+    if (box.isEmpty()) return;
     const size = new THREE.Vector3();
     const center = new THREE.Vector3();
     box.getSize(size);
     box.getCenter(center);
-    console.log(`📍 [Decal Engine] Centering model. Center: (${center.x.toFixed(2)}, ${center.y.toFixed(2)}, ${center.z.toFixed(2)})`);
     object.position.x -= center.x;
     object.position.z -= center.z;
     const yMin = box.min.y - center.y;
     object.position.y -= yMin;
-    console.log(`✅ [Decal Engine] Model centered`);
   }
 
   // ---------------- Carregar modelo ----------------
   const params = new URLSearchParams(window.location.search);
   const modelFile = opts?.model || params.get("model") || "tshirt_model/scene.gltf";
+  const decalMode = opts?.decalMode ?? (params.get("decalMode") === "projected" ? "projected" : "mesh");
   // Detecta se é o modelo "block shape abstract" (usa projeção especial)
   const isBlockShapeModel = modelFile.includes("oversize_t-shirt/") || modelFile.includes("block_shape_abstract");
-  useProjectedDecal = isBlockShapeModel;
+  // Modelos de manga longa podem ter normais invertidas/dupla face: relaxa filtros
+  const isLongSleeveModel = modelFile.includes("long_sleeve_t-_shirt") || modelFile.includes("womens_long_sleeve");
+  if (isLongSleeveModel) {
+    projectorOptions = {
+      ...projectorOptions,
+      frontOnly: false,
+      normalAlignmentMin: -1,
+      zBandFraction: 1.0,
+      zBandMin: 0,
+      zBandPadding: 0,
+      maxDepthScale: 1.0,
+      maxShearRatio: 12.0,
+      maxDepthSkew: 1.0,
+      sliverAspectMin: 0,
+      areaMin: 0,
+    };
+  }
+  useProjectedDecal = decalMode === "projected" ? true : isBlockShapeModel;
   // Modo mesh (DecalGeometry) é o único disponível
   const modelUrl = `/models/${modelFile}`;
   const gltfLoader = new GLTFLoader();
@@ -913,9 +983,6 @@ export async function initDecalDemo(container: HTMLElement, opts?: InitDecalDemo
     );
   };
 
-  console.log("🔧 [Decal Engine] Carregando modelo:", modelUrl);
-  console.log("🔧 [Decal Engine] isBlockShapeModel:", isBlockShapeModel);
-
   // ---- decal: estado e dimensões ----
   let decalWidth = 0.3;
   let decalHeight = 0.3;
@@ -923,6 +990,7 @@ export async function initDecalDemo(container: HTMLElement, opts?: InitDecalDemo
   let decalAngle = 0;
   let decalCenter = new THREE.Vector3();
   let decalNormal = new THREE.Vector3(0, 0, 1);
+  let decalAspect = 1;
 
   // ---- seleção do gizmo ----
   let selected = false;        // seleciona ao criar
@@ -1394,6 +1462,7 @@ export async function initDecalDemo(container: HTMLElement, opts?: InitDecalDemo
   let dragPlane: THREE.Plane | null = null;
   let startCenter = new THREE.Vector3();
   let startW = 0, startH = 0, startA = 0;
+  let startAspect = 1;
   let startHandleLocal = new THREE.Vector2();
   let startHandleAngle = 0;
 
@@ -1405,6 +1474,7 @@ export async function initDecalDemo(container: HTMLElement, opts?: InitDecalDemo
     if (projector.setDragging) projector.setDragging(true);
     startCenter.copy(decalCenter);
     startW = decalWidth; startH = decalHeight; startA = decalAngle;
+    startAspect = decalAspect || (startH ? startW / startH : 1);
 
     // para scale/rotate, manter uma referência de plano; para move usaremos raycast
     dragPlane = new THREE.Plane().setFromNormalAndCoplanarPoint(decalNormal, decalCenter);
@@ -1507,12 +1577,28 @@ export async function initDecalDemo(container: HTMLElement, opts?: InitDecalDemo
         if (dragMode === "scale-tm" || dragMode === "scale-bm") {
           decalWidth = startW;
           decalHeight = Math.max(1e-4, startH + 2 * dy);
+          if (lockAspectRatio) {
+            decalWidth = Math.max(1e-4, decalHeight * startAspect);
+          }
         } else if (dragMode === "scale-ml" || dragMode === "scale-mr") {
           decalWidth = Math.max(1e-4, startW + 2 * dx);
           decalHeight = startH;
+          if (lockAspectRatio) {
+            decalHeight = Math.max(1e-4, decalWidth / startAspect);
+          }
         } else {
-          decalWidth = Math.max(1e-4, startW + 2 * dx);
-          decalHeight = Math.max(1e-4, startH + 2 * dy);
+          const nextW = Math.max(1e-4, startW + 2 * dx);
+          const nextH = Math.max(1e-4, startH + 2 * dy);
+          if (lockAspectRatio) {
+            const scaleW = nextW / startW;
+            const scaleH = nextH / startH;
+            const scale = Math.abs(scaleW) > Math.abs(scaleH) ? scaleW : scaleH;
+            decalWidth = Math.max(1e-4, startW * scale);
+            decalHeight = Math.max(1e-4, startH * scale);
+          } else {
+            decalWidth = nextW;
+            decalHeight = nextH;
+          }
         }
   decalDepth = computeBaseDepth(decalWidth, decalHeight);
       }
@@ -1668,40 +1754,9 @@ export async function initDecalDemo(container: HTMLElement, opts?: InitDecalDemo
     defaultHeight = defaultWidth;
   defaultDepth = computeBaseDepth(defaultWidth, defaultHeight);
 
-    // Default placement: prefer a raycast hit on the actually visible surface.
-    // Some imported models (ex: long_sleeve_t-_shirt) are not oriented with "front" on +Z,
-    // so using bbox.max.z can place decals behind/inside the mesh.
     const center = bbox.getCenter(new THREE.Vector3());
-    let placedByRaycast = false;
-    try {
-      const raycaster = new THREE.Raycaster();
-      raycaster.setFromCamera(new THREE.Vector2(0, 0), camera);
-      const hits = raycaster.intersectObject(targetRoot, true);
-      if (hits.length) {
-        const h = hits[0];
-        const hitPoint = h.point.clone();
-        const hitNormal = new THREE.Vector3(0, 0, 1);
-        if (h.face) {
-          hitNormal.copy(h.face.normal).transformDirection(h.object.matrixWorld).normalize();
-        } else {
-          // Fallback: face the camera.
-          hitNormal.copy(camera.position).sub(hitPoint).normalize();
-        }
-
-        // Offset a touch above the surface to avoid z-fighting.
-        const surfaceEps = Math.max(0.003, base * 0.002);
-        defaultCenter.copy(hitPoint).add(hitNormal.clone().multiplyScalar(surfaceEps));
-        defaultNormal.copy(hitNormal);
-        placedByRaycast = true;
-      }
-    } catch {
-      // ignore and fallback
-    }
-
-    if (!placedByRaycast) {
-      defaultCenter.set(center.x, center.y, bbox.max.z + 0.02);
-      defaultNormal.set(0, 0, 1);
-    }
+    defaultCenter.set(center.x, center.y, bbox.max.z + 0.02);
+    defaultNormal.set(0, 0, 1);
 
     ensureAllSelectedDecals();
     ensurePendingExternalDecals();
@@ -1711,15 +1766,6 @@ export async function initDecalDemo(container: HTMLElement, opts?: InitDecalDemo
   loadModel(
     modelUrl,
     (loadedRoot) => {
-      console.log("✅ [Decal Engine] Modelo carregado com sucesso:", loadedRoot);
-      console.log("✅ [Decal Engine] Children count:", loadedRoot.children.length);
-      
-      // IMPORTANTE: Para modelos com matrizes de transformação com escala embutida,
-      // precisamos flattenar as transformações para evitar problemas de renderização
-      // Isso é especialmente importante para long_sleeve_t-_shirt que tem escala 10x
-      console.log("🔧 [Decal Engine] Flatten transformations...");
-      loadedRoot.updateMatrixWorld(true);
-      
       modelContainer.clear();
       root = loadedRoot;
       prepareMeshForDecals(root, {
@@ -1727,7 +1773,6 @@ export async function initDecalDemo(container: HTMLElement, opts?: InitDecalDemo
         weldTolerance: 1e-4,
         recomputeNormals: "smooth",
       });
-      console.log("✅ [Decal Engine] Meshes preparados");
       normalizeModelScale(root);
       centerOnGrid(root);
       modelContainer.add(root);
@@ -1736,34 +1781,22 @@ export async function initDecalDemo(container: HTMLElement, opts?: InitDecalDemo
       const size = bbox.getSize(new THREE.Vector3());
       const center = bbox.getCenter(new THREE.Vector3());
 
-      console.log(`📐 [Decal Engine] Bbox: ${size.x.toFixed(2)} x ${size.y.toFixed(2)} x ${size.z.toFixed(2)}`);
-      console.log(`📍 [Decal Engine] Bbox center: (${center.x.toFixed(2)}, ${center.y.toFixed(2)}, ${center.z.toFixed(2)})`);
-
       const radius = size.length() * 0.5 || 1;
-      console.log(`🔍 [Decal Engine] Radius: ${radius.toFixed(2)}`);
       const fov = (camera.fov * Math.PI) / 180;
       const baseDist = radius / Math.sin(fov / 2);
       const zoomMult = opts?.zoomMultiplier ?? (isInteractive ? 1.0 : 0.55);
       const dist = baseDist * zoomMult;
-
-      console.log(`📷 [Decal Engine] FOV: ${(camera.fov).toFixed(2)}°, baseDist: ${baseDist.toFixed(2)}, zoomMult: ${zoomMult}, finalDist: ${dist.toFixed(2)}`);
 
       camera.position.set(0.8 * dist, center.y, dist);
       camera.lookAt(center.x, center.y, center.z);
       controls.target.copy(center);
       controls.update();
 
-      console.log(`✅ [Decal Engine] Camera positioned at (${camera.position.x.toFixed(2)}, ${camera.position.y.toFixed(2)}, ${camera.position.z.toFixed(2)})`);
-      console.log(`✅ [Decal Engine] Looking at (${center.x.toFixed(2)}, ${center.y.toFixed(2)}, ${center.z.toFixed(2)})`);
-
     configureDecalPlacement(root);
       if (isInteractive) attachDragHandlers();
     },
     undefined,
-    (err) => {
-      console.error("❌ [Decal Engine] Falha ao carregar modelo:", err);
-      console.error("❌ [Decal Engine] URL tentado:", modelUrl);
-    }
+    (err) => console.error("Falha ao carregar modelo:", err)
   );
 
   // ---------------- Resize ----------------
