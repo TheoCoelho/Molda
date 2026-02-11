@@ -119,6 +119,7 @@ export default function Tab3DPreview({
         id: decal.id,
         label: decal.label,
         src: decal.dataUrl,
+        locked: true,
         position: t?.position ?? undefined,
         normal: t?.normal ?? undefined,
         width: t?.width ?? undefined,

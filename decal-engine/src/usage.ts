@@ -12,6 +12,7 @@ export type ExternalDecalPayload = {
   id: string;
   label?: string;
   src: string;
+  locked?: boolean;
   width?: number;
   height?: number;
   depth?: number;
@@ -228,6 +229,7 @@ export async function initDecalDemo(container: HTMLElement, opts?: InitDecalDemo
   type DecalRecord = {
     id: string;
     galleryItemId: string;
+    locked: boolean;
     projector: ProjectorLike;
     texture: THREE.Texture;
     width: number;
@@ -428,6 +430,7 @@ export async function initDecalDemo(container: HTMLElement, opts?: InitDecalDemo
       let angle = 0;
 
       const ext = pendingExternalPayloads.get(item.id);
+      const locked = !!ext?.locked;
       if (ext) {
         if (typeof ext.width === "number") width = ext.width;
         if (typeof ext.height === "number") height = ext.height;
@@ -456,6 +459,7 @@ export async function initDecalDemo(container: HTMLElement, opts?: InitDecalDemo
       const record: DecalRecord = {
         id: item.id,
         galleryItemId: item.id,
+        locked,
         projector: adapter,
         texture,
         width,
@@ -468,7 +472,7 @@ export async function initDecalDemo(container: HTMLElement, opts?: InitDecalDemo
       };
       decals.set(item.id, record);
       pendingExternalDecals.delete(item.id);
-      if (makeActive) setActiveDecal(item.id);
+      if (makeActive && !locked) setActiveDecal(item.id);
       renderGallery();
       emitDecalState();
     });
@@ -498,7 +502,9 @@ export async function initDecalDemo(container: HTMLElement, opts?: InitDecalDemo
     if (!item) {
       item = { id, label, src: payload.src, hidden: true };
       galleryState.items.push(item);
-      galleryState.selectedIds.add(id);
+      if (!payload.locked) {
+        galleryState.selectedIds.add(id);
+      }
       pendingExternalDecals.add(id);
       renderGallery();
       ensureDecalForGalleryItem(item, false);
@@ -515,6 +521,7 @@ export async function initDecalDemo(container: HTMLElement, opts?: InitDecalDemo
       const record = decals.get(id);
       if (record) {
         record.texture = texture;
+        record.locked = !!payload.locked;
         if (payload.width) record.width = payload.width;
         if (payload.height) record.height = payload.height;
         if (payload.depth) record.depth = payload.depth;
@@ -531,6 +538,10 @@ export async function initDecalDemo(container: HTMLElement, opts?: InitDecalDemo
           record.depth,
           record.angle
         );
+        if (record.locked) {
+          galleryState.selectedIds.delete(id);
+          if (activeDecalId === id) setActiveDecal(null);
+        }
         pendingExternalDecals.delete(id);
         emitDecalState();
       } else {
@@ -538,7 +549,9 @@ export async function initDecalDemo(container: HTMLElement, opts?: InitDecalDemo
           pendingExternalDecals.add(id);
           return;
         }
-        galleryState.selectedIds.add(id);
+        if (!payload.locked) {
+          galleryState.selectedIds.add(id);
+        }
         ensureDecalForGalleryItem(item!, false);
       }
     });
@@ -968,7 +981,9 @@ export async function initDecalDemo(container: HTMLElement, opts?: InitDecalDemo
     }
     const decalId = obj && obj.userData ? (obj.userData.__decalId as string | undefined) : undefined;
     if (!decalId) return null;
-    return decals.get(decalId) ?? null;
+    const record = decals.get(decalId) ?? null;
+    if (record && record.locked) return null;
+    return record;
   }
 
   // ---- overlay SVG (gizmo) ----
