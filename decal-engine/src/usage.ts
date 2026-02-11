@@ -27,6 +27,7 @@ export type DecalDemoHandle = {
   destroy: () => void;
 };
 
+
 export type InitDecalDemoOptions = {
   interactive?: boolean;
   background?: THREE.ColorRepresentation | null;

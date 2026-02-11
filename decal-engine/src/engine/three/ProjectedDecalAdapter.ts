@@ -16,6 +16,7 @@ export default class ProjectedDecalAdapter {
   private mesh: THREE.Mesh | null = null;
   private ray: THREE.Raycaster = new THREE.Raycaster();
   private texture: THREE.Texture;
+  private previousMesh: THREE.Mesh | null = null; // Rastreia mesh anterior for cleanup
 
   // Estado para preview rápido (interface compatível com MeshDecalAdapter)
   private isDragging = false;
@@ -34,13 +35,16 @@ export default class ProjectedDecalAdapter {
   private static readonly GHOST_OPACITY = 0.6;
   private static readonly GHOST_OFFSET = 0.03; // Distância à frente da superfície
 
-  constructor(scene: THREE.Scene, texture: THREE.Texture, _opts: any = {}) {
+  constructor(scene: THREE.Scene, texture: THREE.Texture, opts: any = {}) {
     this.scene = scene;
     this.texture = texture;
+    const minFacing =
+      typeof opts?.normalAlignmentMin === "number" ? opts.normalAlignmentMin : -0.3;
     this.projected = new ProjectedTextureDecal(texture, {
       depth: 50, // Profundidade grande para atravessar o objeto
       opacity: 1.0,
       feather: 0.02,
+      minFacing: 0.0, // Renderiza apenas faces voltadas para o projetor, evita aparição no lado oposto
     });
   }
 
@@ -171,11 +175,13 @@ export default class ProjectedDecalAdapter {
     // Quando para de arrastar, faz commit da posição final
     if (wasDragging && !dragging) {
       this.removeGhostMesh();
-      if (this.mesh) {
-        this.mesh.visible = true;
-      }
+      // Faz rebuild PRIMEIRO para criar nova mesh, DEPOIS torna visível
       if (this.pendingTransform) {
         this.commitTransform();
+      }
+      // Agora torna o novo mesh visível
+      if (this.mesh) {
+        this.mesh.visible = true;
       }
     }
   }
@@ -200,22 +206,56 @@ export default class ProjectedDecalAdapter {
     depth: number,
     angleRad: number
   ) {
-    // Remove mesh anterior se existir
+    // Cleanup agressivo: remove ANTERIOR completamente
+    if (this.previousMesh) {
+      if (this.previousMesh.parent) {
+        this.previousMesh.parent.remove(this.previousMesh);
+      }
+      if (this.previousMesh.geometry) {
+        this.previousMesh.geometry.dispose();
+      }
+      if (this.previousMesh.material) {
+        const mat = this.previousMesh.material;
+        if (Array.isArray(mat)) {
+          mat.forEach(m => m.dispose());
+        } else {
+          mat.dispose();
+        }
+      }
+      this.previousMesh = null;
+    }
+
+    // Se já existe mesh atual, salva como anterior
     if (this.mesh) {
-      this.projected.dispose();
+      this.previousMesh = this.mesh;
       this.mesh = null;
     }
+
+    // IMPORTANTE: dispose DEPOIS de salvar anterior, antes de build
+    if (this.projected) {
+      this.projected.dispose();
+    }
+    this.projected = new ProjectedTextureDecal(this.texture, {
+      depth: 200,
+      opacity: 1.0,
+      feather: 0.02,
+      minFacing: 0.0, // Renderiza apenas faces voltadas para o projetor
+    });
 
     // Encontra o mesh alvo
     let target = this.pickTargetMesh(position, normal);
     if (!target) {
       target = this.findAnyMesh();
     }
-    if (!target) return;
+    if (!target) {
+      console.warn("[ProjectedDecalAdapter] Nenhum mesh alvo encontrado");
+      return;
+    }
 
     const size = { width, height, depth: Math.max(depth, 50) };
     this.mesh = this.projected.build(target, position, normal, size, angleRad);
 
+    // Adiciona o novo mesh à cena se não tiver parent
     if (this.mesh && !this.mesh.parent) {
       this.scene.add(this.mesh);
     }
@@ -240,13 +280,19 @@ export default class ProjectedDecalAdapter {
       angleRad,
     };
 
-    // Durante preview/arrasto: usa ghost mesh (plano flutuante com opacidade)
+    // Se não tem mesh ainda OU não está em modo preview, faz rebuild
+    if (!this.mesh) {
+      this.doFullRebuild(position, normal, width, height, depth, angleRad);
+      return;
+    }
+
+    // Durante preview/arrasto com mesh existente: usa ghost mesh
     if ((isPreview || this.isDragging) && this.mesh) {
       this.createOrUpdateGhostMesh(position, normal, width, height, angleRad);
       return;
     }
 
-    // Caso contrário, faz o rebuild completo
+    // Caso contrário (não preview, não arrasto, com mesh), faz rebuild completo
     this.doFullRebuild(position, normal, width, height, depth, angleRad);
   }
 
@@ -272,8 +318,30 @@ export default class ProjectedDecalAdapter {
 
   dispose() {
     this.removeGhostMesh();
+    
+    // Cleanup do mesh atual
+    if (this.mesh) {
+      if (this.mesh.parent) {
+        this.mesh.parent.remove(this.mesh);
+      }
+      if (this.mesh.geometry) {
+        this.mesh.geometry.dispose();
+      }
+      this.mesh = null;
+    }
+    
+    // Cleanup do mesh anterior
+    if (this.previousMesh) {
+      if (this.previousMesh.parent) {
+        this.previousMesh.parent.remove(this.previousMesh);
+      }
+      if (this.previousMesh.geometry) {
+        this.previousMesh.geometry.dispose();
+      }
+      this.previousMesh = null;
+    }
+    
     this.projected.dispose();
-    this.mesh = null;
     this.root = null;
     this.pendingTransform = null;
   }

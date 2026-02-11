@@ -3,9 +3,10 @@ import type { MouseEvent as ReactMouseEvent } from "react";
 import { useNavigate, useSearchParams, useLocation } from "react-router-dom";
 import Header from "../components/Header";
 import Canvas3DViewer from "../components/Canvas3DViewer";
+import Tab3DPreview from "../components/Tab3DPreview";
 import ExpandableSidebar from "../components/ExpandableSidebar";
 import { Button } from "../components/ui/button";
-import { Eye, EyeOff, Plus, X, Check } from "lucide-react";
+import { Eye, EyeOff, Plus, X, Check, Box } from "lucide-react";
 import FloatingEditorToolbar from "../components/FloatingEditorToolbar";
 import TextToolbar from "../components/TextToolbar";
 import ImageToolbar from "../components/ImageToolbar";
@@ -51,6 +52,7 @@ type DraftPayload = {
   canvasSnapshots: Record<string, string>;
   canvasTabs: CanvasTab[];
   tabVisibility: Record<string, boolean>;
+  tab3DPreviewActive: Record<string, boolean>;
   tabDecalPreviews: Record<string, string>;
   tabDecalPlacements: Record<string, DecalTransform>;
   activeCanvasTab: string;
@@ -177,6 +179,15 @@ const Creation = () => {
   useEffect(() => {
     canvasTabsRef.current = canvasTabs;
   }, [canvasTabs]);
+
+  // Estado para controlar preview 3D em cada tab 2D
+  const [tab3DPreviewActive, setTab3DPreviewActive] = useState<Record<string, boolean>>({});
+  const toggleTab3DPreview = useCallback((tabId: string) => {
+    setTab3DPreviewActive((prev) => ({
+      ...prev,
+      [tabId]: !prev[tabId],
+    }));
+  }, []);
 
   const [canUndo, setCanUndo] = useState(false);
   const [canRedo, setCanRedo] = useState(false);
@@ -486,6 +497,10 @@ const Creation = () => {
       const visibility = payload.tabVisibility as Record<string, boolean>;
       tabVisibilityRef.current = visibility;
       setTabVisibility(visibility);
+    }
+    if (payload.tab3DPreviewActive && typeof payload.tab3DPreviewActive === "object") {
+      const previewActive = payload.tab3DPreviewActive as Record<string, boolean>;
+      setTab3DPreviewActive(previewActive);
     }
     if (payload.tabDecalPreviews && typeof payload.tabDecalPreviews === "object") {
       const previews = payload.tabDecalPreviews as Record<string, string>;
@@ -1175,6 +1190,7 @@ const Creation = () => {
       canvasSnapshots,
       canvasTabs: canvasTabsRef.current,
       tabVisibility: tabVisibilityRef.current,
+      tab3DPreviewActive,
       tabDecalPreviews: tabDecalPreviewsRef.current,
       tabDecalPlacements: tabDecalPlacementsRef.current,
       activeCanvasTab,
@@ -1197,7 +1213,7 @@ const Creation = () => {
     }
 
     return payload;
-  }, [activeCanvasTab, baseColor, fabric, notes, part, queueRemoteSave, saveActiveTabSnapshot, size, subtype, projectName, type]);
+  }, [activeCanvasTab, baseColor, fabric, notes, part, queueRemoteSave, saveActiveTabSnapshot, size, subtype, projectName, type, tab3DPreviewActive]);
 
   useEffect(() => {
     if (initialDraftSavedRef.current) return;
@@ -1732,9 +1748,39 @@ const Creation = () => {
                                 }
                               }}
                             />
+
+                            {/* Preview 3D sobreposto quando ativo */}
+                            {tab3DPreviewActive[tab.id] && (
+                              <div
+                                style={{
+                                  position: "absolute",
+                                  inset: 0,
+                                  zIndex: 10,
+                                  background: "rgba(0, 0, 0, 0.05)",
+                                  pointerEvents: "auto",
+                                }}
+                              >
+                                <Tab3DPreview
+                                  selection={{ part, type, subtype }}
+                                  externalDecals={decalsFor3D.filter((d) => d.id !== tab.id)}
+                                  currentTabDecal={
+                                    tabDecalPreviews[tab.id]
+                                      ? {
+                                          id: tab.id,
+                                          label: tab.name,
+                                          dataUrl: tabDecalPreviews[tab.id],
+                                          transform: tabDecalPlacements[tab.id] ?? null,
+                                        }
+                                      : null
+                                  }
+                                />
+                              </div>
+                            )}
                           </div>
                         ))}
+                      </div>
 
+                      {/* Toolbars (fora do overflow-hidden) */}
                       {(() => {
                         const activeEditor = editorRefs.current[activeCanvasTab] as Editor2DHandle | undefined;
                         const effectBrushActive = !!activeEditor?.isEffectBrushActive?.();
@@ -1864,7 +1910,33 @@ const Creation = () => {
                           </div>
                         </div>
                       )}
-                    </div>
+
+                    {/* Botão de toggle do preview 3D no canto inferior direito (fora do overflow-hidden) */}
+                    {activeIs2D && (
+                      <div
+                        style={{
+                          position: "absolute",
+                          bottom: "12px",
+                          right: "12px",
+                          zIndex: 50,
+                          pointerEvents: "auto",
+                        }}
+                      >
+                        <Button
+                          variant={tab3DPreviewActive[activeCanvasTab] ? "default" : "outline"}
+                          size="icon"
+                          onClick={() => toggleTab3DPreview(activeCanvasTab)}
+                          title={
+                            tab3DPreviewActive[activeCanvasTab]
+                              ? "Desativar preview 3D"
+                              : "Ativar preview 3D"
+                          }
+                          className="shadow-lg"
+                        >
+                          <Box className="h-4 w-4" />
+                        </Button>
+                      </div>
+                    )}
                     </div>
                   </ContextMenuTrigger>
                   <ContextMenuContent className="w-56">
