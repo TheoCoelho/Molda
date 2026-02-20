@@ -45,10 +45,7 @@ const App = () => {
         <AuthProvider>
           {/* Canvas do fundo (fixo e atrás de tudo) */}
           {/* <ShaderBackground /> */}
-          {/* Fundo cinza escuro */}
-          <div
-            className="fixed inset-0 z-0 pointer-events-none vscode-background"
-          />
+          <div className="fixed inset-0 z-0 pointer-events-none brand-black-base" />
 
           {/* Conteúdo do app acima do fundo */}
           <div className="relative z-10 min-h-screen is-glassy">

@@ -1,12 +1,13 @@
-@import url("https://fonts.googleapis.com/css2?family=Inter:ital,wght@0,400;0,700;1,400;1,700&display=swap");
+@import url("https://fonts.googleapis.com/css2?family=Inter:ital,wght@0,400;0,700;1,400;1,700&family=Plus+Jakarta+Sans:wght@400;600;700&family=Sora:wght@400;600;700&display=swap");
 @import "./styles/transitions.css";
+@import "./styles/brand-agent.css";
 @tailwind base;
 @tailwind components;
 @tailwind utilities;
 
 @layer base {
   html, body {
-    font-family: "Inter", ui-sans-serif, system-ui, -apple-system, "Segoe UI", Roboto, "Helvetica Neue", Arial, "Noto Sans", "Apple Color Emoji", "Segoe UI Emoji", "Segoe UI Symbol", sans-serif;
+    font-family: var(--font-brand-body), ui-sans-serif, system-ui, -apple-system, "Segoe UI", Roboto, "Helvetica Neue", Arial, "Noto Sans", "Apple Color Emoji", "Segoe UI Emoji", "Segoe UI Symbol", sans-serif;
   }
 
   /*
@@ -171,7 +172,9 @@ body::before {
   will-change: transform;
 }
 .lcar-card {
-  background: color-mix(in srgb, hsl(var(--foreground)) 18%, hsl(var(--background)));
+  background-color: hsl(var(--card) / var(--surface-alpha));
+  -webkit-backdrop-filter: blur(var(--surface-blur)) saturate(120%);
+  backdrop-filter: blur(var(--surface-blur)) saturate(120%);
   border: 1px solid hsl(var(--border));
   border-radius: 16px;
   min-width: 128px;
@@ -759,7 +762,9 @@ body::before { display: none !important; }
 .wizard-static-card {
   border-radius: 12px;
   border: 1px solid hsl(var(--border));
-  background: color-mix(in srgb, hsl(var(--foreground)) 18%, hsl(var(--background)));
+  background-color: hsl(var(--card) / var(--surface-alpha));
+  -webkit-backdrop-filter: blur(var(--surface-blur)) saturate(120%);
+  backdrop-filter: blur(var(--surface-blur)) saturate(120%);
   color: hsl(var(--foreground));
   padding: 16px;
   min-height: var(--item-size, 240px);

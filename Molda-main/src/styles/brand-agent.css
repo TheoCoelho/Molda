@@ -1,0 +1,78 @@
+:root {
+  --brand-grain-shift-x: 0px;
+  --brand-grain-shift-y: 0px;
+  --brand-primary: #962CDD;
+  --brand-secondary: #C3289F;
+  --brand-accent: #67DA1B;
+  --brand-bg: #FAF8FB;
+  --brand-surface: #F3F0F5;
+  --brand-text: #2B1F33;
+  --brand-muted: #5E4F69;
+  --brand-border: #D8D0DD;
+
+  --brand-primary-hsl: 276 72% 52%;
+  --brand-secondary-hsl: 314 66% 46%;
+  --brand-accent-hsl: 96 78% 48%;
+  --brand-bg-hsl: 276 30% 98%;
+  --brand-surface-hsl: 276 20% 95%;
+  --brand-text-hsl: 276 24% 16%;
+  --brand-muted-hsl: 276 14% 36%;
+  --brand-border-hsl: 276 16% 84%;
+
+  --font-brand-heading: "Sora";
+  --font-brand-body: "Inter";
+  --font-brand-accent: "Plus Jakarta Sans";
+
+  --background: var(--brand-bg-hsl);
+  --foreground: var(--brand-text-hsl);
+  --card: var(--brand-surface-hsl);
+  --card-foreground: var(--brand-text-hsl);
+  --popover: var(--brand-bg-hsl);
+  --popover-foreground: var(--brand-text-hsl);
+  --primary: var(--brand-primary-hsl);
+  --primary-foreground: 0 0% 100%;
+  --secondary: var(--brand-secondary-hsl);
+  --secondary-foreground: 0 0% 100%;
+  --accent: var(--brand-surface-hsl);
+  --accent-foreground: var(--brand-text-hsl);
+  --muted: var(--brand-surface-hsl);
+  --muted-foreground: var(--brand-muted-hsl);
+  --border: var(--brand-border-hsl);
+  --input: var(--brand-border-hsl);
+  --ring: var(--brand-primary-hsl);
+}
+
+.dark {
+  --primary: var(--brand-accent-hsl);
+  --ring: var(--brand-accent-hsl);
+}
+
+.brand-black-base {
+  background: #060607;
+}
+
+.brand-pattern-grid {
+  background-color: var(--brand-bg);
+  background-image:
+    linear-gradient(to right, color-mix(in srgb, var(--brand-primary) 18%, transparent) 1px, transparent 1px),
+    linear-gradient(to bottom, color-mix(in srgb, var(--brand-primary) 18%, transparent) 1px, transparent 1px);
+  background-size: 24px 24px;
+  transition: background-size 280ms ease;
+}
+
+.brand-pattern-grid:hover {
+  background-size: 18px 18px;
+}
+
+.brand-pattern-aurora {
+  background: radial-gradient(circle at 18% 22%, color-mix(in srgb, var(--brand-accent) 34%, transparent), transparent 45%),
+              radial-gradient(circle at 82% 26%, color-mix(in srgb, var(--brand-secondary) 30%, transparent), transparent 42%),
+              radial-gradient(circle at 48% 84%, color-mix(in srgb, var(--brand-primary) 28%, transparent), transparent 46%),
+              var(--brand-bg);
+  animation: brandFloat 8s ease-in-out infinite alternate;
+}
+
+@keyframes brandFloat {
+  from { filter: hue-rotate(0deg) saturate(1); }
+  to { filter: hue-rotate(16deg) saturate(1.06); }
+}

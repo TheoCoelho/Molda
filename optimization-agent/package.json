@@ -5,6 +5,7 @@
   "type": "module",
   "scripts": {
     "optimize:full": "node src/orchestrator.js",
+    "design:brand": "node src/agents/brandAestheticAgent.js",
     "analyze:bundle": "node src/analyzers/bundleAnalyzer.js",
     "analyze:components": "node src/analyzers/componentAnalyzer.js",
     "analyze:performance": "node src/analyzers/performanceAnalyzer.js",

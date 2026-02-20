@@ -3,10 +3,9 @@ import type { MouseEvent as ReactMouseEvent } from "react";
 import { useNavigate, useSearchParams, useLocation } from "react-router-dom";
 import Header from "../components/Header";
 import Canvas3DViewer from "../components/Canvas3DViewer";
-import Tab3DPreview from "../components/Tab3DPreview";
 import ExpandableSidebar from "../components/ExpandableSidebar";
 import { Button } from "../components/ui/button";
-import { Eye, EyeOff, Plus, X, Check, Box } from "lucide-react";
+import { Eye, EyeOff, Plus, X, Check } from "lucide-react";
 import FloatingEditorToolbar from "../components/FloatingEditorToolbar";
 import TextToolbar from "../components/TextToolbar";
 import ImageToolbar from "../components/ImageToolbar";
@@ -52,7 +51,6 @@ type DraftPayload = {
   canvasSnapshots: Record<string, string>;
   canvasTabs: CanvasTab[];
   tabVisibility: Record<string, boolean>;
-  tab3DPreviewActive: Record<string, boolean>;
   tabDecalPreviews: Record<string, string>;
   tabDecalPlacements: Record<string, DecalTransform>;
   activeCanvasTab: string;
@@ -179,15 +177,6 @@ const Creation = () => {
   useEffect(() => {
     canvasTabsRef.current = canvasTabs;
   }, [canvasTabs]);
-
-  // Estado para controlar preview 3D em cada tab 2D
-  const [tab3DPreviewActive, setTab3DPreviewActive] = useState<Record<string, boolean>>({});
-  const toggleTab3DPreview = useCallback((tabId: string) => {
-    setTab3DPreviewActive((prev) => ({
-      ...prev,
-      [tabId]: !prev[tabId],
-    }));
-  }, []);
 
   const [canUndo, setCanUndo] = useState(false);
   const [canRedo, setCanRedo] = useState(false);
@@ -316,15 +305,15 @@ const Creation = () => {
       // Determina a direção da transição baseado na posição das tabs
       const prevIndex = canvasTabs.findIndex((t) => t.id === prevTab);
       const currentIndex = canvasTabs.findIndex((t) => t.id === activeCanvasTab);
-      
+
       setTabTransitionDirection(currentIndex > prevIndex ? "right" : "left");
       setIsTransitioning(true);
-      
+
       // Remove o estado de transição após a animação
       const timer = setTimeout(() => {
         setIsTransitioning(false);
       }, 400);
-      
+
       prevTabRef.current = activeCanvasTab;
       return () => clearTimeout(timer);
     }
@@ -378,7 +367,7 @@ const Creation = () => {
       try {
         requestAnimationFrame(() => inst.refresh?.());
         setTimeout(() => inst.refresh?.(), 30);
-      } catch {}
+      } catch { }
 
       // Removido: carregamento automático do snapshot para evitar bug de resetar posição dos objetos
     },
@@ -405,10 +394,10 @@ const Creation = () => {
     if (!inst) return null;
     try {
       await inst.waitForIdle?.();
-    } catch {}
+    } catch { }
     try {
       inst.refresh?.();
-    } catch {}
+    } catch { }
     const dataUrl = inst.exportPNG?.();
     const current = tabDecalPreviewsRef.current;
     if (dataUrl && current[tabId] !== dataUrl) {
@@ -419,6 +408,20 @@ const Creation = () => {
     }
     return current[tabId] ?? null;
   }, [setTabDecalPreviews]);
+
+  const ensureTabHasDecalPreview = useCallback(async (tabId: string) => {
+    const result = await captureTabImage(tabId);
+    if (result) return;
+    setTabDecalPreviews((prev) => {
+      if (prev[tabId]) return prev;
+      const next = {
+        ...prev,
+        [tabId]: TRANSPARENT_PNG,
+      };
+      tabDecalPreviewsRef.current = next;
+      return next;
+    });
+  }, [captureTabImage]);
 
   const decalsFor3D = useMemo<ExternalDecalData[]>(() => {
     return canvasTabs
@@ -432,7 +435,7 @@ const Creation = () => {
   }, [canvasTabs, tabDecalPreviews, tabVisibility, tabDecalPlacements]);
 
   // Referência estável para os parâmetros do projeto atual
-  const currentProjectRef = useRef<{part: string | null, type: string | null, subtype: string | null}>({
+  const currentProjectRef = useRef<{ part: string | null, type: string | null, subtype: string | null }>({
     part: null, type: null, subtype: null
   });
 
@@ -440,17 +443,17 @@ const Creation = () => {
   useEffect(() => {
     const current = { part, type, subtype };
     const previous = currentProjectRef.current;
-    
+
     // Só reseta se realmente mudou e não é a primeira carga
     const hasChanged = (previous.part !== null || previous.type !== null || previous.subtype !== null) &&
-                      (previous.part !== current.part || previous.type !== current.type || previous.subtype !== current.subtype);
-    
+      (previous.part !== current.part || previous.type !== current.type || previous.subtype !== current.subtype);
+
     if (hasChanged) {
       resetProject();
       tabDecalPlacementsRef.current = {};
       setTabDecalPlacements({});
     }
-    
+
     currentProjectRef.current = current;
   }, [part, type, subtype, resetProject]);
 
@@ -498,10 +501,6 @@ const Creation = () => {
       tabVisibilityRef.current = visibility;
       setTabVisibility(visibility);
     }
-    if (payload.tab3DPreviewActive && typeof payload.tab3DPreviewActive === "object") {
-      const previewActive = payload.tab3DPreviewActive as Record<string, boolean>;
-      setTab3DPreviewActive(previewActive);
-    }
     if (payload.tabDecalPreviews && typeof payload.tabDecalPreviews === "object") {
       const previews = payload.tabDecalPreviews as Record<string, string>;
       tabDecalPreviewsRef.current = previews;
@@ -535,7 +534,7 @@ const Creation = () => {
       setIsDraftPermanent(false);
       try {
         localStorage.removeItem("currentProject");
-      } catch {}
+      } catch { }
       return;
     }
 
@@ -559,7 +558,7 @@ const Creation = () => {
             setDraftId(String(parsed.draftId));
           }
         }
-      } catch {}
+      } catch { }
     };
 
     resolveMetadataFromLocal();
@@ -626,7 +625,7 @@ const Creation = () => {
 
         try {
           localStorage.setItem("currentProject", JSON.stringify(payload));
-        } catch {}
+        } catch { }
       } catch (err) {
         // silencioso, fallback local será acionado
       }
@@ -709,12 +708,12 @@ const Creation = () => {
     const cropActive = cropModeActive;
 
     // Determina se há uma toolbar ativa (texto, imagem ou ferramentas especiais)
-    const hasActiveToolbar = 
-      selectionKind === "text" || 
-      selectionKind === "image" || 
-      effectToolActive || 
-      colorCutActive || 
-      cropActive || 
+    const hasActiveToolbar =
+      selectionKind === "text" ||
+      selectionKind === "image" ||
+      effectToolActive ||
+      colorCutActive ||
+      cropActive ||
       effectsEditModeActive;
 
     // Só faz transição se há uma mudança real de toolbar ativa
@@ -726,14 +725,14 @@ const Creation = () => {
 
       setToolbarTransitionType("out");
       setIsToolbarTransitioning(true);
-      
+
       toolbarTransitionTimeoutRef.current = setTimeout(() => {
         setToolbarTransitionType("in");
         toolbarTransitionTimeoutRef.current = setTimeout(() => {
           setIsToolbarTransitioning(false);
         }, 600); // Duração da animação flip-in
       }, 400); // Duração da animação flip-out
-      
+
       prevSelectionKindRef.current = selectionKind;
     }
 
@@ -791,12 +790,12 @@ const Creation = () => {
           containerWidth: rect.width,
           containerHeight: rect.height,
         });
-      } catch {}
+      } catch { }
 
       try {
         const k = inst.getSelectionKind?.();
         if (k) setSelectionKind(k);
-      } catch {}
+      } catch { }
 
       const info = inst.getSelectionInfo?.();
       if (!info || !info.hasSelection) {
@@ -815,10 +814,10 @@ const Creation = () => {
     await runWithActiveEditor(async (inst) => {
       try {
         await inst.waitForIdle?.();
-      } catch {}
+      } catch { }
       try {
         inst.refresh?.();
-      } catch {}
+      } catch { }
 
       const dataUrl = inst.exportSelectionPNG?.();
       if (!dataUrl) {
@@ -832,7 +831,7 @@ const Creation = () => {
         a.href = dataUrl;
         a.download = `${slugify(projectName || "imagem") || "imagem"}-${Date.now()}.png`;
         a.click();
-      } catch {}
+      } catch { }
 
       // 2) Salvar na galeria (Supabase Storage) para aparecer no UploadGallery
       if (!user?.id) {
@@ -873,7 +872,7 @@ const Creation = () => {
               },
             })
           );
-        } catch {}
+        } catch { }
 
         toast.success("Imagem salva na galeria e baixada em PNG.");
       } catch (err: any) {
@@ -921,8 +920,8 @@ const Creation = () => {
   const saveActiveTabSnapshot = useCallback(async (tabId?: string): Promise<Record<string, string>> => {
     const id = tabId || prevTabRef.current;
     if (!id) return tabSnapshotsRef.current;
-  // Captura imagem para preview 3D
-  void captureTabImage(id);
+    // Captura imagem para preview 3D
+    void captureTabImage(id);
     // Salva JSON apenas para persistência (draft/export)
     const tabType = canvasTabs.find(t => t.id === id)?.type;
     if (tabType === "2d") {
@@ -930,7 +929,7 @@ const Creation = () => {
       if (inst?.waitForIdle) {
         try {
           await inst.waitForIdle();
-        } catch {}
+        } catch { }
       }
       const json = inst?.toJSON?.();
       if (json && tabSnapshotsRef.current[id] !== json) {
@@ -954,7 +953,7 @@ const Creation = () => {
       try {
         const fonts = editorInstance.listUsedFonts();
         fonts.forEach((family) => fn(family));
-      } catch {}
+      } catch { }
     },
     [activeCanvasTab]
   );
@@ -983,7 +982,7 @@ const Creation = () => {
           await inst.loadFromJSON?.(snap);
           syncFontsFromEditor(inst);
           inst.refresh?.();
-        } catch {}
+        } catch { }
       })();
     }
   }, [activeIs2D, activeCanvasTab, tabSnapshots]);
@@ -1072,10 +1071,10 @@ const Creation = () => {
     if (!inst) return;
     try {
       await inst.waitForIdle?.();
-    } catch {}
+    } catch { }
     try {
       inst.refresh?.();
-    } catch {}
+    } catch { }
     const dataUrl = inst.exportPNG?.();
     if (!dataUrl) return;
     const a = document.createElement("a");
@@ -1190,7 +1189,6 @@ const Creation = () => {
       canvasSnapshots,
       canvasTabs: canvasTabsRef.current,
       tabVisibility: tabVisibilityRef.current,
-      tab3DPreviewActive,
       tabDecalPreviews: tabDecalPreviewsRef.current,
       tabDecalPlacements: tabDecalPlacementsRef.current,
       activeCanvasTab,
@@ -1204,7 +1202,7 @@ const Creation = () => {
 
     try {
       localStorage.setItem("currentProject", JSON.stringify(payload));
-    } catch {}
+    } catch { }
 
     if (options?.immediateRemote) {
       await queueRemoteSave(payload, { immediate: true });
@@ -1213,7 +1211,7 @@ const Creation = () => {
     }
 
     return payload;
-  }, [activeCanvasTab, baseColor, fabric, notes, part, queueRemoteSave, saveActiveTabSnapshot, size, subtype, projectName, type, tab3DPreviewActive]);
+  }, [activeCanvasTab, baseColor, fabric, notes, part, queueRemoteSave, saveActiveTabSnapshot, size, subtype, projectName, type]);
 
   useEffect(() => {
     if (initialDraftSavedRef.current) return;
@@ -1320,7 +1318,7 @@ const Creation = () => {
     const onUnload = () => {
       try {
         void saveDraft({ immediateRemote: true });
-      } catch {}
+      } catch { }
     };
     window.addEventListener("beforeunload", onUnload);
     return () => window.removeEventListener("beforeunload", onUnload);
@@ -1353,7 +1351,7 @@ const Creation = () => {
               setSize={setSize}
               fabric={fabric}
               setFabric={setFabric}
-              onExpandChange={() => {}}
+              onExpandChange={() => { }}
               tool={tool}
               setTool={setTool}
               stampImageSrc={stampImageSrc}
@@ -1455,9 +1453,8 @@ const Creation = () => {
                     return (
                       <div
                         key={tab.id}
-                        className={`shrink-0 flex items-center gap-0.5 rounded-md px-1.5 sm:px-2 h-9 text-xs transition-all duration-300 ${
-                          active ? "glass-strong shadow-sm" : "hover:bg-white/20"
-                        } ${active && isTransitioning ? "bounce-in" : ""}`}
+                        className={`shrink-0 flex items-center gap-0.5 rounded-md px-1.5 sm:px-2 h-9 text-xs transition-all duration-300 ${active ? "glass-strong shadow-sm" : "hover:bg-white/20"
+                          } ${active && isTransitioning ? "bounce-in" : ""}`}
                       >
                         <span
                           className="h-full px-0.5 text-left font-medium focus:outline-none inline-flex items-center cursor-pointer min-w-0 max-w-[8rem] sm:max-w-[10rem] truncate"
@@ -1492,18 +1489,7 @@ const Creation = () => {
                                 const currentlyVisible = !!tabVisibility[tab.id];
                                 if (!currentlyVisible) {
                                   void (async () => {
-                                    const result = await captureTabImage(tab.id);
-                                    if (!result) {
-                                      setTabDecalPreviews((prev) => {
-                                        if (prev[tab.id]) return prev;
-                                        const next = {
-                                          ...prev,
-                                          [tab.id]: TRANSPARENT_PNG,
-                                        };
-                                        tabDecalPreviewsRef.current = next;
-                                        return next;
-                                      });
-                                    }
+                                    await ensureTabHasDecalPreview(tab.id);
                                   })();
                                 }
                                 setTabVisibility((prev) => {
@@ -1564,13 +1550,12 @@ const Creation = () => {
                 }}
               >
                 <div
-                  className={`${
-                    activeCanvasTab === "3d" && isTransitioning
-                      ? tabTransitionDirection === "right"
-                        ? "slide-in-right"
-                        : "slide-in-left"
-                      : ""
-                  }`}
+                  className={`${activeCanvasTab === "3d" && isTransitioning
+                    ? tabTransitionDirection === "right"
+                      ? "slide-in-right"
+                      : "slide-in-left"
+                    : ""
+                    }`}
                   style={{ position: "absolute", inset: 0 }}
                 >
                   <Canvas3DViewer
@@ -1628,13 +1613,12 @@ const Creation = () => {
                     >
                       <div
                         ref={squareCanvasRef}
-                        className={`relative overflow-hidden ${
-                          activeCanvasTab !== "3d" && isTransitioning
-                            ? tabTransitionDirection === "left"
-                              ? "slide-in-left"
-                              : "slide-in-right"
-                            : ""
-                        }`}
+                        className={`relative overflow-hidden ${activeCanvasTab !== "3d" && isTransitioning
+                          ? tabTransitionDirection === "left"
+                            ? "slide-in-left"
+                            : "slide-in-right"
+                          : ""
+                          }`}
                         style={
                           squareViewportSize
                             ? { width: `${squareViewportSize}px`, height: `${squareViewportSize}px` }
@@ -1667,117 +1651,98 @@ const Creation = () => {
                                 zIndex: tab.id === activeCanvasTab ? 2 : 1,
                               }}
                             >
-                            <Editor2D
-                              ref={(inst) => {
-                                if (!inst) return;
-
-                                // mantém a ref atualizada (mesmo que já exista)
-                                editorRefs.current[tab.id] = inst;
-
-                                if (!selectionListenerGuard.current.has(inst)) {
-                                  inst.onSelectionChange?.((kind) => {
-                                    if (tab.id === activeCanvasTab) {
-                                      setSelectionKind(kind);
-                                      if (kind === "none") {
-                                        setSelectionInfo(null);
-                                      } else {
-                                        setSelectionInfo(inst.getSelectionInfo?.() ?? null);
-                                      }
-                                    }
-                                  });
-                                  selectionListenerGuard.current.add(inst);
-                                }
-
-                                if (!cropListenerGuard.current.has(inst)) {
-                                  inst.onCropModeChange?.((active) => {
-                                    if (tab.id === activeCanvasTab) setCropModeActive(active);
-                                  });
-                                  cropListenerGuard.current.add(inst);
-                                }
-
-                                if (!colorCutListenerGuard.current.has(inst)) {
-                                  inst.onColorCutModeChange?.((active) => {
-                                    if (tab.id === activeCanvasTab) setColorCutModeActive(active);
-                                  });
-                                  colorCutListenerGuard.current.add(inst);
-                                }
-
-                                if (!effectsListenerGuard.current.has(inst)) {
-                                  inst.onEffectEditModeChange?.((active) => {
-                                    if (tab.id === activeCanvasTab) setEffectsEditModeActive(active);
-                                  });
-                                  effectsListenerGuard.current.add(inst);
-                                }
-
-                                // sincroniza o estado imediatamente ao montar/reativar
-                                if (tab.id === activeCanvasTab) {
-                                  setCropModeActive(!!inst.isCropActive?.());
-                                  setEffectsEditModeActive(!!inst.isEffectBrushActive?.() || !!inst.isEffectLassoActive?.());
-                                  setColorCutModeActive(!!inst.isColorCutActive?.());
-                                }
-                              }}
-                              isActive={activeIs2D && tab.id === activeCanvasTab}
-                              tool={tool}
-                              stampSrc={stampSrc}
-                              stampDensity={stampDensity}
-                              brushVariant={brushVariant}
-                              continuousLineMode={continuousLineMode}
-                              onRequestToolChange={(nextTool) => {
-                                // Editor requests changing tool (e.g., auto-switch to select after finishing a curve)
-                                setTool(nextTool);
-                              }}
-                              onContinuousLineCancel={() => {
-                                setContinuousLineMode(false);
-                                runWithActiveEditor((inst) => inst.refresh?.());
-                              }}
-                              strokeColor={strokeColor}
-                              fillColor={fillColor}
-                              strokeWidth={strokeWidth}
-                              opacity={opacity}
-                              isTrashMode={isTrashMode}
-                              onTrashDelete={() => setTool("select")}
-                              onHistoryChange={(u, r) => {
-                                if (tab.id === activeCanvasTab) {
-                                  setCanUndo(u);
-                                  setCanRedo(r);
-                                  if (tabVisibility[tab.id]) {
-                                    void captureTabImage(tab.id);
-                                  }
-                                  // Salva o rascunho automaticamente a cada modificação
-                                  scheduleDraftSave({ tabId: tab.id });
-                                }
-                              }}
-                            />
-
-                            {/* Preview 3D sobreposto quando ativo */}
-                            {tab3DPreviewActive[tab.id] && (
                               <div
                                 style={{
                                   position: "absolute",
                                   inset: 0,
-                                  zIndex: 10,
-                                  background: "rgba(0, 0, 0, 0.05)",
+                                  visibility: "visible",
                                   pointerEvents: "auto",
                                 }}
                               >
-                                <Tab3DPreview
-                                  selection={{ part, type, subtype }}
-                                  externalDecals={decalsFor3D.filter((d) => d.id !== tab.id)}
-                                  currentTabDecal={
-                                    tabDecalPreviews[tab.id]
-                                      ? {
-                                          id: tab.id,
-                                          label: tab.name,
-                                          dataUrl: tabDecalPreviews[tab.id],
-                                          transform: tabDecalPlacements[tab.id] ?? null,
+                                <Editor2D
+                                  ref={(inst) => {
+                                    if (!inst) return;
+
+                                    // mantém a ref atualizada (mesmo que já exista)
+                                    editorRefs.current[tab.id] = inst;
+
+                                    if (!selectionListenerGuard.current.has(inst)) {
+                                      inst.onSelectionChange?.((kind) => {
+                                        if (tab.id === activeCanvasTab) {
+                                          setSelectionKind(kind);
+                                          if (kind === "none") {
+                                            setSelectionInfo(null);
+                                          } else {
+                                            setSelectionInfo(inst.getSelectionInfo?.() ?? null);
+                                          }
                                         }
-                                      : null
-                                  }
+                                      });
+                                      selectionListenerGuard.current.add(inst);
+                                    }
+
+                                    if (!cropListenerGuard.current.has(inst)) {
+                                      inst.onCropModeChange?.((active) => {
+                                        if (tab.id === activeCanvasTab) setCropModeActive(active);
+                                      });
+                                      cropListenerGuard.current.add(inst);
+                                    }
+
+                                    if (!colorCutListenerGuard.current.has(inst)) {
+                                      inst.onColorCutModeChange?.((active) => {
+                                        if (tab.id === activeCanvasTab) setColorCutModeActive(active);
+                                      });
+                                      colorCutListenerGuard.current.add(inst);
+                                    }
+
+                                    if (!effectsListenerGuard.current.has(inst)) {
+                                      inst.onEffectEditModeChange?.((active) => {
+                                        if (tab.id === activeCanvasTab) setEffectsEditModeActive(active);
+                                      });
+                                      effectsListenerGuard.current.add(inst);
+                                    }
+
+                                    // sincroniza o estado imediatamente ao montar/reativar
+                                    if (tab.id === activeCanvasTab) {
+                                      setCropModeActive(!!inst.isCropActive?.());
+                                      setEffectsEditModeActive(!!inst.isEffectBrushActive?.() || !!inst.isEffectLassoActive?.());
+                                      setColorCutModeActive(!!inst.isColorCutActive?.());
+                                    }
+                                  }}
+                                  isActive={activeIs2D && tab.id === activeCanvasTab}
+                                  tool={tool}
+                                  stampSrc={stampSrc}
+                                  stampDensity={stampDensity}
+                                  brushVariant={brushVariant}
+                                  continuousLineMode={continuousLineMode}
+                                  onRequestToolChange={(nextTool) => {
+                                    // Editor requests changing tool (e.g., auto-switch to select after finishing a curve)
+                                    setTool(nextTool);
+                                  }}
+                                  onContinuousLineCancel={() => {
+                                    setContinuousLineMode(false);
+                                    runWithActiveEditor((inst) => inst.refresh?.());
+                                  }}
+                                  strokeColor={strokeColor}
+                                  fillColor={fillColor}
+                                  strokeWidth={strokeWidth}
+                                  opacity={opacity}
+                                  isTrashMode={isTrashMode}
+                                  onTrashDelete={() => setTool("select")}
+                                  onHistoryChange={(u, r) => {
+                                    if (tab.id === activeCanvasTab) {
+                                      setCanUndo(u);
+                                      setCanRedo(r);
+                                      if (tabVisibility[tab.id]) {
+                                        void captureTabImage(tab.id);
+                                      }
+                                      // Salva o rascunho automaticamente a cada modificação
+                                      scheduleDraftSave({ tabId: tab.id });
+                                    }
+                                  }}
                                 />
                               </div>
-                            )}
-                          </div>
-                        ))}
+                            </div>
+                          ))}
                       </div>
 
                       {/* Toolbars (fora do overflow-hidden) */}
@@ -1789,51 +1754,51 @@ const Creation = () => {
                         const showToolConfirm = cropModeActive || effectBrushActive || effectLassoActive || colorCutActive;
                         if (!showToolConfirm) return null;
                         return (
-                        <div className="absolute left-1/2 bottom-6 z-10 max-w-[95vw] -translate-x-1/2">
-                          <div
-                            className={[
-                              "relative",
-                              "flex items-center gap-2 p-2 rounded-2xl border shadow-lg bg-background",
-                              "backdrop-blur supports-[backdrop-filter]:bg-background/90",
-                            ].join(" ")}
-                            role="toolbar"
-                            aria-label={cropModeActive ? "Corte" : (colorCutActive ? "Corte por cor" : (effectBrushActive ? "Efeito (Pincel)" : "Efeito (Laço)"))}
-                          >
-                            <Button
-                              type="button"
-                              size="icon"
-                              onClick={() =>
-                                cropModeActive
-                                  ? editorRefs.current[activeCanvasTab]?.confirmCrop?.()
-                                  : (colorCutActive
-                                    ? editorRefs.current[activeCanvasTab]?.confirmColorCut?.()
-                                    : (effectLassoActive
-                                      ? editorRefs.current[activeCanvasTab]?.confirmEffectLasso?.()
-                                      : editorRefs.current[activeCanvasTab]?.confirmEffectBrush?.()))
-                              }
-                              title="Confirmar (Enter)"
+                          <div className="absolute left-1/2 bottom-6 z-50 max-w-[95vw] -translate-x-1/2">
+                            <div
+                              className={[
+                                "relative",
+                                "flex items-center gap-2 p-2 rounded-2xl border shadow-lg bg-background",
+                                "backdrop-blur supports-[backdrop-filter]:bg-background/90",
+                              ].join(" ")}
+                              role="toolbar"
+                              aria-label={cropModeActive ? "Corte" : (colorCutActive ? "Corte por cor" : (effectBrushActive ? "Efeito (Pincel)" : "Efeito (Laço)"))}
                             >
-                              <Check className="w-4 h-4" />
-                            </Button>
-                            <Button
-                              type="button"
-                              size="icon"
-                              variant="outline"
-                              onClick={() =>
-                                cropModeActive
-                                  ? editorRefs.current[activeCanvasTab]?.cancelCrop?.()
-                                  : (colorCutActive
-                                    ? editorRefs.current[activeCanvasTab]?.cancelColorCut?.()
-                                    : (effectLassoActive
-                                      ? editorRefs.current[activeCanvasTab]?.cancelEffectLasso?.()
-                                      : editorRefs.current[activeCanvasTab]?.cancelEffectBrush?.()))
-                              }
-                              title="Cancelar (Esc ou Delete)"
-                            >
-                              <X className="w-4 h-4" />
-                            </Button>
+                              <Button
+                                type="button"
+                                size="icon"
+                                onClick={() =>
+                                  cropModeActive
+                                    ? editorRefs.current[activeCanvasTab]?.confirmCrop?.()
+                                    : (colorCutActive
+                                      ? editorRefs.current[activeCanvasTab]?.confirmColorCut?.()
+                                      : (effectLassoActive
+                                        ? editorRefs.current[activeCanvasTab]?.confirmEffectLasso?.()
+                                        : editorRefs.current[activeCanvasTab]?.confirmEffectBrush?.()))
+                                }
+                                title="Confirmar (Enter)"
+                              >
+                                <Check className="w-4 h-4" />
+                              </Button>
+                              <Button
+                                type="button"
+                                size="icon"
+                                variant="outline"
+                                onClick={() =>
+                                  cropModeActive
+                                    ? editorRefs.current[activeCanvasTab]?.cancelCrop?.()
+                                    : (colorCutActive
+                                      ? editorRefs.current[activeCanvasTab]?.cancelColorCut?.()
+                                      : (effectLassoActive
+                                        ? editorRefs.current[activeCanvasTab]?.cancelEffectLasso?.()
+                                        : editorRefs.current[activeCanvasTab]?.cancelEffectBrush?.()))
+                                }
+                                title="Cancelar (Esc ou Delete)"
+                              >
+                                <X className="w-4 h-4" />
+                              </Button>
+                            </div>
                           </div>
-                        </div>
                         );
                       })()}
 
@@ -1845,16 +1810,16 @@ const Creation = () => {
                         const colorCutActive = colorCutModeActive || !!activeEditor?.isColorCutActive?.();
                         return (!cropModeActive && !effectToolActive && !effectsEditModeActive && !colorCutActive && selectionKind === "text");
                       })() && (
-                        <div className="absolute left-1/2 bottom-6 z-10 max-w-[95vw] -translate-x-1/2">
-                          <div className={isToolbarTransitioning ? (toolbarTransitionType === "in" ? "flip-in" : "flip-out") : ""}>
-                            <TextToolbar
-                              editor={{ current: editorRefs.current[activeCanvasTab] as Editor2DHandle }}
-                              visible={activeIs2D && selectionKind === "text"}
-                              position="inline"
-                            />
+                          <div className="absolute left-1/2 bottom-6 z-50 max-w-[95vw] -translate-x-1/2">
+                            <div className={isToolbarTransitioning ? (toolbarTransitionType === "in" ? "flip-in" : "flip-out") : ""}>
+                              <TextToolbar
+                                editor={{ current: editorRefs.current[activeCanvasTab] as Editor2DHandle }}
+                                visible={activeIs2D && selectionKind === "text"}
+                                position="inline"
+                              />
+                            </div>
                           </div>
-                        </div>
-                      )}
+                        )}
 
                       {(() => {
                         const activeEditor = editorRefs.current[activeCanvasTab] as Editor2DHandle | undefined;
@@ -1864,16 +1829,16 @@ const Creation = () => {
                         const colorCutActive = colorCutModeActive || !!activeEditor?.isColorCutActive?.();
                         return (!cropModeActive && !effectToolActive && !colorCutActive && (effectsEditModeActive || selectionKind === "image"));
                       })() && (
-                        <div className="absolute left-1/2 bottom-6 z-10 max-w-[95vw] -translate-x-1/2">
-                          <div className={isToolbarTransitioning ? (toolbarTransitionType === "in" ? "flip-in" : "flip-out") : ""}>
-                            <ImageToolbar
-                              editor={{ current: editorRefs.current[activeCanvasTab] as Editor2DHandle }}
-                              visible={activeIs2D && (effectsEditModeActive || selectionKind === "image")}
-                              position="inline"
-                            />
+                          <div className="absolute left-1/2 bottom-6 z-50 max-w-[95vw] -translate-x-1/2">
+                            <div className={isToolbarTransitioning ? (toolbarTransitionType === "in" ? "flip-in" : "flip-out") : ""}>
+                              <ImageToolbar
+                                editor={{ current: editorRefs.current[activeCanvasTab] as Editor2DHandle }}
+                                visible={activeIs2D && (effectsEditModeActive || selectionKind === "image")}
+                                position="inline"
+                              />
+                            </div>
                           </div>
-                        </div>
-                      )}
+                        )}
 
                       {(() => {
                         const activeEditor = editorRefs.current[activeCanvasTab] as Editor2DHandle | undefined;
@@ -1883,60 +1848,34 @@ const Creation = () => {
                         const colorCutActive = colorCutModeActive || !!activeEditor?.isColorCutActive?.();
                         return (!cropModeActive && !effectToolActive && !effectsEditModeActive && !colorCutActive && selectionKind !== "text" && selectionKind !== "image");
                       })() && (
-                        <div className="absolute left-1/2 bottom-6 z-10 max-w-[95vw] -translate-x-1/2">
-                          <div className={isToolbarTransitioning ? (toolbarTransitionType === "in" ? "flip-in" : "flip-out") : ""}>
-                            <FloatingEditorToolbar
-                              strokeColor={strokeColor}
-                              setStrokeColor={setStrokeColor}
-                              stampColor={stampColor}
-                              setStampColor={setStampColor}
-                              stampDensity={stampDensity}
-                              setStampDensity={setStampDensity}
-                              strokeWidth={strokeWidth}
-                              setStrokeWidth={setStrokeWidth}
-                              opacity={opacity}
-                              setOpacity={setOpacity}
-                              tool={tool}
-                              setTool={setTool}
-                              isTrashMode={isTrashMode}
-                              setTrashMode={setTrashMode}
-                              selectionKind={selectionKind}
-                              editor2DRef={editorRefs.current[activeCanvasTab] as Editor2DHandle}
-                              onUndo={activeIs2D ? () => editorRefs.current[activeCanvasTab]?.undo?.() : undefined}
-                              onRedo={activeIs2D ? () => editorRefs.current[activeCanvasTab]?.redo?.() : undefined}
-                              canUndo={canUndo}
-                              canRedo={canRedo}
-                            />
+                          <div className="absolute left-1/2 bottom-6 z-50 max-w-[95vw] -translate-x-1/2">
+                            <div className={isToolbarTransitioning ? (toolbarTransitionType === "in" ? "flip-in" : "flip-out") : ""}>
+                              <FloatingEditorToolbar
+                                strokeColor={strokeColor}
+                                setStrokeColor={setStrokeColor}
+                                stampColor={stampColor}
+                                setStampColor={setStampColor}
+                                stampDensity={stampDensity}
+                                setStampDensity={setStampDensity}
+                                strokeWidth={strokeWidth}
+                                setStrokeWidth={setStrokeWidth}
+                                opacity={opacity}
+                                setOpacity={setOpacity}
+                                tool={tool}
+                                setTool={setTool}
+                                isTrashMode={isTrashMode}
+                                setTrashMode={setTrashMode}
+                                selectionKind={selectionKind}
+                                editor2DRef={editorRefs.current[activeCanvasTab] as Editor2DHandle}
+                                onUndo={activeIs2D ? () => editorRefs.current[activeCanvasTab]?.undo?.() : undefined}
+                                onRedo={activeIs2D ? () => editorRefs.current[activeCanvasTab]?.redo?.() : undefined}
+                                canUndo={canUndo}
+                                canRedo={canRedo}
+                              />
+                            </div>
                           </div>
-                        </div>
-                      )}
+                        )}
 
-                    {/* Botão de toggle do preview 3D no canto inferior direito (fora do overflow-hidden) */}
-                    {activeIs2D && (
-                      <div
-                        style={{
-                          position: "absolute",
-                          bottom: "12px",
-                          right: "12px",
-                          zIndex: 50,
-                          pointerEvents: "auto",
-                        }}
-                      >
-                        <Button
-                          variant={tab3DPreviewActive[activeCanvasTab] ? "default" : "outline"}
-                          size="icon"
-                          onClick={() => toggleTab3DPreview(activeCanvasTab)}
-                          title={
-                            tab3DPreviewActive[activeCanvasTab]
-                              ? "Desativar preview 3D"
-                              : "Ativar preview 3D"
-                          }
-                          className="shadow-lg"
-                        >
-                          <Box className="h-4 w-4" />
-                        </Button>
-                      </div>
-                    )}
                     </div>
                   </ContextMenuTrigger>
                   <ContextMenuContent className="w-56">
@@ -2024,15 +1963,14 @@ const Creation = () => {
                       <ContextMenuSubContent className="w-80">
                         <PatternSubmenu
                           onSelectPattern={(pattern: PatternDefinition) => {
-                            runWithActiveEditor((inst) =>
-                              {
-                                inst.previewPatternEnd?.();
-                                inst.applyPatternToSelection?.(
-                                  pattern.source,
-                                  pattern.repeat,
-                                  pattern.defaultScale ?? 0.5
-                                );
-                              }
+                            runWithActiveEditor((inst) => {
+                              inst.previewPatternEnd?.();
+                              inst.applyPatternToSelection?.(
+                                pattern.source,
+                                pattern.repeat,
+                                pattern.defaultScale ?? 0.5
+                              );
+                            }
                             );
                           }}
                           onPreviewStart={(pattern: PatternDefinition) => {

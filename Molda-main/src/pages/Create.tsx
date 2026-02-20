@@ -872,7 +872,7 @@ const Create = () => {
                   aria-label="Pesquisar modelos"
                 />
               </div>
-              <TabsList className="w-fit md:ml-auto">
+              <TabsList className="w-fit md:ml-auto glass-strong">
                 <TabsTrigger
                   value="create"
                   className={`transition-all duration-300 origin-center transform-gpu data-[state=active]:shadow-lg ${
