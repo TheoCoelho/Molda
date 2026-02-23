@@ -13,6 +13,8 @@ import { supabase } from "@/integrations/supabase/client";
 import { PRODUCT_IMAGES_BUCKET } from "@/lib/constants/storage";
 import { toast } from "sonner";
 import { cn } from "@/lib/utils";
+import { UPLOAD_MODEL_API } from "@/lib/constants/storage";
+import { invalidateModelCache } from "@/lib/models";
 
 type Part = {
   id: string;
@@ -41,6 +43,7 @@ type ProductSubtype = {
   name: string;
   description?: string | null;
   card_image_path?: string | null;
+  model_3d_path?: string | null;
   sort_order?: number | null;
   is_active: boolean;
 };
@@ -124,9 +127,11 @@ const Admin = () => {
     sort_order: "0",
     is_active: true,
     card_image_path: "",
+    model_3d_path: "",
   });
   const [subtypeImageFile, setSubtypeImageFile] = useState<File | null>(null);
   const [subtypeImagePreview, setSubtypeImagePreview] = useState<string | null>(null);
+  const [subtypeModelFile, setSubtypeModelFile] = useState<FileList | null>(null);
 
   const [productForm, setProductForm] = useState({
     id: "",
@@ -364,8 +369,10 @@ const Admin = () => {
       sort_order: "0",
       is_active: true,
       card_image_path: "",
+      model_3d_path: "",
     });
     setSubtypeImageFile(null);
+    setSubtypeModelFile(null);
   };
 
   const resetProductForm = () => {
@@ -456,7 +463,7 @@ const Admin = () => {
 
   const handleSaveSubtype = async (event: React.FormEvent) => {
     event.preventDefault();
-    const payload = {
+    const payload: Record<string, any> = {
       type_id: subtypeForm.type_id,
       name: subtypeForm.name.trim(),
       slug: (subtypeForm.slug || subtypeForm.name).trim()
@@ -466,6 +473,7 @@ const Admin = () => {
       sort_order: toNumber(subtypeForm.sort_order),
       is_active: subtypeForm.is_active,
       card_image_path: subtypeForm.card_image_path || null,
+      model_3d_path: subtypeForm.model_3d_path || null,
     };
 
     if (!payload.type_id || !payload.name || !payload.slug) {
@@ -477,6 +485,27 @@ const Admin = () => {
       if (subtypeImageFile) {
         payload.card_image_path = await uploadImage(subtypeImageFile, "subtypes");
       }
+
+      // Upload do modelo 3D via Vite plugin (múltiplos arquivos: .gltf + .bin + texturas)
+      if (subtypeModelFile && subtypeModelFile.length > 0) {
+        const formData = new FormData();
+        for (let i = 0; i < subtypeModelFile.length; i++) {
+          formData.append("file", subtypeModelFile[i]);
+        }
+        formData.append("slug", payload.slug as string);
+        const uploadRes = await fetch(UPLOAD_MODEL_API, {
+          method: "POST",
+          body: formData,
+        });
+        const uploadJson = await uploadRes.json();
+        if (!uploadRes.ok || !uploadJson.success) {
+          throw new Error(uploadJson.error || "Falha ao fazer upload do modelo 3D.");
+        }
+        payload.model_3d_path = uploadJson.path;
+        const fileNames = uploadJson.files?.join(", ") || uploadJson.filename;
+        toast.success(`Modelo 3D salvo: ${fileNames}`);
+      }
+
       if (subtypeForm.id) {
         const { error } = await supabase
           .from("product_subtypes")
@@ -489,6 +518,8 @@ const Admin = () => {
         if (error) throw error;
         toast.success("Subtipo criado.");
       }
+      // Invalida cache de modelos para que a nova config seja usada
+      invalidateModelCache();
       resetSubtypeForm();
       await loadCatalog();
     } catch (err: any) {
@@ -1089,6 +1120,34 @@ const Admin = () => {
                     <img src={subtypeImagePreview} alt="Preview" className="h-28 w-full rounded-lg object-cover" />
                   )}
                 </div>
+                <div className="space-y-2">
+                  <Label>Modelo 3D (.glb ou .gltf + .bin + texturas)</Label>
+                  <Input
+                    type="file"
+                    accept=".glb,.gltf,.bin,.png,.jpg,.jpeg,.webp"
+                    multiple
+                    onChange={(e) => setSubtypeModelFile(e.target.files || null)}
+                  />
+                  {subtypeModelFile && subtypeModelFile.length > 0 && (
+                    <div className="flex flex-col gap-1 rounded-lg border border-blue-200 bg-blue-50 px-3 py-2 text-xs text-blue-700">
+                      <div className="flex items-center gap-2">
+                        <span>📦</span>
+                        <span className="font-medium">{subtypeModelFile.length} arquivo(s) selecionado(s)</span>
+                      </div>
+                      {Array.from(subtypeModelFile).map((f, i) => (
+                        <div key={i} className="ml-5 truncate text-blue-500">
+                          {f.name} ({(f.size / 1024).toFixed(0)} KB)
+                        </div>
+                      ))}
+                    </div>
+                  )}
+                  {!subtypeModelFile && subtypeForm.model_3d_path && (
+                    <div className="flex items-center gap-2 rounded-lg border border-green-200 bg-green-50 px-3 py-2 text-xs text-green-700">
+                      <span>✅</span>
+                      <span className="truncate">Modelo atual: {subtypeForm.model_3d_path}</span>
+                    </div>
+                  )}
+                </div>
                 <div className="flex items-center justify-between">
                   <Label>Ativo</Label>
                   <Switch
@@ -1131,7 +1190,14 @@ const Admin = () => {
                           />
                         )}
                         <div>
-                          <div className="text-sm font-semibold">{subtype.name}</div>
+                          <div className="text-sm font-semibold flex items-center gap-1.5">
+                            {subtype.name}
+                            {(subtype as any).model_3d_path && (
+                              <span className="inline-flex items-center rounded-full bg-blue-100 px-1.5 py-0.5 text-[10px] font-medium text-blue-700" title={(subtype as any).model_3d_path}>
+                                3D
+                              </span>
+                            )}
+                          </div>
                           <div className="text-xs text-muted-foreground">
                             {typeById.get(subtype.type_id)?.name || "Sem tipo"}
                           </div>
@@ -1150,6 +1216,7 @@ const Admin = () => {
                             sort_order: String(subtype.sort_order ?? 0),
                             is_active: subtype.is_active,
                             card_image_path: subtype.card_image_path || "",
+                            model_3d_path: (subtype as any).model_3d_path || "",
                           })
                         }
                       >

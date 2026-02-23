@@ -233,6 +233,77 @@ export function getModelConfigFromSelection(sel: Selection): ModelConfig {
   return cfg ?? REGISTRY["torso:shirt:basic"] ?? {};
 }
 
+/**
+ * Versão assíncrona: primeiro tenta buscar `model_3d_path` do subtipo
+ * correspondente no banco (Supabase). Se encontrar, retorna config com esse path.
+ * Caso contrário, fallback para o REGISTRY hardcoded.
+ */
+const _dbCache = new Map<string, { config: ModelConfig; ts: number }>();
+const DB_CACHE_TTL = 60_000; // 1 minuto
+
+export async function getModelConfigFromSelectionAsync(
+  sel: Selection,
+  supabaseClient: { from: (table: string) => any }
+): Promise<ModelConfig> {
+  const canon = canonicalize(sel);
+  const key = keyFrom(canon);
+
+  // Check cache
+  const cached = _dbCache.get(key);
+  if (cached && Date.now() - cached.ts < DB_CACHE_TTL) {
+    return cached.config;
+  }
+
+  // Try to find from DB
+  try {
+    const subtypeSlug = canon.subtype;
+
+    if (subtypeSlug) {
+      // Converte para o mesmo formato de slug usado no Admin (hyphens)
+      const dbSlug = subtypeSlug
+        .replace(/[^a-z0-9]+/g, "-")
+        .replace(/(^-|-$)+/g, "");
+
+      // Busca subtipo pelo slug
+      const { data } = await supabaseClient
+        .from("product_subtypes")
+        .select("model_3d_path, slug")
+        .eq("slug", dbSlug)
+        .maybeSingle();
+
+      if (data?.model_3d_path) {
+        const config: ModelConfig = {
+          src: data.model_3d_path,
+          camera: { position: [0, 1.5, 5], fov: 45 },
+          controls: { minDistance: 3, maxDistance: 10, enableZoom: true, enablePan: false },
+          scale: 0.8,
+          rotation: [0, 0, 0],
+          position: [0, 0, 0],
+        };
+        _dbCache.set(key, { config, ts: Date.now() });
+        return config;
+      }
+    }
+  } catch (err) {
+    console.warn("[models] DB lookup failed, using fallback:", err);
+  }
+
+  // Fallback to hardcoded registry
+  const fallback = REGISTRY[key] ?? REGISTRY["torso:shirt:basic"] ?? {};
+  _dbCache.set(key, { config: fallback, ts: Date.now() });
+  return fallback;
+}
+
+/** Invalida o cache (usar após upload de novo modelo). */
+export function invalidateModelCache(sel?: Selection) {
+  if (sel) {
+    const key = keyFrom(canonicalize(sel));
+    _dbCache.delete(key);
+  } else {
+    _dbCache.clear();
+  }
+}
+
 
 export function hasModelForSelection(sel: Selection): boolean {
   const canon = canonicalize(sel);
@@ -240,3 +311,4 @@ export function hasModelForSelection(sel: Selection): boolean {
 }
 
 export const MODEL_REGISTRY: Readonly<Record<string, ModelConfig>> = REGISTRY;
+

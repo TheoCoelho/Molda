@@ -1655,8 +1655,8 @@ const Creation = () => {
                                 style={{
                                   position: "absolute",
                                   inset: 0,
-                                  visibility: "visible",
-                                  pointerEvents: "auto",
+                                  visibility: "inherit",
+                                  pointerEvents: "inherit",
                                 }}
                               >
                                 <Editor2D

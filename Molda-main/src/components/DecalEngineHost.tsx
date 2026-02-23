@@ -4,7 +4,8 @@ import React, { useEffect, useRef, useState } from "react";
 // Caminho relativo do projeto Molda-main/src/components -> ../../.. -> decal-engine/src/usage.ts
 import initDecalDemo, { DecalDemoHandle } from "../../../decal-engine/src/usage";
 import { DEFAULT_GIZMO_THEME } from "../../../gizmo-theme";
-import { getModelConfigFromSelection } from "../lib/models";
+import { getModelConfigFromSelectionAsync } from "../lib/models";
+import { supabase } from "@/integrations/supabase/client";
 import type { DecalStateSnapshot, ExternalDecalData } from "../types/decals";
 
 type Selection = { part?: string | null; type?: string | null; subtype?: string | null };
@@ -61,7 +62,7 @@ export default function DecalEngineHost({
 
   useEffect(() => {
     if (!containerRef.current) return;
-    
+
     // Sempre limpar engine anterior se existir
     if (apiRef.current) {
       console.log("[DecalEngineHost] Destruindo engine anterior para reinicializar com novo modelo");
@@ -77,21 +78,26 @@ export default function DecalEngineHost({
 
     let cancelled = false;
 
-    // Escolhe o modelo com base na seleção inicial do Molda-main
-    const cfg = getModelConfigFromSelection({
-      part: selection?.part ?? undefined,
-      type: selection?.type ?? undefined,
-      subtype: selection?.subtype ?? undefined,
-    });
-    const src = cfg.src || "/models/tshirt-low-poly/scene.gltf";
-    // usage.ts espera caminho relativo a /models
-    const modelParam = src.startsWith("/models/") ? src.replace("/models/", "") : src;
-
-    console.log("[DecalEngineHost] Inicializando engine com modelo:", modelParam);
-
     const mountEl = containerRef.current;
     const boot = async () => {
       try {
+        // Busca config do modelo: primeiro tenta do banco, depois fallback hardcoded
+        const cfg = await getModelConfigFromSelectionAsync(
+          {
+            part: selection?.part ?? undefined,
+            type: selection?.type ?? undefined,
+            subtype: selection?.subtype ?? undefined,
+          },
+          supabase
+        );
+        if (cancelled) return;
+
+        const src = cfg.src || "/models/tshirt-low-poly/scene.gltf";
+        // usage.ts espera caminho relativo a /models
+        const modelParam = src.startsWith("/models/") ? src.replace("/models/", "") : src;
+
+        console.log("[DecalEngineHost] Inicializando engine com modelo:", modelParam);
+
         const handle = await initDecalDemo(mountEl, {
           interactive,
           background: null,
