@@ -28,96 +28,96 @@ type Props = {
 export default function TextToolbar({ editor, visible, position = "bottom" }: Props) {
 
 
-/** ===== Helpers ===== */
-function ToggleBtn({
-  pressed,
-  onClick,
-  title,
-  children,
-}: React.PropsWithChildren<{ pressed?: boolean; onClick: () => void; title?: string }>) {
-  return (
-    <button
-      type="button"
-      title={title}
-      className={[
-        "h-9 min-w-9 px-2 rounded-full border-none shadow-none",
-        "flex items-center justify-center text-sm",
-        pressed ? "bg-primary/10" : "bg-transparent hover:bg-black/5 dark:hover:bg-white/10",
-      ].join(" ")}
-      onClick={onClick}
-    >
-      {children}
-    </button>
-  );
-}
-
-const clamp = (n: number, min: number, max: number) => Math.min(max, Math.max(min, n));
-
-function hsvToHex(h: number, s: number, v: number) {
-  const c = v * s;
-  const x = c * (1 - Math.abs(((h / 60) % 2) - 1));
-  const m = v - c;
-  let r = 0, g = 0, b = 0;
-  if (h < 60) [r, g, b] = [c, x, 0];
-  else if (h < 120) [r, g, b] = [x, c, 0];
-  else if (h < 180) [r, g, b] = [0, c, x];
-  else if (h < 240) [r, g, b] = [0, x, c];
-  else if (h < 300) [r, g, b] = [x, 0, c];
-  else [r, g, b] = [c, 0, x];
-  const R = Math.round((r + m) * 255);
-  const G = Math.round((g + m) * 255);
-  const B = Math.round((b + m) * 255);
-  const toHex = (n: number) => n.toString(16).padStart(2, "0");
-  return `#${toHex(R)}${toHex(G)}${toHex(B)}`.toUpperCase();
-}
-function hexToHsv(hex: string): [number, number, number] | null {
-  const m = /^#([0-9A-F]{6})$/i.exec(hex);
-  if (!m) return null;
-  const i = parseInt(m[1], 16);
-  const r = ((i >> 16) & 255) / 255;
-  const g = ((i >> 8) & 255) / 255;
-  const b = (i & 255) / 255;
-  const max = Math.max(r, g, b);
-  const min = Math.min(r, g, b);
-  const d = max - min;
-  let h = 0;
-  if (d !== 0) {
-    switch (max) {
-      case r: h = ((g - b) / d) % 6; break;
-      case g: h = (b - r) / d + 2; break;
-      case b: h = (r - g) / d + 4; break;
-    }
-    h *= 60;
-    if (h < 0) h += 360;
+  /** ===== Helpers ===== */
+  function ToggleBtn({
+    pressed,
+    onClick,
+    title,
+    children,
+  }: React.PropsWithChildren<{ pressed?: boolean; onClick: () => void; title?: string }>) {
+    return (
+      <button
+        type="button"
+        title={title}
+        className={[
+          "h-9 min-w-9 px-2 rounded-full border-none shadow-none",
+          "flex items-center justify-center text-sm",
+          pressed ? "bg-primary/10" : "bg-transparent hover:bg-black/5 dark:hover:bg-white/10",
+        ].join(" ")}
+        onClick={onClick}
+      >
+        {children}
+      </button>
+    );
   }
-  const s = max === 0 ? 0 : d / max;
-  const v = max;
-  return [h, s, v];
-}
 
-const DEFAULT_COLORS = [
-  "#FF3B30", "#FF2D55", "#FF9500", "#FFCC00",
-  "#34C759", "#30D158", "#5AC8FA", "#007AFF",
-  "#0A84FF", "#5E5CE6", "#BF5AF2", "#FF375F",
-  "#8E8E93", "#AEAEB2", "#C7C7CC", "#D1D1D6",
-  "#E5E5EA", "#F2F2F7", "#000000", "#FFFFFF",
-];
+  const clamp = (n: number, min: number, max: number) => Math.min(max, Math.max(min, n));
 
-/** Garante que a família está carregada no DOM antes de aplicar no Fabric */
-async function ensureFontReady(
-  family: string,
-  weight: string | number = "400",
-  styleCss: "normal" | "italic" = "normal"
-) {
-  try { await loadFontFamily(family); } catch {}
-  try {
-    if (typeof document !== "undefined" && (document as any).fonts?.load) {
-      await (document as any).fonts.load(`${styleCss} ${String(weight)} 64px "${family}"`);
+  function hsvToHex(h: number, s: number, v: number) {
+    const c = v * s;
+    const x = c * (1 - Math.abs(((h / 60) % 2) - 1));
+    const m = v - c;
+    let r = 0, g = 0, b = 0;
+    if (h < 60) [r, g, b] = [c, x, 0];
+    else if (h < 120) [r, g, b] = [x, c, 0];
+    else if (h < 180) [r, g, b] = [0, c, x];
+    else if (h < 240) [r, g, b] = [0, x, c];
+    else if (h < 300) [r, g, b] = [x, 0, c];
+    else[r, g, b] = [c, 0, x];
+    const R = Math.round((r + m) * 255);
+    const G = Math.round((g + m) * 255);
+    const B = Math.round((b + m) * 255);
+    const toHex = (n: number) => n.toString(16).padStart(2, "0");
+    return `#${toHex(R)}${toHex(G)}${toHex(B)}`.toUpperCase();
+  }
+  function hexToHsv(hex: string): [number, number, number] | null {
+    const m = /^#([0-9A-F]{6})$/i.exec(hex);
+    if (!m) return null;
+    const i = parseInt(m[1], 16);
+    const r = ((i >> 16) & 255) / 255;
+    const g = ((i >> 8) & 255) / 255;
+    const b = (i & 255) / 255;
+    const max = Math.max(r, g, b);
+    const min = Math.min(r, g, b);
+    const d = max - min;
+    let h = 0;
+    if (d !== 0) {
+      switch (max) {
+        case r: h = ((g - b) / d) % 6; break;
+        case g: h = (b - r) / d + 2; break;
+        case b: h = (r - g) / d + 4; break;
+      }
+      h *= 60;
+      if (h < 0) h += 360;
     }
-  } catch {}
-}
+    const s = max === 0 ? 0 : d / max;
+    const v = max;
+    return [h, s, v];
+  }
 
-/** ===== Component ===== */
+  const DEFAULT_COLORS = [
+    "#FF3B30", "#FF2D55", "#FF9500", "#FFCC00",
+    "#34C759", "#30D158", "#5AC8FA", "#007AFF",
+    "#0A84FF", "#5E5CE6", "#BF5AF2", "#FF375F",
+    "#8E8E93", "#AEAEB2", "#C7C7CC", "#D1D1D6",
+    "#E5E5EA", "#F2F2F7", "#000000", "#FFFFFF",
+  ];
+
+  /** Garante que a família está carregada no DOM antes de aplicar no Fabric */
+  async function ensureFontReady(
+    family: string,
+    weight: string | number = "400",
+    styleCss: "normal" | "italic" = "normal"
+  ) {
+    try { await loadFontFamily(family); } catch { }
+    try {
+      if (typeof document !== "undefined" && (document as any).fonts?.load) {
+        await (document as any).fonts.load(`${styleCss} ${String(weight)} 64px "${family}"`);
+      }
+    } catch { }
+  }
+
+  /** ===== Component ===== */
   const [style, setStyle] = useState<TextStyle>({
     fontFamily: FONT_LIBRARY[0]?.family || "Inter",
     fontSize: 32,
@@ -145,7 +145,7 @@ async function ensureFontReady(
           String((s as any).fontWeight ?? style.fontWeight ?? "400"),
           ((s as any).fontStyle ?? style.fontStyle ?? "normal") as "normal" | "italic"
         );
-      } catch {}
+      } catch { }
     }
     setStyle((prev) => ({ ...prev, ...s, fontFamily: fam ?? prev.fontFamily }));
   };
@@ -159,29 +159,27 @@ async function ensureFontReady(
 
   /** Aplica mudanças preservando a fonte viva e corrigindo contorno */
   const apply = async (partial: Partial<TextStyle>) => {
-    // 1) pegue a font "viva" diretamente do objeto selecionado
-    const live = editor.current?.getActiveTextStyle?.() || {};
+    // 1) pegue a font "viva" diretamente do objeto selecionado — SINCRONO, antes de qualquer await
+    const liveBeforeAwait = editor.current?.getActiveTextStyle?.() || {};
     const currentFamily =
       (partial.fontFamily as string) ??
-      ((live as any).fontFamily as string) ??
-      (style.fontFamily as string) ??
+      ((liveBeforeAwait as any).fontFamily as string) ??
       "Inter";
 
     // 2) garanta que ela está realmente carregada
-    const weightNow = String(partial.fontWeight ?? (live as any).fontWeight ?? style.fontWeight ?? "400");
-    const italicNow = (partial.fontStyle ?? (live as any).fontStyle ?? style.fontStyle ?? "normal") as "normal" | "italic";
+    const weightNow = String(partial.fontWeight ?? (liveBeforeAwait as any).fontWeight ?? "400");
+    const italicNow = (partial.fontStyle ?? (liveBeforeAwait as any).fontStyle ?? "normal") as "normal" | "italic";
     await ensureFontReady(currentFamily, weightNow, italicNow);
 
-    // 3) atualize o estado da UI
-    const next: TextStyle = { ...style, ...partial, fontFamily: currentFamily };
-    setStyle(next);
+    // 3) atualize o estado da UI (funcional para evitar closures com estado stale)
+    setStyle((prev) => ({ ...prev, ...partial, fontFamily: currentFamily }));
 
     // 4) monte SÓ o patch a aplicar no Fabric
     const patch: any = { ...partial, fontFamily: currentFamily };
 
     // 5) manter a correção do contorno (stroke antes do fill)
-    const strokeW = partial.strokeWidth !== undefined ? Number(partial.strokeWidth) : Number(next.strokeWidth || 0);
-    const strokeC = (partial.stroke !== undefined ? (partial.stroke as any) : (next.stroke as any)) || undefined;
+    const strokeW = partial.strokeWidth !== undefined ? Number(partial.strokeWidth) : Number((liveBeforeAwait as any).strokeWidth || 0);
+    const strokeC = (partial.stroke !== undefined ? (partial.stroke as any) : ((liveBeforeAwait as any).stroke as any)) || undefined;
     const hasStroke = !!strokeC && strokeW > 0;
     Object.assign(
       patch,
@@ -275,9 +273,9 @@ async function ensureFontReady(
 
     return () => {
       window.removeEventListener("resize", measure);
-      try { if (barEl) ro.unobserve(barEl); } catch {}
-      try { if (dropEl) ro.unobserve(dropEl); } catch {}
-      try { ro.disconnect(); } catch {}
+      try { if (barEl) ro.unobserve(barEl); } catch { }
+      try { if (dropEl) ro.unobserve(dropEl); } catch { }
+      try { ro.disconnect(); } catch { }
     };
   }, [visible]);
 
@@ -307,11 +305,11 @@ async function ensureFontReady(
           return Array.from(new Set(arr.map((c: string) => c.toUpperCase())));
         }
       }
-    } catch {}
+    } catch { }
     return ["#1677FF", ...DEFAULT_COLORS];
   });
   useEffect(() => {
-    try { localStorage.setItem("textToolbar.recents", JSON.stringify(recents)); } catch {}
+    try { localStorage.setItem("textToolbar.recents", JSON.stringify(recents)); } catch { }
   }, [recents]);
 
   const displayPalette = useMemo(() => {
@@ -651,26 +649,26 @@ async function ensureFontReady(
     </div>
   );
 
-if (!visible) return null;
+  if (!visible) return null;
 
-if (position === "top") {
-  return (
-    <div className="fixed left-1/2 -translate-x-1/2 top-4 z-[60] max-w-[95vw] w-fit">
-      {toolbar}
-    </div>
-  );
-}
-if (position === "bottom") {
-  return (
-    <div
-      className="absolute left-1/2 -translate-x-1/2 bottom-6 z-[60] max-w-[95vw] w-fit"
-      style={{ width: "fit-content" }}
-    >
-      {toolbar}
-    </div>
-  );
-}
-// "inline": sem wrapper posicionado (deixe o pai controlar)
-return toolbar;
+  if (position === "top") {
+    return (
+      <div className="fixed left-1/2 -translate-x-1/2 top-4 z-[60] max-w-[95vw] w-fit">
+        {toolbar}
+      </div>
+    );
+  }
+  if (position === "bottom") {
+    return (
+      <div
+        className="absolute left-1/2 -translate-x-1/2 bottom-6 z-[60] max-w-[95vw] w-fit"
+        style={{ width: "fit-content" }}
+      >
+        {toolbar}
+      </div>
+    );
+  }
+  // "inline": sem wrapper posicionado (deixe o pai controlar)
+  return toolbar;
 
 }
