@@ -492,6 +492,7 @@ const Editor2D = forwardRef<Editor2DHandle, Props>(function Editor2D(
   });
   const toolRef = useRef(tool);
   const stampSrcRef = useRef<string | null>(stampSrc ?? null);
+  const pendingFontFamilyRef = useRef<string>("Inter");
   const selectionListenersRef = useRef(new Set<(k: "none" | "text" | "image" | "other") => void>());
   const erasingCountRef = useRef(0);
   const idleResolversRef = useRef<Set<() => void>>(new Set());
@@ -6548,17 +6549,18 @@ const Editor2D = forwardRef<Editor2DHandle, Props>(function Editor2D(
     return null;
   };
 
-  const addText = (value: string = "Digite aqui", opts?: { x?: number; y?: number }) => {
+  const addText = (value: string = "Digite aqui", opts?: { x?: number; y?: number; fontFamily?: string }) => {
     const c: any = canvasRef.current as any;
     const fabricLocal: any = fabricRef.current as any;
     if (!c || !fabricLocal) return;
     const center = { x: c.getWidth() / 2, y: c.getHeight() / 2 };
+    const family = opts?.fontFamily || pendingFontFamilyRef.current || "Inter";
     const it = new fabricLocal.IText(value, {
       left: typeof opts?.x === "number" ? opts.x : center.x,
       top: typeof opts?.y === "number" ? opts.y : center.y,
       originX: "center",
       originY: "center",
-      fontFamily: "Inter",
+      fontFamily: family,
       fontSize: 32,
       fill: strokeColorRef.current || "#000000",
       objectCaching: true,
@@ -9925,6 +9927,7 @@ const Editor2D = forwardRef<Editor2DHandle, Props>(function Editor2D(
     const handleFontPicked = (ev: Event) => {
       const family = (ev as CustomEvent)?.detail?.fontFamily;
       if (typeof family === "string" && family.trim()) {
+        pendingFontFamilyRef.current = family.trim();
         applyTextStyle({ fontFamily: family });
         emitFontUsed(family);
       }
@@ -11102,20 +11105,49 @@ const Editor2D = forwardRef<Editor2DHandle, Props>(function Editor2D(
       return;
     }
 
-    // TEXT (funciona como select)
+    // TEXT (click-to-add: clicar em área vazia cria uma caixa de texto)
     if (tool === "text") {
-      console.log("[Editor2D] Setting up TEXT tool - resetting cursor to default");
-      // Same behavior as select (do not discard selection).
+      console.log("[Editor2D] Setting up TEXT tool - click-to-add mode");
       c.isDrawingMode = false;
       c.selection = true;
       c.skipTargetFind = false;
       setObjectsSelectable(c, true);
-      setHostCursor("default");
-      // Reset canvas default cursor to ensure no custom cursors remain
-      try { c.defaultCursor = "default"; } catch { }
+      setHostCursor("text");
+      try { c.defaultCursor = "text"; } catch { }
       c.renderAll();
-      console.log("[Editor2D] TEXT tool setup complete, cursor should be default");
-      return;
+
+      // Handler: ao clicar em área vazia, adiciona texto na posição do clique
+      // Após criar o texto, volta para a ferramenta "select" automaticamente
+      let textAdded = false;
+      const onTextMouseDown = (evt: any) => {
+        // Ignora se já adicionou texto nesta sessão (evita duplicatas durante a troca de tool)
+        if (textAdded) return;
+        // Ignora se clicou em um objeto existente (deixa Fabric lidar com seleção)
+        if (evt?.target) return;
+        // Ignora botão secundário
+        if (evt?.e?.button && evt.e.button !== 0) return;
+        try {
+          textAdded = true;
+          const pointer = c.getPointer(evt.e);
+          addText("Digite aqui", {
+            x: pointer.x,
+            y: pointer.y,
+            fontFamily: pendingFontFamilyRef.current || "Inter",
+          });
+          // Volta para select após adicionar o texto
+          onRequestToolChangeRef.current?.("select");
+        } catch (err) {
+          textAdded = false;
+          console.warn("[Editor2D] Error adding text on click:", err);
+        }
+      };
+      c.on("mouse:down", onTextMouseDown);
+
+      console.log("[Editor2D] TEXT tool setup complete, click-to-add active");
+      // Cleanup: remove o handler quando a ferramenta mudar
+      return () => {
+        try { c.off("mouse:down", onTextMouseDown); } catch { }
+      };
     }
 
     // STAMP (carimbo/moldes): clica/arrasta para inserir repetidamente a imagem selecionada
