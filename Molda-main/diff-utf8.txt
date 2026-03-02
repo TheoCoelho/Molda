@@ -1,0 +1,73 @@
+﻿diff --git a/Molda-main/src/components/Editor2D.tsx b/Molda-main/src/components/Editor2D.tsx
+index 5e14476..dec0985 100644
+--- a/Molda-main/src/components/Editor2D.tsx
++++ b/Molda-main/src/components/Editor2D.tsx
+@@ -691,11 +691,23 @@ const Editor2D = forwardRef<Editor2DHandle, Props>(function Editor2D(
+     if (!active) return;
+     const kind = computeSelectionKind();
+     if (kind !== "other") return;
+-    active.set("stroke", strokeColor);
+-    // Se a forma tem preenchimento (fill), tamb├®m altera a cor de preenchimento
+-    const currentFill = active.get("fill");
+-    if (currentFill && currentFill !== "transparent" && currentFill !== "rgba(0,0,0,0)") {
+-      active.set("fill", strokeColor);
++    // Aplica a cor ao objeto e a seus filhos (spray = Group de Rects)
++    const applyColor = (obj: any) => {
++      const curStroke = obj.get("stroke");
++      if (curStroke && curStroke !== "transparent") {
++        obj.set("stroke", strokeColor);
++      }
++      const curFill = obj.get("fill");
++      if (curFill && curFill !== "transparent" && curFill !== "rgba(0,0,0,0)") {
++        obj.set("fill", strokeColor);
++      }
++      obj.dirty = true;
++    };
++
++    applyColor(active);
++    // Se for grupo (spray, etc.), aplica a cor em cada filho
++    if (Array.isArray(active._objects)) {
++      active._objects.forEach((child: any) => applyColor(child));
+     }
+     active.dirty = true;
+     c.requestRenderAll?.();
+@@ -11625,6 +11637,16 @@ const Editor2D = forwardRef<Editor2DHandle, Props>(function Editor2D(
+         meta.strokeWidth = strokeWidth;
+         meta.opacity = opacity;
+         const commands = computeBezierFromNodes(meta.nodes, meta.closed);
++
++        // Rubber-band: if not dragging and we have a hover point, append a
++        // dashed line segment from the last anchor to the cursor position.
++        const hover = curveState.hoverPoint;
++        if (hover && !curveState.isPointerDown && meta.nodes.length >= 1) {
++          const last = meta.nodes[meta.nodes.length - 1];
++          const cp1 = last.handleOut || last.anchor;
++          commands.push(["C", cp1.x, cp1.y, hover.x, hover.y, hover.x, hover.y]);
++        }
++
+         curveState.preview.path = commands;
+         curveState.preview.set({
+           stroke: meta.stroke,
+@@ -11766,6 +11788,7 @@ const Editor2D = forwardRef<Editor2DHandle, Props>(function Editor2D(
+           return;
+         }
+ 
++        // Update cursor style based on proximity to the first anchor (close threshold)
+         if (meta.nodes.length > 1) {
+           const first = meta.nodes[0];
+           const distance = Math.hypot(current.x - first.anchor.x, current.y - first.anchor.y);
+@@ -11775,6 +11798,14 @@ const Editor2D = forwardRef<Editor2DHandle, Props>(function Editor2D(
+             setHostCursor("crosshair");
+           }
+         }
++
++        // Rubber-band: update the hover point so the preview shows a tentative
++        // segment from the last anchor to the current cursor position.
++        if (curveState.isDrawing && meta.nodes.length >= 1) {
++          curveState.hoverPoint = current;
++          ensurePreview();
++          updatePreview();
++        }
+       };
+ 
+       const onMouseUp = () => {
