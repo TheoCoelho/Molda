@@ -13,7 +13,7 @@ import { applyGizmoThemeToFabric, DEFAULT_GIZMO_THEME } from "../../../gizmo-the
 // Tipos alinhados com ExpandableSidebar
 export type Tool = "select" | "brush" | "line" | "curve" | "text" | "stamp";
 export type BrushVariant = "pencil" | "spray" | "marker" | "calligraphy" | "eraser";
-export type ShapeKind = "rect" | "triangle" | "ellipse" | "polygon" | "star";
+export type ShapeKind = "rect" | "triangle" | "ellipse" | "polygon" | "star" | "diamond" | "pentagon" | "octagon" | "cross" | "heart" | "arrow" | "lightning" | "drop" | "moon" | "star6";
 
 type LinePoint = { x: number; y: number };
 type LineMeta = {
@@ -683,6 +683,22 @@ const Editor2D = forwardRef<Editor2DHandle, Props>(function Editor2D(
 
   React.useEffect(() => {
     strokeColorRef.current = strokeColor;
+
+    // Aplica a cor ao objeto ativo (formas, linhas, curvas etc.) quando strokeColor muda
+    const c = canvasRef.current as any;
+    if (!c) return;
+    const active = c.getActiveObject?.();
+    if (!active) return;
+    const kind = computeSelectionKind();
+    if (kind !== "other") return;
+    active.set("stroke", strokeColor);
+    // Se a forma tem preenchimento (fill), também altera a cor de preenchimento
+    const currentFill = active.get("fill");
+    if (currentFill && currentFill !== "transparent" && currentFill !== "rgba(0,0,0,0)") {
+      active.set("fill", strokeColor);
+    }
+    active.dirty = true;
+    c.requestRenderAll?.();
   }, [strokeColor]);
 
   React.useEffect(() => {
@@ -8246,12 +8262,16 @@ const Editor2D = forwardRef<Editor2DHandle, Props>(function Editor2D(
     const finalStrokeWidth = style?.strokeWidth ?? strokeWidth;
     const finalOpacity = style?.opacity ?? opacity;
 
+    // Use 0,0 as local origin; we'll center after creation
+    const cx = 0;
+    const cy = 0;
+
     let obj: any = null;
 
     if (shape === "rect") {
       obj = new fabric.Rect({
-        left: 80,
-        top: 60,
+        left: cx,
+        top: cy,
         width: 180,
         height: 180,
         fill: finalFillColor || "transparent",
@@ -8263,8 +8283,8 @@ const Editor2D = forwardRef<Editor2DHandle, Props>(function Editor2D(
       });
     } else if (shape === "ellipse") {
       obj = new fabric.Circle({
-        left: 80,
-        top: 60,
+        left: cx,
+        top: cy,
         radius: 90,
         fill: finalFillColor || "transparent",
         stroke: finalStrokeColor,
@@ -8275,14 +8295,12 @@ const Editor2D = forwardRef<Editor2DHandle, Props>(function Editor2D(
       });
     } else if (shape === "triangle") {
       const points: Array<{ x: number; y: number }> = [];
-      const centerX = 80 + 90;
-      const centerY = 60 + 60;
       const radius = 80;
       for (let i = 0; i < 3; i++) {
         const angle = (Math.PI * 2 / 3) * i - Math.PI / 2;
         points.push({
-          x: centerX + radius * Math.cos(angle),
-          y: centerY + radius * Math.sin(angle),
+          x: cx + radius * Math.cos(angle),
+          y: cy + radius * Math.sin(angle),
         });
       }
       obj = new fabric.Polygon(points, {
@@ -8295,14 +8313,12 @@ const Editor2D = forwardRef<Editor2DHandle, Props>(function Editor2D(
     } else if (shape === "polygon") {
       // Hexágono
       const points: Array<{ x: number; y: number }> = [];
-      const centerX = 80 + 90;
-      const centerY = 60 + 60;
       const radius = 60;
       for (let i = 0; i < 6; i++) {
         const angle = (Math.PI / 3) * i - Math.PI / 2;
         points.push({
-          x: centerX + radius * Math.cos(angle),
-          y: centerY + radius * Math.sin(angle),
+          x: cx + radius * Math.cos(angle),
+          y: cy + radius * Math.sin(angle),
         });
       }
       obj = new fabric.Polygon(points, {
@@ -8314,15 +8330,181 @@ const Editor2D = forwardRef<Editor2DHandle, Props>(function Editor2D(
       });
     } else if (shape === "star") {
       const points: Array<{ x: number; y: number }> = [];
-      const centerX = 80 + 90;
-      const centerY = 60 + 60;
       const outerRadius = 70;
       const innerRadius = 32;
-      const steps = 10; // 5-point star -> 10 vertices alternating radii
+      const steps = 10;
       for (let i = 0; i < steps; i++) {
         const angle = -Math.PI / 2 + i * (Math.PI / 5);
         const r = i % 2 === 0 ? outerRadius : innerRadius;
-        points.push({ x: centerX + r * Math.cos(angle), y: centerY + r * Math.sin(angle) });
+        points.push({ x: cx + r * Math.cos(angle), y: cy + r * Math.sin(angle) });
+      }
+      obj = new fabric.Polygon(points, {
+        fill: finalFillColor || "transparent",
+        stroke: finalStrokeColor,
+        strokeWidth: finalStrokeWidth,
+        opacity: finalOpacity,
+        erasable: true,
+      });
+    } else if (shape === "diamond") {
+      const w = 120;
+      const h = 160;
+      const points = [
+        { x: cx, y: cy - h / 2 },
+        { x: cx + w / 2, y: cy },
+        { x: cx, y: cy + h / 2 },
+        { x: cx - w / 2, y: cy },
+      ];
+      obj = new fabric.Polygon(points, {
+        fill: finalFillColor || "transparent",
+        stroke: finalStrokeColor,
+        strokeWidth: finalStrokeWidth,
+        opacity: finalOpacity,
+        erasable: true,
+      });
+    } else if (shape === "pentagon") {
+      const points: Array<{ x: number; y: number }> = [];
+      const radius = 70;
+      for (let i = 0; i < 5; i++) {
+        const angle = (Math.PI * 2 / 5) * i - Math.PI / 2;
+        points.push({
+          x: cx + radius * Math.cos(angle),
+          y: cy + radius * Math.sin(angle),
+        });
+      }
+      obj = new fabric.Polygon(points, {
+        fill: finalFillColor || "transparent",
+        stroke: finalStrokeColor,
+        strokeWidth: finalStrokeWidth,
+        opacity: finalOpacity,
+        erasable: true,
+      });
+    } else if (shape === "octagon") {
+      const points: Array<{ x: number; y: number }> = [];
+      const radius = 70;
+      for (let i = 0; i < 8; i++) {
+        const angle = (Math.PI * 2 / 8) * i - Math.PI / 2 + Math.PI / 8;
+        points.push({
+          x: cx + radius * Math.cos(angle),
+          y: cy + radius * Math.sin(angle),
+        });
+      }
+      obj = new fabric.Polygon(points, {
+        fill: finalFillColor || "transparent",
+        stroke: finalStrokeColor,
+        strokeWidth: finalStrokeWidth,
+        opacity: finalOpacity,
+        erasable: true,
+      });
+    } else if (shape === "cross") {
+      const arm = 70;
+      const thick = 30;
+      const hf = thick / 2;
+      const points = [
+        { x: cx - hf, y: cy - arm },
+        { x: cx + hf, y: cy - arm },
+        { x: cx + hf, y: cy - hf },
+        { x: cx + arm, y: cy - hf },
+        { x: cx + arm, y: cy + hf },
+        { x: cx + hf, y: cy + hf },
+        { x: cx + hf, y: cy + arm },
+        { x: cx - hf, y: cy + arm },
+        { x: cx - hf, y: cy + hf },
+        { x: cx - arm, y: cy + hf },
+        { x: cx - arm, y: cy - hf },
+        { x: cx - hf, y: cy - hf },
+      ];
+      obj = new fabric.Polygon(points, {
+        fill: finalFillColor || "transparent",
+        stroke: finalStrokeColor,
+        strokeWidth: finalStrokeWidth,
+        opacity: finalOpacity,
+        erasable: true,
+      });
+    } else if (shape === "heart") {
+      const s = 1.1;
+      const hx = 0;
+      const hy = 0;
+      const path = `M ${hx},${hy + 30 * s} ` +
+        `C ${hx},${hy + 26 * s} ${hx - 5 * s},${hy + 15 * s} ${hx - 15 * s},${hy + 15 * s} ` +
+        `C ${hx - 30 * s},${hy + 15 * s} ${hx - 40 * s},${hy + 30 * s} ${hx - 40 * s},${hy + 40 * s} ` +
+        `C ${hx - 40 * s},${hy + 60 * s} ${hx - 20 * s},${hy + 75 * s} ${hx},${hy + 90 * s} ` +
+        `C ${hx + 20 * s},${hy + 75 * s} ${hx + 40 * s},${hy + 60 * s} ${hx + 40 * s},${hy + 40 * s} ` +
+        `C ${hx + 40 * s},${hy + 30 * s} ${hx + 30 * s},${hy + 15 * s} ${hx + 15 * s},${hy + 15 * s} ` +
+        `C ${hx + 5 * s},${hy + 15 * s} ${hx},${hy + 26 * s} ${hx},${hy + 30 * s} Z`;
+      obj = new fabric.Path(path, {
+        fill: finalFillColor || "transparent",
+        stroke: finalStrokeColor,
+        strokeWidth: finalStrokeWidth,
+        opacity: finalOpacity,
+        erasable: true,
+      });
+    } else if (shape === "arrow") {
+      const points = [
+        { x: cx - 60, y: cy - 20 },
+        { x: cx + 20, y: cy - 20 },
+        { x: cx + 20, y: cy - 45 },
+        { x: cx + 70, y: cy },
+        { x: cx + 20, y: cy + 45 },
+        { x: cx + 20, y: cy + 20 },
+        { x: cx - 60, y: cy + 20 },
+      ];
+      obj = new fabric.Polygon(points, {
+        fill: finalFillColor || "transparent",
+        stroke: finalStrokeColor,
+        strokeWidth: finalStrokeWidth,
+        opacity: finalOpacity,
+        erasable: true,
+      });
+    } else if (shape === "lightning") {
+      const points = [
+        { x: cx - 10, y: cy - 70 },
+        { x: cx + 30, y: cy - 70 },
+        { x: cx + 5, y: cy - 10 },
+        { x: cx + 35, y: cy - 10 },
+        { x: cx - 20, y: cy + 70 },
+        { x: cx + 5, y: cy + 5 },
+        { x: cx - 25, y: cy + 5 },
+      ];
+      obj = new fabric.Polygon(points, {
+        fill: finalFillColor || "transparent",
+        stroke: finalStrokeColor,
+        strokeWidth: finalStrokeWidth,
+        opacity: finalOpacity,
+        erasable: true,
+      });
+    } else if (shape === "drop") {
+      const path = `M 0,0 ` +
+        `C -5,20 -45,60 -45,90 ` +
+        `A 45 45 0 0 0 45,90 ` +
+        `C 45,60 5,20 0,0 Z`;
+      obj = new fabric.Path(path, {
+        fill: finalFillColor || "transparent",
+        stroke: finalStrokeColor,
+        strokeWidth: finalStrokeWidth,
+        opacity: finalOpacity,
+        erasable: true,
+      });
+    } else if (shape === "moon") {
+      const r = 55;
+      const path = `M 0,${-r} ` +
+        `A ${r} ${r} 0 1 0 0,${r} ` +
+        `A ${r * 0.7} ${r * 0.7} 0 1 1 0,${-r} Z`;
+      obj = new fabric.Path(path, {
+        fill: finalFillColor || "transparent",
+        stroke: finalStrokeColor,
+        strokeWidth: finalStrokeWidth,
+        opacity: finalOpacity,
+        erasable: true,
+      });
+    } else if (shape === "star6") {
+      const points: Array<{ x: number; y: number }> = [];
+      const outerRadius = 70;
+      const innerRadius = 40;
+      const steps = 12;
+      for (let i = 0; i < steps; i++) {
+        const angle = -Math.PI / 2 + i * (Math.PI / 6);
+        const r = i % 2 === 0 ? outerRadius : innerRadius;
+        points.push({ x: cx + r * Math.cos(angle), y: cy + r * Math.sin(angle) });
       }
       obj = new fabric.Polygon(points, {
         fill: finalFillColor || "transparent",
@@ -8335,6 +8517,9 @@ const Editor2D = forwardRef<Editor2DHandle, Props>(function Editor2D(
 
     if (obj) {
       c.add(obj);
+      // Center the shape on the canvas
+      obj.center();
+      obj.setCoords();
       c.setActiveObject(obj);
       c.renderAll();
       if (String(obj.type || "").toLowerCase() === "polygon") {

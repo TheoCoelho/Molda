@@ -3,14 +3,6 @@ import { Button } from "../components/ui/button";
 import { Input } from "../components/ui/input";
 import { Label } from "../components/ui/label";
 import { Textarea } from "../components/ui/textarea";
-import {
-  DropdownMenu,
-  DropdownMenuContent,
-  DropdownMenuItem,
-  DropdownMenuTrigger,
-  DropdownMenuRadioGroup,
-  DropdownMenuRadioItem,
-} from "../components/ui/dropdown-menu";
 import UploadGallery from "../components/UploadGallery";
 import { useRecentFonts } from "../hooks/use-recent-fonts";
 import {
@@ -34,7 +26,6 @@ import {
   Hexagon,
   Minus,
   Search,
-  Filter,
 } from "lucide-react";
 // Novo ícone para a seção de ferramentas
 import { Wrench } from "lucide-react";
@@ -42,19 +33,18 @@ import FontPicker from "../components/FontPicker";
 import { FONT_LIBRARY } from "../fonts/library";
 import { generateCreativeName } from "../lib/creativeNames";
 
-import {
-  generateBlobSvgDataUrl,
-} from "../lib/shapeGenerators";
 import type { BrushVariant } from "./Editor2D";
 
 // Componentes SVG customizados para formas
+type ShapeIconType = "rect" | "ellipse" | "triangle" | "polygon" | "star" | "diamond" | "pentagon" | "octagon" | "cross" | "heart" | "arrow" | "lightning" | "drop" | "moon" | "star6";
+
 const ShapeIcon = ({
   type,
   fillColor,
   strokeColor,
   fillEnabled
 }: {
-  type: "rect" | "ellipse" | "triangle" | "polygon" | "star";
+  type: ShapeIconType;
   fillColor: string;
   strokeColor: string;
   fillEnabled: boolean;
@@ -68,16 +58,7 @@ const ShapeIcon = ({
   if (type === "rect") {
     return (
       <svg width={size} height={size} viewBox={`0 0 ${size} ${size}`} className="w-6 h-6">
-        <rect
-          x={4}
-          y={4}
-          width={16}
-          height={16}
-          fill={fill}
-          stroke={stroke}
-          strokeWidth={strokeWidth}
-          rx={1}
-        />
+        <rect x={4} y={4} width={16} height={16} fill={fill} stroke={stroke} strokeWidth={strokeWidth} rx={1} />
       </svg>
     );
   }
@@ -85,15 +66,7 @@ const ShapeIcon = ({
   if (type === "ellipse") {
     return (
       <svg width={size} height={size} viewBox={`0 0 ${size} ${size}`} className="w-6 h-6">
-        <ellipse
-          cx={center}
-          cy={center}
-          rx={8}
-          ry={6}
-          fill={fill}
-          stroke={stroke}
-          strokeWidth={strokeWidth}
-        />
+        <ellipse cx={center} cy={center} rx={8} ry={6} fill={fill} stroke={stroke} strokeWidth={strokeWidth} />
       </svg>
     );
   }
@@ -101,57 +74,134 @@ const ShapeIcon = ({
   if (type === "triangle") {
     return (
       <svg width={size} height={size} viewBox={`0 0 ${size} ${size}`} className="w-6 h-6">
-        <polygon
-          points={`${center},4 ${size - 4},${size - 4} 4,${size - 4}`}
-          fill={fill}
-          stroke={stroke}
-          strokeWidth={strokeWidth}
-        />
+        <polygon points={`${center},4 ${size - 4},${size - 4} 4,${size - 4}`} fill={fill} stroke={stroke} strokeWidth={strokeWidth} />
       </svg>
     );
   }
 
   if (type === "polygon") {
-    // Hexágono
     const points: string[] = [];
     const radius = 7;
     for (let i = 0; i < 6; i++) {
       const angle = (Math.PI / 3) * i - Math.PI / 2;
-      const x = center + radius * Math.cos(angle);
-      const y = center + radius * Math.sin(angle);
-      points.push(`${x},${y}`);
+      points.push(`${center + radius * Math.cos(angle)},${center + radius * Math.sin(angle)}`);
     }
     return (
       <svg width={size} height={size} viewBox={`0 0 ${size} ${size}`} className="w-6 h-6">
-        <polygon
-          points={points.join(" ")}
-          fill={fill}
-          stroke={stroke}
-          strokeWidth={strokeWidth}
-        />
+        <polygon points={points.join(" ")} fill={fill} stroke={stroke} strokeWidth={strokeWidth} />
       </svg>
     );
   }
 
   if (type === "star") {
     const points: string[] = [];
-    const outerRadius = 8;
-    const innerRadius = 4;
     for (let i = 0; i < 10; i++) {
       const angle = -Math.PI / 2 + i * (Math.PI / 5);
-      const r = i % 2 === 0 ? outerRadius : innerRadius;
-      const x = center + r * Math.cos(angle);
-      const y = center + r * Math.sin(angle);
-      points.push(`${x},${y}`);
+      const r = i % 2 === 0 ? 8 : 4;
+      points.push(`${center + r * Math.cos(angle)},${center + r * Math.sin(angle)}`);
     }
     return (
       <svg width={size} height={size} viewBox={`0 0 ${size} ${size}`} className="w-6 h-6">
-        <polygon
-          points={points.join(" ")}
-          fill={fill}
-          stroke={stroke}
-          strokeWidth={strokeWidth}
-        />
+        <polygon points={points.join(" ")} fill={fill} stroke={stroke} strokeWidth={strokeWidth} />
+      </svg>
+    );
+  }
+
+  if (type === "diamond") {
+    return (
+      <svg width={size} height={size} viewBox={`0 0 ${size} ${size}`} className="w-6 h-6">
+        <polygon points={`${center},3 ${size - 4},${center} ${center},${size - 3} 4,${center}`} fill={fill} stroke={stroke} strokeWidth={strokeWidth} />
+      </svg>
+    );
+  }
+
+  if (type === "pentagon") {
+    const points: string[] = [];
+    const radius = 8;
+    for (let i = 0; i < 5; i++) {
+      const angle = (Math.PI * 2 / 5) * i - Math.PI / 2;
+      points.push(`${center + radius * Math.cos(angle)},${center + radius * Math.sin(angle)}`);
+    }
+    return (
+      <svg width={size} height={size} viewBox={`0 0 ${size} ${size}`} className="w-6 h-6">
+        <polygon points={points.join(" ")} fill={fill} stroke={stroke} strokeWidth={strokeWidth} />
+      </svg>
+    );
+  }
+
+  if (type === "octagon") {
+    const points: string[] = [];
+    const radius = 8;
+    for (let i = 0; i < 8; i++) {
+      const angle = (Math.PI * 2 / 8) * i - Math.PI / 2 + Math.PI / 8;
+      points.push(`${center + radius * Math.cos(angle)},${center + radius * Math.sin(angle)}`);
+    }
+    return (
+      <svg width={size} height={size} viewBox={`0 0 ${size} ${size}`} className="w-6 h-6">
+        <polygon points={points.join(" ")} fill={fill} stroke={stroke} strokeWidth={strokeWidth} />
+      </svg>
+    );
+  }
+
+  if (type === "cross") {
+    const a = 3, b = 9, c = 15, d = 21;
+    return (
+      <svg width={size} height={size} viewBox={`0 0 ${size} ${size}`} className="w-6 h-6">
+        <polygon points={`${b},${a} ${c},${a} ${c},${b} ${d},${b} ${d},${c} ${c},${c} ${c},${d} ${b},${d} ${b},${c} ${a},${c} ${a},${b} ${b},${b}`} fill={fill} stroke={stroke} strokeWidth={strokeWidth} />
+      </svg>
+    );
+  }
+
+  if (type === "heart") {
+    return (
+      <svg width={size} height={size} viewBox={`0 0 ${size} ${size}`} className="w-6 h-6">
+        <path d={`M${center},${size - 5} C${center - 8},${size - 10} ${2},${center - 1} ${2},${center - 4} C${2},${center - 8} ${center - 3},${3} ${center},${7} C${center + 3},${3} ${size - 2},${center - 8} ${size - 2},${center - 4} C${size - 2},${center - 1} ${center + 8},${size - 10} ${center},${size - 5}Z`} fill={fill} stroke={stroke} strokeWidth={strokeWidth} />
+      </svg>
+    );
+  }
+
+  if (type === "arrow") {
+    return (
+      <svg width={size} height={size} viewBox={`0 0 ${size} ${size}`} className="w-6 h-6">
+        <polygon points={`3,${center - 3} 14,${center - 3} 14,${4} ${size - 3},${center} 14,${size - 4} 14,${center + 3} 3,${center + 3}`} fill={fill} stroke={stroke} strokeWidth={strokeWidth} />
+      </svg>
+    );
+  }
+
+  if (type === "lightning") {
+    return (
+      <svg width={size} height={size} viewBox={`0 0 ${size} ${size}`} className="w-6 h-6">
+        <polygon points={`9,2 16,2 12,10 18,10 8,22 11,13 6,13`} fill={fill} stroke={stroke} strokeWidth={strokeWidth} />
+      </svg>
+    );
+  }
+
+  if (type === "drop") {
+    return (
+      <svg width={size} height={size} viewBox={`0 0 ${size} ${size}`} className="w-6 h-6">
+        <path d={`M${center},3 C${center - 1},7 ${4},${center + 2} ${4},${center + 5} A${center - 4} ${center - 4} 0 0 0 ${size - 4},${center + 5} C${size - 4},${center + 2} ${center + 1},7 ${center},3 Z`} fill={fill} stroke={stroke} strokeWidth={strokeWidth} />
+      </svg>
+    );
+  }
+
+  if (type === "moon") {
+    return (
+      <svg width={size} height={size} viewBox={`0 0 ${size} ${size}`} className="w-6 h-6">
+        <path d={`M${center + 2},${3} A${9} ${9} 0 1 0 ${center + 2},${size - 3} A${6.5} ${6.5} 0 1 1 ${center + 2},${3} Z`} fill={fill} stroke={stroke} strokeWidth={strokeWidth} />
+      </svg>
+    );
+  }
+
+  if (type === "star6") {
+    const points: string[] = [];
+    for (let i = 0; i < 12; i++) {
+      const angle = -Math.PI / 2 + i * (Math.PI / 6);
+      const r = i % 2 === 0 ? 8 : 4.5;
+      points.push(`${center + r * Math.cos(angle)},${center + r * Math.sin(angle)}`);
+    }
+    return (
+      <svg width={size} height={size} viewBox={`0 0 ${size} ${size}`} className="w-6 h-6">
+        <polygon points={points.join(" ")} fill={fill} stroke={stroke} strokeWidth={strokeWidth} />
       </svg>
     );
   }
@@ -189,7 +239,7 @@ interface ExpandableSidebarProps {
   setStrokeWidth: (n: number) => void;
   opacity: number;
   setOpacity: (n: number) => void;
-  addShape: (shape: "rect" | "ellipse" | "triangle" | "polygon" | "star", style?: { fillEnabled?: boolean; fillColor?: string; strokeColor?: string; strokeWidth?: number; opacity?: number }) => void;
+  addShape: (shape: ShapeIconType, style?: { fillEnabled?: boolean; fillColor?: string; strokeColor?: string; strokeWidth?: number; opacity?: number }) => void;
   is2DActive: boolean;
 
   // Upload -> inserir imagem no canvas
@@ -483,7 +533,7 @@ function BrushSectionAccordion(props: {
   setStrokeWidth: (n: number) => void;
   opacity: number;
   setOpacity: (n: number) => void;
-  addShape: (shape: "rect" | "ellipse" | "triangle" | "polygon", style?: { fillEnabled?: boolean; fillColor?: string; strokeColor?: string; strokeWidth?: number; opacity?: number }) => void;
+  addShape: (shape: ShapeIconType, style?: { fillEnabled?: boolean; fillColor?: string; strokeColor?: string; strokeWidth?: number; opacity?: number }) => void;
   onImageInsert?: (src: string, opts?: { x?: number; y?: number; scale?: number; meta?: Record<string, unknown> }) => void;
   addText?: (value?: string) => void;
   applyTextStyle?: (patch: any) => void;
@@ -514,16 +564,13 @@ function BrushSectionAccordion(props: {
     autoOpenTextPanelCounter,
   } = props;
 
-  type SubKey = "texto" | "formas" | "blobs" | "moldes" | "pincel" | "linhas" | null;
+  type SubKey = "texto" | "formas" | "moldes" | "pincel" | "linhas" | null;
   const [openKey, setOpenKey] = useState<SubKey>(null);
   const [enabledKey, setEnabledKey] = useState<SubKey>(null);
   const activationDelayMs = 380;
-  // Preferência de preenchimento para blobs: "solid" (usa a cor do traço) ou "transparent"
-  const [blobFillMode, setBlobFillMode] = useState<"solid" | "transparent">("solid");
 
-  // Estados para biblioteca unificada de formas e blobs
+  // Estados para biblioteca de formas
   const [searchQuery, setSearchQuery] = useState("");
-  const [activeFilter, setActiveFilter] = useState<"all" | "shapes" | "blobs">("all");
   // Estado para controle de preenchimento de formas
   const [shapeFillEnabled, setShapeFillEnabled] = useState(true);
 
@@ -563,12 +610,11 @@ function BrushSectionAccordion(props: {
 
   // Expor função de desativação para uso externo
   useEffect(() => {
-    // Só reseta o estado interno automaticamente se o painel aberto NÃO for formas ou blobs
+    // Só reseta o estado interno automaticamente se o painel aberto NÃO for formas
     if (
       tool === "select" &&
       enabledKey &&
-      openKey !== "formas" &&
-      openKey !== "blobs"
+      openKey !== "formas"
     ) {
       console.log(`[BrushSectionAccordion] Tool externally changed to select, resetting internal state`);
       setEnabledKey(null);
@@ -579,9 +625,8 @@ function BrushSectionAccordion(props: {
   const toggle = (key: Exclude<SubKey, null>) => {
     console.log(`[BrushSectionAccordion] Toggling ${key}, current openKey: ${openKey}, current tool: ${tool}`);
 
-    // Normalizar "formas" e "blobs" para a mesma chave unificada
-    const normalizedKey = (key === "formas" || key === "blobs") ? "formas" : key;
-    const currentNormalizedKey = (openKey === "formas" || openKey === "blobs") ? "formas" : openKey;
+    const normalizedKey = key;
+    const currentNormalizedKey = openKey;
 
     if (currentNormalizedKey === normalizedKey) {
       console.log(`[BrushSectionAccordion] Closing ${normalizedKey}, switching to select`);
@@ -638,47 +683,38 @@ function BrushSectionAccordion(props: {
     // Definir todos os itens da biblioteca
     const allItems: Array<{
       id: string;
-      type: "shape" | "blob";
       name: string;
       keywords: string[];
-      shapeKind?: "rect" | "ellipse" | "triangle" | "polygon" | "star";
-      blobSeed?: number;
+      shapeKind: ShapeIconType;
     }> = [
-        // Formas geométricas
-        { id: "shape-rect", type: "shape", name: "Quadrado", keywords: ["quadrado", "square"], shapeKind: "rect" },
-        { id: "shape-ellipse", type: "shape", name: "Círculo", keywords: ["círculo", "circulo", "elipse", "ellipse", "circle"], shapeKind: "ellipse" },
-        { id: "shape-triangle", type: "shape", name: "Triângulo", keywords: ["triângulo", "triangulo", "triangle"], shapeKind: "triangle" },
-        { id: "shape-polygon", type: "shape", name: "Polígono", keywords: ["polígono", "poligono", "hexágono", "hexagono", "polygon", "hexagon"], shapeKind: "polygon" },
-        { id: "shape-star", type: "shape", name: "Estrela", keywords: ["estrela", "star"], shapeKind: "star" },
-        // Blobs orgânicos
-        ...Array.from({ length: 24 }).map((_, i) => ({
-          id: `blob-${i}`,
-          type: "blob" as const,
-          name: `Blob ${i + 1}`,
-          keywords: ["blob", "orgânico", "organico", "forma", "shape", `blob ${i + 1}`],
-          blobSeed: i * 131 + 17,
-        })),
+        { id: "shape-rect", name: "Quadrado", keywords: ["quadrado", "square", "retângulo", "retangulo"], shapeKind: "rect" },
+        { id: "shape-ellipse", name: "Círculo", keywords: ["círculo", "circulo", "elipse", "ellipse", "circle"], shapeKind: "ellipse" },
+        { id: "shape-triangle", name: "Triângulo", keywords: ["triângulo", "triangulo", "triangle"], shapeKind: "triangle" },
+        { id: "shape-polygon", name: "Hexágono", keywords: ["polígono", "poligono", "hexágono", "hexagono", "polygon", "hexagon"], shapeKind: "polygon" },
+        { id: "shape-star", name: "Estrela", keywords: ["estrela", "star"], shapeKind: "star" },
+        { id: "shape-diamond", name: "Losango", keywords: ["losango", "diamante", "diamond", "rhombus"], shapeKind: "diamond" },
+        { id: "shape-pentagon", name: "Pentágono", keywords: ["pentágono", "pentagono", "pentagon"], shapeKind: "pentagon" },
+        { id: "shape-octagon", name: "Octágono", keywords: ["octágono", "octagono", "octagon", "pare", "stop"], shapeKind: "octagon" },
+        { id: "shape-cross", name: "Cruz", keywords: ["cruz", "cross", "mais", "plus"], shapeKind: "cross" },
+        { id: "shape-heart", name: "Coração", keywords: ["coração", "coracao", "heart", "amor", "love"], shapeKind: "heart" },
+        { id: "shape-arrow", name: "Seta", keywords: ["seta", "arrow", "direção", "direcao"], shapeKind: "arrow" },
+        { id: "shape-lightning", name: "Raio", keywords: ["raio", "relâmpago", "relampago", "lightning", "bolt", "trovão"], shapeKind: "lightning" },
+        { id: "shape-drop", name: "Gota", keywords: ["gota", "drop", "água", "agua", "water", "lágrima"], shapeKind: "drop" },
+        { id: "shape-moon", name: "Lua", keywords: ["lua", "moon", "crescente", "crescent", "noite"], shapeKind: "moon" },
+        { id: "shape-star6", name: "Estrela 6", keywords: ["estrela 6", "star 6", "hexagrama", "davi", "david"], shapeKind: "star6" },
       ];
-
-    // Filtrar por tipo
-    let filtered = allItems;
-    if (activeFilter === "shapes") {
-      filtered = filtered.filter(item => item.type === "shape");
-    } else if (activeFilter === "blobs") {
-      filtered = filtered.filter(item => item.type === "blob");
-    }
 
     // Filtrar por pesquisa
     if (searchQuery.trim()) {
       const query = searchQuery.toLowerCase().trim();
-      filtered = filtered.filter(item =>
+      return allItems.filter(item =>
         item.name.toLowerCase().includes(query) ||
         item.keywords.some(keyword => keyword.toLowerCase().includes(query))
       );
     }
 
-    return filtered;
-  }, [searchQuery, activeFilter]);
+    return allItems;
+  }, [searchQuery]);
 
   return (
     <div className="flex h-full flex-1 min-h-0 max-h-full flex-col overflow-hidden">
@@ -744,213 +780,100 @@ function BrushSectionAccordion(props: {
           </div>
         </AccordionItem>
 
-        {/* Biblioteca Unificada de Formas e Blobs */}
+        {/* Biblioteca de Formas */}
         <AccordionItem
-          title="Formas e Blobs"
+          title="Formas"
           icon={<Shapes className="w-4 h-4" />}
-          open={openKey === "formas" || openKey === "blobs"}
-          onToggle={() => {
-            if (openKey === "formas" || openKey === "blobs") {
-              toggle("formas");
-              const t = window.setTimeout(() => {
-                setOpenKey(null);
-                setEnabledKey(null);
-                window.clearTimeout(t);
-              }, 0);
-            } else {
-              toggle("formas");
-            }
-          }}
+          open={openKey === "formas"}
+          onToggle={() => toggle("formas")}
         >
-          {/* Barra de pesquisa com botão de filtros */}
+          {/* Barra de pesquisa */}
           <div className="mt-2 mb-3">
-            <div className="flex items-center gap-2">
-              <div className="relative flex-1">
-                <Search className="absolute left-3 top-1/2 transform -translate-y-1/2 w-4 h-4 text-gray-400" />
-                <Input
-                  type="text"
-                  placeholder="Pesquisar formas e blobs..."
-                  value={searchQuery}
-                  onChange={(e) => setSearchQuery(e.target.value)}
-                  className="pl-9 h-9 text-sm"
-                />
-              </div>
-              <DropdownMenu>
-                <DropdownMenuTrigger asChild>
-                  <button
-                    type="button"
-                    className={`h-9 px-3 rounded-md border border-white/15 bg-white/5 flex items-center justify-center transition hover:bg-white/10 focus:outline-none focus-visible:ring-2 focus-visible:ring-purple-300/60 ${!is2DActive ? "opacity-35 cursor-not-allowed" : ""
-                      } ${activeFilter !== "all" ? "bg-white/20 border-white/35" : ""}`}
-                    disabled={!is2DActive}
-                    aria-label="Filtros"
-                  >
-                    <Filter className="w-4 h-4" />
-                  </button>
-                </DropdownMenuTrigger>
-                <DropdownMenuContent align="end" className="w-40">
-                  <DropdownMenuRadioGroup
-                    value={activeFilter}
-                    onValueChange={(value) => setActiveFilter(value as "all" | "shapes" | "blobs")}
-                  >
-                    <DropdownMenuRadioItem value="all" disabled={!is2DActive}>
-                      Todos
-                    </DropdownMenuRadioItem>
-                    <DropdownMenuRadioItem value="shapes" disabled={!is2DActive}>
-                      Formas
-                    </DropdownMenuRadioItem>
-                    <DropdownMenuRadioItem value="blobs" disabled={!is2DActive}>
-                      Blobs
-                    </DropdownMenuRadioItem>
-                  </DropdownMenuRadioGroup>
-                </DropdownMenuContent>
-              </DropdownMenu>
+            <div className="relative">
+              <Search className="absolute left-3 top-1/2 transform -translate-y-1/2 w-4 h-4 text-gray-400" />
+              <Input
+                type="text"
+                placeholder="Pesquisar formas..."
+                value={searchQuery}
+                onChange={(e) => setSearchQuery(e.target.value)}
+                className="pl-9 h-9 text-sm"
+              />
             </div>
           </div>
 
-          {/* Controle de preenchimento para formas */}
+          {/* Controle de preenchimento */}
           <div className="flex items-center gap-2 mb-3">
-            <span className="text-xs text-gray-600">Preenchimento (formas):</span>
-            <div className="flex items-center gap-2">
+            <div className="flex items-center gap-1">
               <button
                 type="button"
-                className={iconToggleClasses(shapeFillEnabled, !is2DActive) + " h-8 w-auto px-2 text-xs"}
+                className={iconToggleClasses(shapeFillEnabled, !is2DActive) + " h-9 w-auto px-2"}
                 onClick={() => setShapeFillEnabled(true)}
                 disabled={!is2DActive}
                 aria-pressed={shapeFillEnabled}
+                title="Preenchido"
               >
-                Preenchido
+                <svg width="28" height="16" viewBox="0 0 28 16" className="w-7 h-4">
+                  <rect x="1" y="2" width="12" height="12" rx="1" fill="currentColor" stroke="none" />
+                  <circle cx="21" cy="8" r="6" fill="currentColor" stroke="none" />
+                </svg>
               </button>
               <button
                 type="button"
-                className={iconToggleClasses(!shapeFillEnabled, !is2DActive) + " h-8 w-auto px-2 text-xs"}
+                className={iconToggleClasses(!shapeFillEnabled, !is2DActive) + " h-9 w-auto px-2"}
                 onClick={() => setShapeFillEnabled(false)}
                 disabled={!is2DActive}
                 aria-pressed={!shapeFillEnabled}
+                title="Vazado"
               >
-                Vazado
+                <svg width="28" height="16" viewBox="0 0 28 16" className="w-7 h-4">
+                  <rect x="1.5" y="2.5" width="11" height="11" rx="1" fill="none" stroke="currentColor" strokeWidth="1.5" />
+                  <circle cx="21" cy="8" r="5.5" fill="none" stroke="currentColor" strokeWidth="1.5" />
+                </svg>
               </button>
             </div>
           </div>
 
-          {/* Controle de preenchimento para blobs */}
-          <div className="flex items-center gap-2 mb-3">
-            <span className="text-xs text-gray-600">Preenchimento (blobs):</span>
-            <div className="flex items-center gap-2">
-              <button
-                type="button"
-                className={iconToggleClasses(blobFillMode === "solid", !is2DActive) + " h-8 w-auto px-2 text-xs"}
-                onClick={() => setBlobFillMode("solid")}
-                disabled={!is2DActive}
-                aria-pressed={blobFillMode === "solid"}
-              >
-                Igual ao traço
-              </button>
-              <button
-                type="button"
-                className={iconToggleClasses(blobFillMode === "transparent", !is2DActive) + " h-8 w-auto px-2 text-xs"}
-                onClick={() => setBlobFillMode("transparent")}
-                disabled={!is2DActive}
-                aria-pressed={blobFillMode === "transparent"}
-              >
-                Transparente
-              </button>
-            </div>
-          </div>
-
-          {/* Lista de itens filtrados */}
+          {/* Lista de formas */}
           {filteredItems.length === 0 ? (
             <div className="mt-2 text-center text-sm text-gray-500 py-4">
               Nenhum item encontrado
             </div>
           ) : (
-            <div className="mt-2 max-h-64 overflow-y-auto overflow-x-hidden px-1 scrollbar-soft">
+            <div className="mt-2 px-1">
               <div className="flex flex-wrap gap-3 justify-start">
                 {filteredItems.map((item) => {
-                  const isEnabled = is2DActive && (enabledKey === "formas" || enabledKey === "blobs");
+                  const isEnabled = is2DActive && enabledKey === "formas";
+                  const fillColorValue = shapeFillEnabled ? (fillColor || strokeColor || "#000000") : "none";
+                  const strokeColorValue = strokeColor || "#000000";
 
-                  if (item.type === "shape") {
-                    const fillColorValue = shapeFillEnabled ? (fillColor || strokeColor || "#000000") : "none";
-                    const strokeColorValue = strokeColor || "#000000";
-
-                    return (
-                      <button
-                        key={item.id}
-                        type="button"
-                        className={iconToggleClasses(false, !isEnabled)}
-                        onClick={() => {
-                          if (!isEnabled || !item.shapeKind) return;
-                          addShape(item.shapeKind, {
-                            fillEnabled: shapeFillEnabled,
-                            fillColor: fillColor,
-                            strokeColor: strokeColor,
-                            strokeWidth: strokeWidth,
-                            opacity: opacity,
-                          });
-                          setTool("select");
-                        }}
-                        disabled={!isEnabled}
-                        aria-label={item.name}
-                        title={item.name}
-                      >
-                        {item.shapeKind && (
-                          <ShapeIcon
-                            type={item.shapeKind}
-                            fillColor={fillColorValue}
-                            strokeColor={strokeColorValue}
-                            fillEnabled={shapeFillEnabled}
-                          />
-                        )}
-                      </button>
-                    );
-                  } else {
-                    // Blob
-                    const blobPreview = generateBlobSvgDataUrl({
-                      size: 64,
-                      seed: item.blobSeed || 0,
-                      fill: (blobFillMode === "transparent" ? "none" : (strokeColor || "#000")),
-                      stroke: strokeColor || "#000"
-                    });
-
-                    return (
-                      <button
-                        key={item.id}
-                        type="button"
-                        className={iconToggleClasses(false, !isEnabled) + " group"}
-                        onClick={() => {
-                          if (!onImageInsert || !isEnabled || item.blobSeed === undefined) {
-                            return;
-                          }
-                          const url = generateBlobSvgDataUrl({
-                            size: 320,
-                            seed: item.blobSeed,
-                            fill: blobFillMode === "transparent" ? "none" : (strokeColor || "#000000"),
-                            stroke: strokeColor || "#000000",
-                          });
-                          onImageInsert(url, {
-                            scale: 0.75,
-                            meta: {
-                              kind: "blob",
-                              seed: item.blobSeed,
-                              fillMode: blobFillMode,
-                              baseSize: 320,
-                              strokeWidth: Math.max(1, strokeWidth || 2),
-                              currentFill: blobFillMode === "transparent" ? "none" : (strokeColor || "#000000"),
-                              currentStroke: strokeColor || "#000000",
-                              currentStrokeWidth: strokeWidth,
-                            },
-                          });
-                          setTool("select");
-                        }}
-                        disabled={!isEnabled}
-                        aria-label={item.name}
-                        title={item.name}
-                      >
-                        <div className="w-8 h-8 transition-transform group-hover:scale-110">
-                          <img src={blobPreview} alt={item.name} className="w-full h-full" />
-                        </div>
-                      </button>
-                    );
-                  }
+                  return (
+                    <button
+                      key={item.id}
+                      type="button"
+                      className={iconToggleClasses(false, !isEnabled)}
+                      onClick={() => {
+                        if (!isEnabled) return;
+                        addShape(item.shapeKind, {
+                          fillEnabled: shapeFillEnabled,
+                          fillColor: fillColor,
+                          strokeColor: strokeColor,
+                          strokeWidth: strokeWidth,
+                          opacity: opacity,
+                        });
+                        setTool("select");
+                      }}
+                      disabled={!isEnabled}
+                      aria-label={item.name}
+                      title={item.name}
+                    >
+                      <ShapeIcon
+                        type={item.shapeKind}
+                        fillColor={fillColorValue}
+                        strokeColor={strokeColorValue}
+                        fillEnabled={shapeFillEnabled}
+                      />
+                    </button>
+                  );
                 })}
               </div>
             </div>
