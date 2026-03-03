@@ -691,11 +691,23 @@ const Editor2D = forwardRef<Editor2DHandle, Props>(function Editor2D(
     if (!active) return;
     const kind = computeSelectionKind();
     if (kind !== "other") return;
-    active.set("stroke", strokeColor);
-    // Se a forma tem preenchimento (fill), também altera a cor de preenchimento
-    const currentFill = active.get("fill");
-    if (currentFill && currentFill !== "transparent" && currentFill !== "rgba(0,0,0,0)") {
-      active.set("fill", strokeColor);
+    // Aplica a cor ao objeto e a seus filhos (spray = Group de Rects)
+    const applyColor = (obj: any) => {
+      const curStroke = obj.get("stroke");
+      if (curStroke && curStroke !== "transparent") {
+        obj.set("stroke", strokeColor);
+      }
+      const curFill = obj.get("fill");
+      if (curFill && curFill !== "transparent" && curFill !== "rgba(0,0,0,0)") {
+        obj.set("fill", strokeColor);
+      }
+      obj.dirty = true;
+    };
+
+    applyColor(active);
+    // Se for grupo (spray, etc.), aplica a cor em cada filho
+    if (Array.isArray(active._objects)) {
+      active._objects.forEach((child: any) => applyColor(child));
     }
     active.dirty = true;
     c.requestRenderAll?.();
@@ -708,6 +720,40 @@ const Editor2D = forwardRef<Editor2DHandle, Props>(function Editor2D(
       opacity,
     };
   }, [brushVariant, strokeWidth, opacity]);
+
+  // Apply strokeWidth changes to the currently selected non-image/text object
+  React.useEffect(() => {
+    const c = canvasRef.current as any;
+    if (!c) return;
+    const active = c.getActiveObject?.();
+    if (!active) return;
+    const kind = computeSelectionKind();
+    if (kind !== "other") return;
+    const applyWidth = (obj: any) => {
+      obj.set("strokeWidth", strokeWidth);
+      obj.dirty = true;
+    };
+    applyWidth(active);
+    if (Array.isArray(active._objects)) {
+      active._objects.forEach((child: any) => applyWidth(child));
+    }
+    active.dirty = true;
+    active.setCoords?.();
+    c.requestRenderAll?.();
+  }, [strokeWidth]);
+
+  // Apply opacity changes to the currently selected non-image/text object
+  React.useEffect(() => {
+    const c = canvasRef.current as any;
+    if (!c) return;
+    const active = c.getActiveObject?.();
+    if (!active) return;
+    const kind = computeSelectionKind();
+    if (kind !== "other") return;
+    active.set("opacity", opacity);
+    active.dirty = true;
+    c.requestRenderAll?.();
+  }, [opacity]);
 
   React.useEffect(() => {
     toolRef.current = tool;
@@ -11625,6 +11671,16 @@ const Editor2D = forwardRef<Editor2DHandle, Props>(function Editor2D(
         meta.strokeWidth = strokeWidth;
         meta.opacity = opacity;
         const commands = computeBezierFromNodes(meta.nodes, meta.closed);
+
+        // Rubber-band: if not dragging and we have a hover point, append a
+        // dashed line segment from the last anchor to the cursor position.
+        const hover = curveState.hoverPoint;
+        if (hover && !curveState.isPointerDown && meta.nodes.length >= 1) {
+          const last = meta.nodes[meta.nodes.length - 1];
+          const cp1 = last.handleOut || last.anchor;
+          commands.push(["C", cp1.x, cp1.y, hover.x, hover.y, hover.x, hover.y]);
+        }
+
         curveState.preview.path = commands;
         curveState.preview.set({
           stroke: meta.stroke,
@@ -11668,6 +11724,8 @@ const Editor2D = forwardRef<Editor2DHandle, Props>(function Editor2D(
         });
         try { c.requestRenderAll(); } catch { }
         lastCreatedObjectRef.current = curveObject;
+        // Switch to select tool so the user can interact with the finalized object
+        try { onRequestToolChangeRef.current?.("select"); } catch { }
       };
 
       const onMouseDown = (evt: any) => {
@@ -11766,6 +11824,7 @@ const Editor2D = forwardRef<Editor2DHandle, Props>(function Editor2D(
           return;
         }
 
+        // Update cursor style based on proximity to the first anchor (close threshold)
         if (meta.nodes.length > 1) {
           const first = meta.nodes[0];
           const distance = Math.hypot(current.x - first.anchor.x, current.y - first.anchor.y);
@@ -11774,6 +11833,14 @@ const Editor2D = forwardRef<Editor2DHandle, Props>(function Editor2D(
           } else {
             setHostCursor("crosshair");
           }
+        }
+
+        // Rubber-band: update the hover point so the preview shows a tentative
+        // segment from the last anchor to the current cursor position.
+        if (curveState.isDrawing && meta.nodes.length >= 1) {
+          curveState.hoverPoint = current;
+          ensurePreview();
+          updatePreview();
         }
       };
 
@@ -12105,3 +12172,5 @@ const Editor2D = forwardRef<Editor2DHandle, Props>(function Editor2D(
 });
 
 export default Editor2D;
+
+// Trigger HMR

@@ -564,7 +564,7 @@ function BrushSectionAccordion(props: {
     autoOpenTextPanelCounter,
   } = props;
 
-  type SubKey = "texto" | "formas" | "moldes" | "pincel" | "linhas" | null;
+  type SubKey = "texto" | "formas" | "moldes" | "pincel" | null;
   const [openKey, setOpenKey] = useState<SubKey>(null);
   const [enabledKey, setEnabledKey] = useState<SubKey>(null);
   const activationDelayMs = 380;
@@ -581,7 +581,7 @@ function BrushSectionAccordion(props: {
       active ? "bg-white/20 border-white/35 shadow-[inset_0_0_12px_rgba(255,255,255,0.22)]" : "",
     ].join(" ");
 
-  const lineToolsDisabled = !is2DActive || enabledKey !== "linhas";
+
 
   useEffect(() => {
     if (autoOpenTextPanelCounter == null) return;
@@ -652,9 +652,7 @@ function BrushSectionAccordion(props: {
       if (normalizedKey === "pincel") {
         console.log(`[BrushSectionAccordion] Setting tool to brush`);
         setTool("brush");
-      } else if (normalizedKey === "linhas") {
-        console.log(`[BrushSectionAccordion] Setting tool to line`);
-        setTool("line");
+
       } else if (normalizedKey === "texto") {
         console.log(`[BrushSectionAccordion] Setting tool to text`);
         setTool("text");
@@ -881,7 +879,7 @@ function BrushSectionAccordion(props: {
         </AccordionItem>
 
         {/* Lápis */}
-        <AccordionItem title="Lápis" icon={<Brush className="w-4 h-4" />} open={openKey === "pincel"} onToggle={() => toggle("pincel")}>
+        <AccordionItem title="Desenho" icon={<Brush className="w-4 h-4" />} open={openKey === "pincel"} onToggle={() => toggle("pincel")}>
           <div className="flex flex-wrap gap-3 mt-2">
             <button
               type="button"
@@ -927,39 +925,12 @@ function BrushSectionAccordion(props: {
             </button>
             <button
               type="button"
-              className={iconToggleClasses(tool === "brush" && brushVariant === "calligraphy", !is2DActive || enabledKey !== "pincel")}
+              className={iconToggleClasses(tool === "curve", !is2DActive || enabledKey !== "pincel")}
               onClick={() => {
                 if (!is2DActive || enabledKey !== "pincel") return;
-                setTool("brush");
-                setBrushVariant("calligraphy");
+                setTool("curve");
               }}
               disabled={!is2DActive || enabledKey !== "pincel"}
-              aria-label="Caligrafia"
-              title="Caligrafia"
-            >
-              <Pen className="w-6 h-6" />
-            </button>
-          </div>
-        </AccordionItem>
-
-        {/* Linhas */}
-        <AccordionItem title="Linhas" icon={<PenLine className="w-4 h-4" />} open={openKey === "linhas"} onToggle={() => toggle("linhas")}>
-          <div className="flex flex-wrap gap-3 mt-2">
-            <button
-              type="button"
-              className={iconToggleClasses(tool === "line", lineToolsDisabled)}
-              onClick={() => !lineToolsDisabled && setTool("line")}
-              disabled={lineToolsDisabled}
-              aria-label="Linha reta"
-              title="Linha reta"
-            >
-              <Minus className="w-6 h-6" />
-            </button>
-            <button
-              type="button"
-              className={iconToggleClasses(tool === "curve", lineToolsDisabled)}
-              onClick={() => !lineToolsDisabled && setTool("curve")}
-              disabled={lineToolsDisabled}
               aria-label="Curva Bézier"
               title="Curva Bézier"
             >
@@ -968,14 +939,14 @@ function BrushSectionAccordion(props: {
           </div>
           <div className="flex items-center justify-between mt-3 gap-4">
             <p className="text-xs text-gray-600">Modo contínuo</p>
-            <label className={`line-mode-switch${lineToolsDisabled ? " line-mode-switch--disabled" : ""}`}>
+            <label className={`line-mode-switch${(!is2DActive || enabledKey !== "pincel") ? " line-mode-switch--disabled" : ""}`}>
               <input
                 type="checkbox"
                 className="line-mode-checkbox"
-                disabled={lineToolsDisabled}
+                disabled={!is2DActive || enabledKey !== "pincel"}
                 checked={continuousLineEnabled}
                 onChange={(evt) => {
-                  if (lineToolsDisabled) return;
+                  if (!is2DActive || enabledKey !== "pincel") return;
                   onContinuousLineToggle(evt.target.checked);
                 }}
                 aria-label="Ativar modo contínuo de linhas"
@@ -983,11 +954,6 @@ function BrushSectionAccordion(props: {
               <div className="line-mode-slider" aria-hidden="true" />
             </label>
           </div>
-          {openKey === "linhas" && tool === "line" && (
-            <p className="text-xs text-gray-500 mt-3">
-              Clique e arraste para desenhar uma reta. Use <strong>Shift</strong> para alinhar em ângulos de 45°. Ative o modo contínuo para iniciar a próxima reta a partir do ponto final anterior. Pressione <strong>Esc</strong>, <strong>Enter</strong> ou dê um duplo clique para encerrar a sequência.
-            </p>
-          )}
         </AccordionItem>
       </div>
     </div>
