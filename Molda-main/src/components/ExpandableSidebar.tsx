@@ -185,9 +185,11 @@ const ShapeIcon = ({
   }
 
   if (type === "moon") {
+    // Crescent: outer circle R=9 at (12,12), inner cutout r=7 at (8,12)
+    // Intersection points at (6, 5.3) and (6, 18.7)
     return (
       <svg width={size} height={size} viewBox={`0 0 ${size} ${size}`} className="w-6 h-6">
-        <path d={`M${center + 2},${3} A${9} ${9} 0 1 0 ${center + 2},${size - 3} A${6.5} ${6.5} 0 1 1 ${center + 2},${3} Z`} fill={fill} stroke={stroke} strokeWidth={strokeWidth} />
+        <path d={`M ${center - 6},${center - 6.7} A 9 9 0 1 1 ${center - 6},${center + 6.7} A 7 7 0 0 1 ${center - 6},${center - 6.7} Z`} fill={fill} stroke={stroke} strokeWidth={strokeWidth} />
       </svg>
     );
   }
@@ -936,23 +938,6 @@ function BrushSectionAccordion(props: {
             >
               <PenTool className="w-6 h-6" />
             </button>
-          </div>
-          <div className="flex items-center justify-between mt-3 gap-4">
-            <p className="text-xs text-gray-600">Modo contínuo</p>
-            <label className={`line-mode-switch${(!is2DActive || enabledKey !== "pincel") ? " line-mode-switch--disabled" : ""}`}>
-              <input
-                type="checkbox"
-                className="line-mode-checkbox"
-                disabled={!is2DActive || enabledKey !== "pincel"}
-                checked={continuousLineEnabled}
-                onChange={(evt) => {
-                  if (!is2DActive || enabledKey !== "pincel") return;
-                  onContinuousLineToggle(evt.target.checked);
-                }}
-                aria-label="Ativar modo contínuo de linhas"
-              />
-              <div className="line-mode-slider" aria-hidden="true" />
-            </label>
           </div>
         </AccordionItem>
       </div>

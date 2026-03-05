@@ -8531,10 +8531,9 @@ const Editor2D = forwardRef<Editor2DHandle, Props>(function Editor2D(
         erasable: true,
       });
     } else if (shape === "moon") {
-      const r = 55;
-      const path = `M 0,${-r} ` +
-        `A ${r} ${r} 0 1 0 0,${r} ` +
-        `A ${r * 0.7} ${r * 0.7} 0 1 1 0,${-r} Z`;
+      // Crescent moon: outer circle at origin (R=55), inner cutout at (-20,0) (r=45)
+      // Intersection points at (-35, ±42.4)
+      const path = `M -35,-42.4 A 55 55 0 1 1 -35,42.4 A 45 45 0 0 1 -35,-42.4 Z`;
       obj = new fabric.Path(path, {
         fill: finalFillColor || "transparent",
         stroke: finalStrokeColor,
