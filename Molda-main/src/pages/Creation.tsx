@@ -5,7 +5,7 @@ import Header from "../components/Header";
 import Canvas3DViewer from "../components/Canvas3DViewer";
 import ExpandableSidebar from "../components/ExpandableSidebar";
 import { Button } from "../components/ui/button";
-import { Eye, EyeOff, Plus, X, Check } from "lucide-react";
+import { Plus, X, Check } from "lucide-react";
 import FloatingEditorToolbar from "../components/FloatingEditorToolbar";
 import TextToolbar from "../components/TextToolbar";
 import ImageToolbar from "../components/ImageToolbar";
@@ -374,6 +374,103 @@ const Creation = () => {
     [activeCanvasTab]
   );
   const [tabVisibility, setTabVisibility] = useState<Record<string, boolean>>({});
+  const [draggedTabId, setDraggedTabId] = useState<string | null>(null);
+  const [dragPointerX, setDragPointerX] = useState(0);
+  const [dragOverSection, setDragOverSection] = useState<"visible" | "hidden" | null>(null);
+  const tabContainerRef = useRef<HTMLDivElement | null>(null);
+  const visibleSectionRef = useRef<HTMLDivElement | null>(null);
+  const hiddenSectionRef = useRef<HTMLDivElement | null>(null);
+  const dragStartXRef = useRef(0);
+  const dragTabElRectRef = useRef<{ width: number; height: number }>({ width: 0, height: 0 });
+  const ensureTabHasDecalPreviewRef = useRef<((tabId: string) => Promise<void>) | null>(null);
+
+  const handleTabPointerDown = useCallback((e: React.PointerEvent, tabId: string) => {
+    // Only primary button
+    if (e.button !== 0) return;
+    const el = e.currentTarget as HTMLElement;
+    const rect = el.getBoundingClientRect();
+    dragTabElRectRef.current = { width: rect.width, height: rect.height };
+    dragStartXRef.current = e.clientX;
+    // Delay to distinguish from click
+    const moveThreshold = 4;
+    let started = false;
+
+    const onMove = (ev: PointerEvent) => {
+      if (!started && Math.abs(ev.clientX - dragStartXRef.current) < moveThreshold) return;
+      if (!started) {
+        started = true;
+        setDraggedTabId(tabId);
+        el.setPointerCapture(ev.pointerId);
+      }
+      // Compute position relative to tab container
+      const containerRect = tabContainerRef.current?.getBoundingClientRect();
+      if (!containerRect) return;
+      // Clamp pointer within container
+      const clampedX = Math.max(containerRect.left, Math.min(ev.clientX, containerRect.right - dragTabElRectRef.current.width));
+      setDragPointerX(clampedX - containerRect.left);
+
+      // Determine which section the pointer is over
+      const visRect = visibleSectionRef.current?.getBoundingClientRect();
+      const hidRect = hiddenSectionRef.current?.getBoundingClientRect();
+      if (visRect && ev.clientX >= visRect.left && ev.clientX <= visRect.right) {
+        setDragOverSection("visible");
+      } else if (hidRect && ev.clientX >= hidRect.left && ev.clientX <= hidRect.right) {
+        setDragOverSection("hidden");
+      }
+    };
+
+    const onUp = () => {
+      document.removeEventListener("pointermove", onMove);
+      document.removeEventListener("pointerup", onUp);
+      if (!started) return;
+      // Apply the drop
+      if (dragOverSection === "visible" || (visibleSectionRef.current && hiddenSectionRef.current)) {
+        // Re-check section at drop time using latest refs
+        const visRect = visibleSectionRef.current?.getBoundingClientRect();
+        const hidRect = hiddenSectionRef.current?.getBoundingClientRect();
+        const lastX = dragStartXRef.current; // will use the final pointer pos from state
+        // Use the last known pointer position from the move handler
+        // Since state updates are async, check the DOM directly
+        const pointerX = (window as any).__lastDragPointerClientX ?? lastX;
+        let targetSection: "visible" | "hidden" | null = null;
+        if (visRect && pointerX >= visRect.left && pointerX <= visRect.right) {
+          targetSection = "visible";
+        } else if (hidRect && pointerX >= hidRect.left && pointerX <= hidRect.right) {
+          targetSection = "hidden";
+        }
+
+        if (targetSection === "visible" && tabId !== "3d") {
+          if (!tabVisibility[tabId]) {
+            void (async () => { await ensureTabHasDecalPreviewRef.current?.(tabId); })();
+          }
+          setTabVisibility((prev) => {
+            const next = { ...prev, [tabId]: true };
+            tabVisibilityRef.current = next;
+            return next;
+          });
+        } else if (targetSection === "hidden" && tabId !== "3d") {
+          setTabVisibility((prev) => {
+            const next = { ...prev, [tabId]: false };
+            tabVisibilityRef.current = next;
+            return next;
+          });
+        }
+      }
+      setDraggedTabId(null);
+      setDragOverSection(null);
+      delete (window as any).__lastDragPointerClientX;
+    };
+
+    // Store pointer position globally for the up handler
+    const origOnMove = onMove;
+    const wrappedOnMove = (ev: PointerEvent) => {
+      (window as any).__lastDragPointerClientX = ev.clientX;
+      origOnMove(ev);
+    };
+
+    document.addEventListener("pointermove", wrappedOnMove);
+    document.addEventListener("pointerup", onUp);
+  }, [tabVisibility]);
   const [tabDecalPreviews, setTabDecalPreviews] = useState<Record<string, string>>({});
   const [tabDecalPlacements, setTabDecalPlacements] = useState<Record<string, DecalTransform>>({});
   const tabVisibilityRef = useRef<Record<string, boolean>>(tabVisibility);
@@ -422,6 +519,11 @@ const Creation = () => {
       return next;
     });
   }, [captureTabImage]);
+
+  // Keep the ref in sync so handleTabPointerDown can use it
+  useEffect(() => {
+    ensureTabHasDecalPreviewRef.current = ensureTabHasDecalPreview;
+  }, [ensureTabHasDecalPreview]);
 
   const decalsFor3D = useMemo<ExternalDecalData[]>(() => {
     return canvasTabs
@@ -1444,79 +1546,102 @@ const Creation = () => {
                   </Button>
                 </div>
               )}
-              {/* Abas do canvas dentro da área */}
-              <div className="absolute left-4 top-4 z-20 glass rounded-lg border p-0 shadow-md carousel-item-enter inline-flex min-w-0 max-w-[calc(100%-2rem)] overflow-x-auto overflow-y-hidden">
-                <div className="flex flex-nowrap items-center gap-0 min-w-0 max-w-full whitespace-nowrap">
-                  {canvasTabs.map((tab) => {
-                    const active = tab.id === activeCanvasTab;
-                    const visibleIn3D = !!tabVisibility[tab.id];
-                    return (
-                      <div
-                        key={tab.id}
-                        className={`shrink-0 flex items-center gap-0.5 rounded-md px-1.5 sm:px-2 h-9 text-xs transition-all duration-300 ${active ? "glass-strong shadow-sm" : "hover:bg-white/20"
-                          } ${active && isTransitioning ? "bounce-in" : ""}`}
-                      >
-                        <span
-                          className="h-full px-0.5 text-left font-medium focus:outline-none inline-flex items-center cursor-pointer min-w-0 max-w-[8rem] sm:max-w-[10rem] truncate"
-                          aria-pressed={active}
-                          tabIndex={0}
-                          role="button"
-                          onClick={() => {
-                            void (async () => {
-                              await saveActiveTabSnapshot();
-                              await saveDraft();
-                              setActiveCanvasTab(tab.id);
-                            })();
-                          }}
-                          onKeyDown={e => {
-                            if (e.key === 'Enter' || e.key === ' ') {
+              {/* Abas do canvas — divididas em "Na peça" e "Somente canvas" com drag customizado */}
+              <div
+                ref={tabContainerRef}
+                className="absolute left-4 top-4 z-20 glass rounded-lg border p-0 shadow-md carousel-item-enter inline-flex min-w-0 max-w-[calc(100%-2rem)] overflow-x-auto overflow-y-hidden"
+                style={{ position: "absolute" }}
+              >
+                <div className="flex flex-nowrap items-stretch gap-0 min-w-0 max-w-full whitespace-nowrap relative">
+                  {/* === Seção: Na peça (visível no 3D) === */}
+                  <div
+                    ref={visibleSectionRef}
+                    className={`flex flex-nowrap items-center gap-0 px-1 rounded-l-lg transition-colors duration-200 ${dragOverSection === "visible" ? "bg-blue-500/45 ring-2 ring-blue-400/60" : "bg-blue-500/30"
+                      }`}
+                    title="Na peça"
+                  >
+                    {/* Tab 3D (sempre aqui, não arrastável) */}
+                    {canvasTabs.filter((t) => t.type === "3d").map((tab) => {
+                      const active = tab.id === activeCanvasTab;
+                      return (
+                        <div
+                          key={tab.id}
+                          className={`shrink-0 flex items-center gap-0.5 rounded-lg px-3 sm:px-4 h-11 text-sm font-bold transition-all duration-300 ${active
+                            ? "bg-gradient-to-r from-violet-600 to-purple-500 text-white shadow-lg shadow-violet-500/30"
+                            : "bg-violet-500/30 text-violet-200 hover:bg-violet-500/40"
+                            } ${active && isTransitioning ? "bounce-in" : ""}`}
+                        >
+                          <span
+                            className="h-full px-0.5 text-left font-medium focus:outline-none inline-flex items-center cursor-pointer"
+                            aria-pressed={active}
+                            tabIndex={0}
+                            role="button"
+                            onClick={() => {
                               void (async () => {
                                 await saveActiveTabSnapshot();
                                 await saveDraft();
                                 setActiveCanvasTab(tab.id);
                               })();
-                            }
-                          }}
-                        >
-                          {tab.name}
-                        </span>
-                        {tab.type === "2d" && (
-                          <div className="flex items-center gap-1">
-                            <button
-                              type="button"
-                              onClick={(e) => {
-                                e.stopPropagation();
-                                const currentlyVisible = !!tabVisibility[tab.id];
-                                if (!currentlyVisible) {
+                            }}
+                            onKeyDown={e => {
+                              if (e.key === 'Enter' || e.key === ' ') {
+                                void (async () => {
+                                  await saveActiveTabSnapshot();
+                                  await saveDraft();
+                                  setActiveCanvasTab(tab.id);
+                                })();
+                              }
+                            }}
+                          >
+                            {tab.name}
+                          </span>
+                        </div>
+                      );
+                    })}
+                    {/* Tabs 2D visíveis na peça */}
+                    {canvasTabs.filter((t) => t.type === "2d" && !!tabVisibility[t.id]).map((tab) => {
+                      const isDragging = draggedTabId === tab.id;
+                      const active = tab.id === activeCanvasTab;
+                      return (
+                        <div key={tab.id} className="flex items-center">
+                          {/* Gap placeholder quando arrastando sobre esta seção */}
+                          {isDragging && dragOverSection === "visible" && (
+                            <div className="w-16 h-9 rounded-md border-2 border-dashed border-blue-400/50 bg-blue-400/10 mx-0.5 shrink-0 transition-all duration-200" />
+                          )}
+                          <div
+                            onPointerDown={(e) => handleTabPointerDown(e, tab.id)}
+                            className={`shrink-0 flex items-center gap-0.5 rounded-md px-1.5 sm:px-2 h-9 text-xs transition-all duration-300 cursor-grab active:cursor-grabbing select-none ${isDragging ? "opacity-30" : ""
+                              } ${!isDragging && active ? "glass-strong shadow-sm" : !isDragging ? "hover:bg-white/20" : ""
+                              } ${active && isTransitioning && !isDragging ? "bounce-in" : ""}`}
+                          >
+                            <span
+                              className="h-full px-0.5 text-left font-medium focus:outline-none inline-flex items-center cursor-pointer min-w-0 max-w-[8rem] sm:max-w-[10rem] truncate"
+                              aria-pressed={active}
+                              tabIndex={0}
+                              role="button"
+                              onClick={() => {
+                                if (draggedTabId) return;
+                                void (async () => {
+                                  await saveActiveTabSnapshot();
+                                  await saveDraft();
+                                  setActiveCanvasTab(tab.id);
+                                })();
+                              }}
+                              onKeyDown={e => {
+                                if (e.key === 'Enter' || e.key === ' ') {
                                   void (async () => {
-                                    await ensureTabHasDecalPreview(tab.id);
+                                    await saveActiveTabSnapshot();
+                                    await saveDraft();
+                                    setActiveCanvasTab(tab.id);
                                   })();
                                 }
-                                setTabVisibility((prev) => {
-                                  const next = {
-                                    ...prev,
-                                    [tab.id]: !currentlyVisible,
-                                  };
-                                  tabVisibilityRef.current = next;
-                                  return next;
-                                });
                               }}
-                              className="p-0.5 sm:p-1 lg:p-1.5 rounded-full hover:bg-white/20 transition"
-                              aria-label={visibleIn3D ? "Ocultar no 3D" : "Mostrar no 3D"}
-                              title={visibleIn3D ? "Ocultar no 3D" : "Mostrar no 3D"}
                             >
-                              {visibleIn3D ? (
-                                <Eye className="w-3.5 h-3.5 sm:w-4 sm:h-4 lg:w-5 lg:h-5" />
-                              ) : (
-                                <EyeOff className="w-3.5 h-3.5 sm:w-4 sm:h-4 lg:w-5 lg:h-5" />
-                              )}
-                            </button>
+                              {tab.name}
+                            </span>
                             <button
                               type="button"
-                              onClick={(e) => {
-                                e.stopPropagation();
-                                removeCanvasTab(tab.id);
-                              }}
+                              onClick={(e) => { e.stopPropagation(); removeCanvasTab(tab.id); }}
                               className="p-0.5 sm:p-1 lg:p-1.5 rounded-full hover:bg-white/20 transition"
                               aria-label="Fechar aba"
                               title="Fechar aba"
@@ -1524,19 +1649,110 @@ const Creation = () => {
                               <X className="w-3.5 h-3.5 sm:w-4 sm:h-4 lg:w-5 lg:h-5 opacity-60 hover:opacity-100" />
                             </button>
                           </div>
-                        )}
-                      </div>
-                    );
-                  })}
-                  <Button
-                    onClick={add2DTab}
-                    size="icon"
-                    variant="ghost"
-                    className="shrink-0 h-7 w-7 sm:h-8 sm:w-8 lg:h-9 lg:w-9 ml-0.5 sm:ml-1"
+                        </div>
+                      );
+                    })}
+                    {/* Gap placeholder if dragging from hidden to visible and no visible 2D tabs match */}
+                    {draggedTabId && dragOverSection === "visible" && !tabVisibility[draggedTabId] && (
+                      <div className="w-16 h-9 rounded-md border-2 border-dashed border-blue-400/50 bg-blue-400/10 mx-0.5 shrink-0 transition-all duration-200" />
+                    )}
+                  </div>
+
+                  {/* Divisor vertical */}
+                  <div className="w-px bg-white/30 mx-0.5 my-1.5 self-stretch" />
+
+                  {/* === Seção: Somente canvas (não projetado no 3D) === */}
+                  <div
+                    ref={hiddenSectionRef}
+                    className={`flex flex-nowrap items-center gap-0 px-1 rounded-r-lg transition-colors duration-200 ${dragOverSection === "hidden" ? "bg-slate-400/30 ring-2 ring-slate-400/40" : "bg-slate-500/15"
+                      }`}
+                    title="Somente canvas"
                   >
-                    <Plus className="w-3.5 h-3.5 sm:w-4 sm:h-4 lg:w-5 lg:h-5" />
-                  </Button>
+                    {/* Gap placeholder if dragging from visible to hidden */}
+                    {draggedTabId && dragOverSection === "hidden" && !!tabVisibility[draggedTabId] && (
+                      <div className="w-16 h-9 rounded-md border-2 border-dashed border-slate-400/50 bg-slate-400/10 mx-0.5 shrink-0 transition-all duration-200" />
+                    )}
+                    {canvasTabs.filter((t) => t.type === "2d" && !tabVisibility[t.id]).map((tab) => {
+                      const isDragging = draggedTabId === tab.id;
+                      const active = tab.id === activeCanvasTab;
+                      return (
+                        <div key={tab.id} className="flex items-center">
+                          {isDragging && dragOverSection === "hidden" && (
+                            <div className="w-16 h-9 rounded-md border-2 border-dashed border-slate-400/50 bg-slate-400/10 mx-0.5 shrink-0 transition-all duration-200" />
+                          )}
+                          <div
+                            onPointerDown={(e) => handleTabPointerDown(e, tab.id)}
+                            className={`shrink-0 flex items-center gap-0.5 rounded-md px-1.5 sm:px-2 h-9 text-xs transition-all duration-300 cursor-grab active:cursor-grabbing select-none ${isDragging ? "opacity-30" : ""
+                              } ${!isDragging && active ? "glass-strong shadow-sm" : !isDragging ? "bg-white/10 hover:bg-white/25" : ""
+                              } ${active && isTransitioning && !isDragging ? "bounce-in" : ""}`}
+                          >
+                            <span
+                              className="h-full px-0.5 text-left font-medium focus:outline-none inline-flex items-center cursor-pointer min-w-0 max-w-[8rem] sm:max-w-[10rem] truncate"
+                              aria-pressed={active}
+                              tabIndex={0}
+                              role="button"
+                              onClick={() => {
+                                if (draggedTabId) return;
+                                void (async () => {
+                                  await saveActiveTabSnapshot();
+                                  await saveDraft();
+                                  setActiveCanvasTab(tab.id);
+                                })();
+                              }}
+                              onKeyDown={e => {
+                                if (e.key === 'Enter' || e.key === ' ') {
+                                  void (async () => {
+                                    await saveActiveTabSnapshot();
+                                    await saveDraft();
+                                    setActiveCanvasTab(tab.id);
+                                  })();
+                                }
+                              }}
+                            >
+                              {tab.name}
+                            </span>
+                            <button
+                              type="button"
+                              onClick={(e) => { e.stopPropagation(); removeCanvasTab(tab.id); }}
+                              className="p-0.5 sm:p-1 lg:p-1.5 rounded-full hover:bg-white/20 transition"
+                              aria-label="Fechar aba"
+                              title="Fechar aba"
+                            >
+                              <X className="w-3.5 h-3.5 sm:w-4 sm:h-4 lg:w-5 lg:h-5 opacity-60 hover:opacity-100" />
+                            </button>
+                          </div>
+                        </div>
+                      );
+                    })}
+                    <Button
+                      onClick={add2DTab}
+                      size="icon"
+                      variant="ghost"
+                      className="shrink-0 h-7 w-7 sm:h-8 sm:w-8 lg:h-9 lg:w-9 ml-0.5 sm:ml-1"
+                    >
+                      <Plus className="w-3.5 h-3.5 sm:w-4 sm:h-4 lg:w-5 lg:h-5" />
+                    </Button>
+                  </div>
                 </div>
+
+                {/* Floating drag preview — constrained within container */}
+                {draggedTabId && (() => {
+                  const draggedTab = canvasTabs.find((t) => t.id === draggedTabId);
+                  if (!draggedTab) return null;
+                  return (
+                    <div
+                      className="absolute top-0 h-full flex items-center pointer-events-none z-50"
+                      style={{
+                        left: `${dragPointerX}px`,
+                        transition: "none",
+                      }}
+                    >
+                      <div className="glass-strong rounded-md px-2 h-9 text-xs font-medium flex items-center shadow-lg border border-white/30 opacity-90">
+                        {draggedTab.name}
+                      </div>
+                    </div>
+                  );
+                })()}
               </div>
 
               {/* opcional: “chip” com part/subtype SEM deslocar o layout */}
