@@ -374,40 +374,69 @@ const Creation = () => {
     [activeCanvasTab]
   );
   const [tabVisibility, setTabVisibility] = useState<Record<string, boolean>>({});
-  const [draggedTabId, setDraggedTabId] = useState<string | null>(null);
-  const [dragPointerX, setDragPointerX] = useState(0);
-  const [dragOverSection, setDragOverSection] = useState<"visible" | "hidden" | null>(null);
-  const [dragInsertIndex, setDragInsertIndex] = useState<number | null>(null);
+  // ── Drag state consolidado para performance ──
+  type DragState = { tabId: string; pointerX: number; overSection: "visible" | "hidden" | null; insertIndex: number | null };
+  const [dragState, setDragState] = useState<DragState | null>(null);
+  const dragLiveRef = useRef<DragState | null>(null);
+  const dragRafRef = useRef<number>(0);
   const tabContainerRef = useRef<HTMLDivElement | null>(null);
   const visibleSectionRef = useRef<HTMLDivElement | null>(null);
   const hiddenSectionRef = useRef<HTMLDivElement | null>(null);
   const dragStartXRef = useRef(0);
   const dragTabElRectRef = useRef<{ width: number; height: number }>({ width: 0, height: 0 });
   const ensureTabHasDecalPreviewRef = useRef<((tabId: string) => Promise<void>) | null>(null);
-  const dragOverSectionRef = useRef<"visible" | "hidden" | null>(null);
-  const dragInsertIndexRef = useRef<number | null>(null);
+  const cachedTabRectsRef = useRef<{ id: string; left: number; right: number; midX: number }[]>([]);
 
-  // Keep refs in sync with state
-  useEffect(() => {
-    dragOverSectionRef.current = dragOverSection;
-  }, [dragOverSection]);
-  useEffect(() => {
-    dragInsertIndexRef.current = dragInsertIndex;
-  }, [dragInsertIndex]);
+  // Derived values from consolidated drag state (avoids breaking JSX references)
+  const draggedTabId = dragState?.tabId ?? null;
+  const dragPointerX = dragState?.pointerX ?? 0;
+  const dragOverSection = dragState?.overSection ?? null;
+  const dragInsertIndex = dragState?.insertIndex ?? null;
 
-  /** Compute the insert index within the visible section based on pointer X */
-  const computeVisibleInsertIndex = useCallback((pointerX: number, draggedId: string) => {
+  /** Compute the insert index using cached rects (fast path) or DOM (fallback) */
+  const computeVisibleInsertIndex = useCallback((pointerX: number, draggedId: string, useCached = true) => {
+    // The 3D tab is always first; 2D tabs must have index >= 1
+    const minIdx = draggedId !== "3d" ? 1 : 0;
+
+    if (useCached && cachedTabRectsRef.current.length > 0) {
+      const others = cachedTabRectsRef.current.filter((r) => r.id !== draggedId);
+      for (let i = 0; i < others.length; i++) {
+        if (pointerX < others[i].midX) return Math.max(i, minIdx);
+      }
+      return Math.max(others.length, minIdx);
+    }
+    // Fallback: read from DOM (used only on drop for accuracy)
     const section = visibleSectionRef.current;
-    if (!section) return 0;
+    if (!section) return minIdx;
     const tabEls = Array.from(section.querySelectorAll<HTMLElement>("[data-tab-id]"));
-    // Filter out the dragged element itself
     const others = tabEls.filter((el) => el.dataset.tabId !== draggedId);
     for (let i = 0; i < others.length; i++) {
       const rect = others[i].getBoundingClientRect();
       const midX = rect.left + rect.width / 2;
-      if (pointerX < midX) return i;
+      if (pointerX < midX) return Math.max(i, minIdx);
     }
-    return others.length;
+    return Math.max(others.length, minIdx);
+  }, []);
+
+  /** Cache all visible tab rects at drag start for fast hit-testing during move */
+  const cacheVisibleTabRects = useCallback(() => {
+    const section = visibleSectionRef.current;
+    if (!section) { cachedTabRectsRef.current = []; return; }
+    const tabEls = Array.from(section.querySelectorAll<HTMLElement>("[data-tab-id]"));
+    cachedTabRectsRef.current = tabEls.map((el) => {
+      const rect = el.getBoundingClientRect();
+      return { id: el.dataset.tabId!, left: rect.left, right: rect.right, midX: rect.left + rect.width / 2 };
+    });
+  }, []);
+
+  /** Schedule a single RAF-batched state update from the live ref */
+  const scheduleDragUpdate = useCallback(() => {
+    if (dragRafRef.current) return; // already scheduled
+    dragRafRef.current = requestAnimationFrame(() => {
+      dragRafRef.current = 0;
+      const live = dragLiveRef.current;
+      if (live) setDragState({ ...live });
+    });
   }, []);
 
   const handleTabPointerDown = useCallback((e: React.PointerEvent, tabId: string) => {
@@ -426,6 +455,7 @@ const Creation = () => {
       document.removeEventListener("pointermove", wrappedOnMove);
       document.removeEventListener("pointerup", onUp);
       document.removeEventListener("pointercancel", onUp);
+      if (dragRafRef.current) { cancelAnimationFrame(dragRafRef.current); dragRafRef.current = 0; }
       delete (window as any).__lastDragPointerClientX;
     };
 
@@ -434,29 +464,38 @@ const Creation = () => {
       if (!started && Math.abs(ev.clientX - dragStartXRef.current) < moveThreshold) return;
       if (!started) {
         started = true;
-        setDraggedTabId(tabId);
+        cacheVisibleTabRects();
+        // Set initial drag state immediately for first paint
+        const initState = { tabId, pointerX: 0, overSection: null as "visible" | "hidden" | null, insertIndex: null as number | null };
+        dragLiveRef.current = initState;
+        setDragState(initState);
       }
-      // Compute position relative to tab container
+
+      // Read container rect live (it changes as placeholders appear/disappear)
       const containerRect = tabContainerRef.current?.getBoundingClientRect();
       if (!containerRect) return;
-      const clampedX = Math.max(containerRect.left, Math.min(ev.clientX, containerRect.right - dragTabElRectRef.current.width));
-      setDragPointerX(clampedX - containerRect.left);
 
-      // Determine which section the pointer is over
+      // Compute position relative to tab container
+      const clampedX = Math.max(containerRect.left, Math.min(ev.clientX, containerRect.right - dragTabElRectRef.current.width));
+      const pointerX = clampedX - containerRect.left;
+
+      // Read section rects live (cheap, and they change as placeholders appear/disappear)
       const visRect = visibleSectionRef.current?.getBoundingClientRect();
       const hidRect = hiddenSectionRef.current?.getBoundingClientRect();
+
+      // Determine which section the pointer is over + insert index
+      let overSection: "visible" | "hidden" | null = null;
+      let insertIndex: number | null = null;
       if (visRect && ev.clientX >= visRect.left && ev.clientX <= visRect.right) {
-        setDragOverSection("visible");
-        // Compute positional insert index within visible section
-        const idx = computeVisibleInsertIndex(ev.clientX, tabId);
-        setDragInsertIndex(idx);
+        overSection = "visible";
+        insertIndex = computeVisibleInsertIndex(ev.clientX, tabId, true);
       } else if (hidRect && ev.clientX >= hidRect.left && ev.clientX <= hidRect.right) {
-        setDragOverSection("hidden");
-        setDragInsertIndex(null);
-      } else {
-        setDragOverSection(null);
-        setDragInsertIndex(null);
+        overSection = "hidden";
       }
+
+      // Update ref immediately (cheap), schedule batched state update
+      dragLiveRef.current = { tabId, pointerX, overSection, insertIndex };
+      scheduleDragUpdate();
     };
 
     const onUp = (ev?: PointerEvent) => {
@@ -466,7 +505,7 @@ const Creation = () => {
       cleanup();
       if (!started) return;
 
-      // Determine drop section from DOM rects
+      // Read section rects live for accurate drop detection
       const visRect = visibleSectionRef.current?.getBoundingClientRect();
       const hidRect = hiddenSectionRef.current?.getBoundingClientRect();
       let targetSection: "visible" | "hidden" | null = null;
@@ -489,8 +528,8 @@ const Creation = () => {
           });
         }
 
-        // Reorder: compute final insert index from DOM
-        const finalIdx = computeVisibleInsertIndex(pointerX, tabId);
+        // Reorder: compute final insert index from DOM (accurate, not cached)
+        const finalIdx = computeVisibleInsertIndex(pointerX, tabId, false);
         setCanvasTabs((prev) => {
           // Get list of visible tabs (3d + visible 2d) in current order
           const visibleIds = prev
@@ -523,9 +562,9 @@ const Creation = () => {
         });
       }
 
-      setDraggedTabId(null);
-      setDragOverSection(null);
-      setDragInsertIndex(null);
+      dragLiveRef.current = null;
+      cachedTabRectsRef.current = [];
+      setDragState(null);
     };
 
     const wrappedOnMove = (ev: PointerEvent) => {
@@ -536,7 +575,7 @@ const Creation = () => {
     document.addEventListener("pointermove", wrappedOnMove);
     document.addEventListener("pointerup", onUp);
     document.addEventListener("pointercancel", onUp);
-  }, [computeVisibleInsertIndex]);
+  }, [computeVisibleInsertIndex, cacheVisibleTabRects, scheduleDragUpdate]);
   const [tabDecalPreviews, setTabDecalPreviews] = useState<Record<string, string>>({});
   const [tabDecalPlacements, setTabDecalPlacements] = useState<Record<string, DecalTransform>>({});
   const tabVisibilityRef = useRef<Record<string, boolean>>(tabVisibility);
@@ -1617,14 +1656,14 @@ const Creation = () => {
               {/* Abas do canvas — divididas em "Na peça" e "Somente canvas" com drag customizado */}
               <div
                 ref={tabContainerRef}
-                className="absolute left-4 top-4 z-20 glass rounded-lg border p-0 shadow-md carousel-item-enter inline-flex min-w-0 max-w-[calc(100%-2rem)] overflow-x-auto overflow-y-hidden"
+                className="absolute left-4 top-4 z-20 rounded-xl p-1.5 carousel-item-enter inline-flex min-w-0 max-w-[calc(100%-2rem)] overflow-hidden"
                 style={{ position: "absolute" }}
               >
                 <div className="flex flex-nowrap items-stretch gap-0 min-w-0 max-w-full whitespace-nowrap relative">
                   {/* === Seção: Na peça (visível no 3D) === */}
                   <div
                     ref={visibleSectionRef}
-                    className={`flex flex-nowrap items-center gap-0 px-1 rounded-l-lg transition-colors duration-200 ${dragOverSection === "visible" ? "bg-blue-500/45 ring-2 ring-blue-400/60" : "bg-blue-500/30"
+                    className={`flex flex-nowrap items-center gap-1 px-0.5 rounded-lg transition-colors duration-200 ${dragOverSection === "visible" ? "bg-blue-500/25 ring-2 ring-blue-400/60" : ""
                       }`}
                     title="Na peça"
                   >
@@ -1633,19 +1672,16 @@ const Creation = () => {
                       const visibleTabs = canvasTabs.filter(
                         (t) => t.type === "3d" || (t.type === "2d" && !!tabVisibility[t.id])
                       );
-                      // Build items with potential placeholder insertion
                       const items: React.ReactNode[] = [];
-                      // Determine the list without the dragged tab (for placeholder indexing)
                       const withoutDragged = visibleTabs.filter((t) => t.id !== draggedTabId);
                       const showPlaceholder = draggedTabId && dragOverSection === "visible" && dragInsertIndex !== null;
 
                       withoutDragged.forEach((tab, idx) => {
-                        // Insert placeholder before this position if needed
                         if (showPlaceholder && dragInsertIndex === idx) {
                           items.push(
                             <div
                               key="drop-placeholder"
-                              className="w-16 h-9 rounded-md border-2 border-dashed border-blue-400/50 bg-blue-400/10 mx-0.5 shrink-0 transition-all duration-200"
+                              className="w-14 h-8 rounded-lg border-2 border-dashed border-blue-400/50 bg-blue-400/10 shrink-0 transition-all duration-200"
                             />
                           );
                         }
@@ -1659,65 +1695,63 @@ const Creation = () => {
                             key={tab.id}
                             data-tab-id={tab.id}
                             onPointerDown={(e) => handleTabPointerDown(e, tab.id)}
-                            className={`shrink-0 flex items-center gap-0.5 rounded-md px-1.5 sm:px-2 h-9 text-xs transition-all duration-300 cursor-grab active:cursor-grabbing select-none ${isDragging ? "opacity-30" : ""
+                            className={`shrink-0 flex items-center gap-1 rounded-lg px-2.5 h-8 text-xs font-medium border border-white/25 transition-colors duration-150 cursor-grab active:cursor-grabbing select-none ${isDragging ? "opacity-30" : ""
                               } ${!isDragging && active
                                 ? is3D
-                                  ? "bg-gradient-to-r from-violet-600 to-purple-500 text-white shadow-lg shadow-violet-500/30"
-                                  : "glass-strong shadow-sm"
+                                  ? "bg-gradient-to-r from-violet-600 to-purple-500 text-white shadow-md shadow-violet-500/25"
+                                  : "bg-white/20 shadow-sm"
                                 : !isDragging
                                   ? is3D
-                                    ? "border border-white/20 bg-violet-500/20 text-violet-200 hover:bg-violet-500/30"
-                                    : "border border-white/20 bg-white/5 hover:bg-white/20"
+                                    ? "bg-violet-500/15 text-violet-200 hover:bg-violet-500/25"
+                                    : "hover:bg-white/10"
                                   : ""
                               } ${active && isTransitioning && !isDragging ? "bounce-in" : ""}`}
                           >
                             <span
-                              className="h-full px-0.5 text-left font-medium focus:outline-none inline-flex items-center cursor-pointer min-w-0 max-w-[8rem] sm:max-w-[10rem] truncate"
+                              className="text-left focus:outline-none inline-flex items-center cursor-pointer min-w-0 max-w-[8rem] sm:max-w-[10rem] truncate"
                               aria-pressed={active}
                               tabIndex={0}
                               role="button"
                               onClick={() => {
                                 if (draggedTabId) return;
+                                setActiveCanvasTab(tab.id);
                                 void (async () => {
                                   await saveActiveTabSnapshot();
                                   await saveDraft();
-                                  setActiveCanvasTab(tab.id);
                                 })();
                               }}
                               onKeyDown={e => {
                                 if (e.key === 'Enter' || e.key === ' ') {
+                                  setActiveCanvasTab(tab.id);
                                   void (async () => {
                                     await saveActiveTabSnapshot();
                                     await saveDraft();
-                                    setActiveCanvasTab(tab.id);
                                   })();
                                 }
                               }}
                             >
                               {tab.name}
                             </span>
-                            {/* Close button only for 2D tabs */}
                             {tab.type === "2d" && (
                               <button
                                 type="button"
                                 onClick={(e) => { e.stopPropagation(); removeCanvasTab(tab.id); }}
-                                className="p-0.5 sm:p-1 lg:p-1.5 rounded-full hover:bg-white/20 transition"
+                                className="p-0.5 rounded-md hover:bg-white/20 transition-colors"
                                 aria-label="Fechar aba"
                                 title="Fechar aba"
                               >
-                                <X className="w-3.5 h-3.5 sm:w-4 sm:h-4 lg:w-5 lg:h-5 opacity-60 hover:opacity-100" />
+                                <X className="w-3.5 h-3.5 opacity-50 hover:opacity-100" />
                               </button>
                             )}
                           </div>
                         );
                       });
 
-                      // Append placeholder at end if insertIndex is past all items
                       if (showPlaceholder && dragInsertIndex! >= withoutDragged.length) {
                         items.push(
                           <div
                             key="drop-placeholder"
-                            className="w-16 h-9 rounded-md border-2 border-dashed border-blue-400/50 bg-blue-400/10 mx-0.5 shrink-0 transition-all duration-200"
+                            className="w-14 h-8 rounded-lg border-2 border-dashed border-blue-400/50 bg-blue-400/10 shrink-0 transition-all duration-200"
                           />
                         );
                       }
@@ -1727,18 +1761,17 @@ const Creation = () => {
                   </div>
 
                   {/* Divisor vertical */}
-                  <div className="w-px bg-white/30 mx-0.5 my-1.5 self-stretch" />
+                  <div className="w-px bg-white/20 mx-1 my-1 self-stretch" />
 
                   {/* === Seção: Somente canvas (não projetado no 3D) === */}
                   <div
                     ref={hiddenSectionRef}
-                    className={`flex flex-nowrap items-center gap-0 px-1 rounded-r-lg transition-colors duration-200 ${dragOverSection === "hidden" ? "bg-slate-400/30 ring-2 ring-slate-400/40" : "bg-slate-500/15"
+                    className={`flex flex-nowrap items-center justify-center gap-1 px-0.5 min-w-[3rem] rounded-lg transition-colors duration-200 ${dragOverSection === "hidden" ? "bg-slate-400/25 ring-2 ring-slate-400/40" : ""
                       }`}
                     title="Somente canvas"
                   >
-                    {/* Gap placeholder if dragging from visible to hidden */}
                     {draggedTabId && dragOverSection === "hidden" && !!tabVisibility[draggedTabId] && (
-                      <div className="w-16 h-9 rounded-md border-2 border-dashed border-slate-400/50 bg-slate-400/10 mx-0.5 shrink-0 transition-all duration-200" />
+                      <div className="w-14 h-8 rounded-lg border-2 border-dashed border-slate-400/50 bg-slate-400/10 shrink-0 transition-all duration-200" />
                     )}
                     {canvasTabs.filter((t) => t.type === "2d" && !tabVisibility[t.id]).map((tab) => {
                       const isDragging = draggedTabId === tab.id;
@@ -1746,33 +1779,33 @@ const Creation = () => {
                       return (
                         <div key={tab.id} className="flex items-center">
                           {isDragging && dragOverSection === "hidden" && (
-                            <div className="w-16 h-9 rounded-md border-2 border-dashed border-slate-400/50 bg-slate-400/10 mx-0.5 shrink-0 transition-all duration-200" />
+                            <div className="w-14 h-8 rounded-lg border-2 border-dashed border-slate-400/50 bg-slate-400/10 shrink-0 transition-all duration-200" />
                           )}
                           <div
                             onPointerDown={(e) => handleTabPointerDown(e, tab.id)}
-                            className={`shrink-0 flex items-center gap-0.5 rounded-md px-1.5 sm:px-2 h-9 text-xs transition-all duration-300 cursor-grab active:cursor-grabbing select-none ${isDragging ? "opacity-30" : ""
-                              } ${!isDragging && active ? "glass-strong shadow-sm" : !isDragging ? "border border-white/20 bg-white/10 hover:bg-white/25" : ""
+                            className={`shrink-0 flex items-center gap-1 rounded-lg px-2.5 h-8 text-xs font-medium border border-white/25 transition-colors duration-150 cursor-grab active:cursor-grabbing select-none ${isDragging ? "opacity-30" : ""
+                              } ${!isDragging && active ? "bg-white/20 shadow-sm" : !isDragging ? "hover:bg-white/10" : ""
                               } ${active && isTransitioning && !isDragging ? "bounce-in" : ""}`}
                           >
                             <span
-                              className="h-full px-0.5 text-left font-medium focus:outline-none inline-flex items-center cursor-pointer min-w-0 max-w-[8rem] sm:max-w-[10rem] truncate"
+                              className="text-left focus:outline-none inline-flex items-center cursor-pointer min-w-0 max-w-[8rem] sm:max-w-[10rem] truncate"
                               aria-pressed={active}
                               tabIndex={0}
                               role="button"
                               onClick={() => {
                                 if (draggedTabId) return;
+                                setActiveCanvasTab(tab.id);
                                 void (async () => {
                                   await saveActiveTabSnapshot();
                                   await saveDraft();
-                                  setActiveCanvasTab(tab.id);
                                 })();
                               }}
                               onKeyDown={e => {
                                 if (e.key === 'Enter' || e.key === ' ') {
+                                  setActiveCanvasTab(tab.id);
                                   void (async () => {
                                     await saveActiveTabSnapshot();
                                     await saveDraft();
-                                    setActiveCanvasTab(tab.id);
                                   })();
                                 }
                               }}
@@ -1782,11 +1815,11 @@ const Creation = () => {
                             <button
                               type="button"
                               onClick={(e) => { e.stopPropagation(); removeCanvasTab(tab.id); }}
-                              className="p-0.5 sm:p-1 lg:p-1.5 rounded-full hover:bg-white/20 transition"
+                              className="p-0.5 rounded-md hover:bg-white/20 transition-colors"
                               aria-label="Fechar aba"
                               title="Fechar aba"
                             >
-                              <X className="w-3.5 h-3.5 sm:w-4 sm:h-4 lg:w-5 lg:h-5 opacity-60 hover:opacity-100" />
+                              <X className="w-3.5 h-3.5 opacity-50 hover:opacity-100" />
                             </button>
                           </div>
                         </div>
@@ -1796,15 +1829,15 @@ const Creation = () => {
                       onClick={add2DTab}
                       size="icon"
                       variant="ghost"
-                      className="shrink-0 h-7 w-7 sm:h-8 sm:w-8 lg:h-9 lg:w-9 ml-0.5 sm:ml-1"
+                      className="shrink-0 h-8 w-8 rounded-lg"
                     >
-                      <Plus className="w-3.5 h-3.5 sm:w-4 sm:h-4 lg:w-5 lg:h-5" />
+                      <Plus className="w-4 h-4" />
                     </Button>
                   </div>
                 </div>
 
                 {/* Floating drag preview — constrained within container */}
-                {draggedTabId && (() => {
+                {draggedTabId && dragOverSection === "visible" && (() => {
                   const draggedTab = canvasTabs.find((t) => t.id === draggedTabId);
                   if (!draggedTab) return null;
                   return (
@@ -1815,7 +1848,7 @@ const Creation = () => {
                         transition: "none",
                       }}
                     >
-                      <div className="glass-strong rounded-md px-2 h-9 text-xs font-medium flex items-center shadow-lg border border-white/30 opacity-90">
+                      <div className="bg-white/15 backdrop-blur-xl rounded-lg px-2.5 h-8 text-xs font-medium flex items-center shadow-lg border border-white/30 opacity-90">
                         {draggedTab.name}
                       </div>
                     </div>
