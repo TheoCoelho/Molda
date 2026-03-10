@@ -10,6 +10,7 @@ import FloatingEditorToolbar from "../components/FloatingEditorToolbar";
 import TextToolbar from "../components/TextToolbar";
 import ImageToolbar from "../components/ImageToolbar";
 import { useRecentFonts } from "../hooks/use-recent-fonts";
+import { EyeTabDivider } from "../components/ui/EyeTabDivider";
 
 import Editor2D, {
   Editor2DHandle,
@@ -1751,8 +1752,8 @@ const Creation = () => {
                     })()}
                   </div>
 
-                  {/* Divisor vertical */}
-                  <div className="w-px bg-white/20 mx-1 my-1 self-stretch" />
+                  {/* Divisor vertical animado (O Olho) */}
+                  <EyeTabDivider isDragging={!!draggedTabId} />
 
                   {/* === Seção: Somente canvas (não projetado no 3D) === */}
                   <div

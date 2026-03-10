@@ -46,84 +46,52 @@
    DESIGN TOKENS (shadcn + paleta do cliente)
    =========================== */
 @layer base {
-  :root {
-    /* Base surfaces - High contrast Minimalist */
-    --background: 0 0% 96%;
+
+  :root,
+  .dark {
+    /* Base surfaces - High contrast Minimalist LIGHT MODE */
+    --background: 0 0% 98%;
     /* Lighter gray for base background */
-    --foreground: 0 0% 9%;
+    --foreground: 0 0% 5%;
 
     /* Brand (Monochrome/Minimal) */
-    --brand-uv: 0 0% 9%;
-    --brand-blue: 0 0% 9%;
-    --brand-lyellow: 0 0% 96%;
-    --brand-green: 0 0% 9%;
-    --brand-keppel: 0 0% 9%;
+    --brand-uv: 0 0% 5%;
+    --brand-blue: 0 0% 5%;
+    --brand-lyellow: 0 0% 98%;
+    --brand-green: 0 0% 5%;
+    --brand-keppel: 0 0% 5%;
 
     /* shadcn tokens */
-    --muted: 0 0% 90%;
+    --muted: 0 0% 94%;
     --muted-foreground: 0 0% 40%;
 
     --popover: 0 0% 100%;
-    --popover-foreground: 0 0% 9%;
+    --popover-foreground: 0 0% 5%;
 
     --card: 0 0% 100%;
-    --card-foreground: 0 0% 9%;
+    --card-foreground: 0 0% 5%;
 
-    --primary: 0 0% 9%;
+    --primary: 0 0% 5%;
     --primary-foreground: 0 0% 98%;
 
-    --secondary: 0 0% 96%;
-    --secondary-foreground: 0 0% 9%;
+    --secondary: 0 0% 94%;
+    --secondary-foreground: 0 0% 5%;
 
-    --accent: 0 0% 90%;
-    --accent-foreground: 0 0% 9%;
+    --accent: 0 0% 94%;
+    --accent-foreground: 0 0% 5%;
 
     --destructive: 0 84.2% 60.2%;
     --destructive-foreground: 210 40% 98%;
 
-    --border: 0 0% 80%;
+    --border: 0 0% 86%;
     /* Prominent light mode borders */
-    --input: 0 0% 80%;
-    --ring: 0 0% 9%;
+    --input: 0 0% 86%;
+    --ring: 0 0% 5%;
     --radius: 0rem;
     /* Sharp edges */
-  }
 
-  .dark {
-    --background: 0 0% 4%;
-    /* Almost black */
-    --foreground: 0 0% 92%;
-
-    /* VS Code-like site background */
-    --vscode-bg: 0 0% 4%;
-
-    --muted: 0 0% 15%;
-    --muted-foreground: 0 0% 65%;
-
-    --popover: 0 0% 6%;
-    --popover-foreground: 0 0% 92%;
-
-    --card: 0 0% 6%;
-    --card-foreground: 0 0% 92%;
-
-    /* Studio Dialect typically relies on monochrome, white/black */
-    --primary: 0 0% 98%;
-    --primary-foreground: 0 0% 9%;
-
-    --secondary: 0 0% 15%;
-    --secondary-foreground: 0 0% 98%;
-
-    --accent: 0 0% 15%;
-    --accent-foreground: 0 0% 98%;
-
-    --destructive: 0 62.8% 30.6%;
-    --destructive-foreground: 210 40% 98%;
-
-    --border: 0 0% 20%;
-    /* Sharp structural lines */
-    --input: 0 0% 20%;
-    --ring: 0 0% 98%;
-    --radius: 0rem;
+    /* VS Code-like site background removed */
+    --vscode-bg: 0 0% 98%;
   }
 }
 
@@ -182,14 +150,12 @@ body::before {
 }
 
 .lcar-card {
-  background-color: hsl(var(--card) / var(--surface-alpha));
-  -webkit-backdrop-filter: blur(var(--surface-blur)) saturate(120%);
-  backdrop-filter: blur(var(--surface-blur)) saturate(120%);
+  background-color: hsl(var(--background));
   border: 1px solid hsl(var(--border));
-  border-radius: 16px;
+  border-radius: 0;
   min-width: 128px;
   height: 128px;
-  box-shadow: 0 6px 18px -8px rgba(0, 0, 0, 0.15);
+  box-shadow: none;
   display: flex;
   align-items: center;
   justify-content: center;
@@ -675,9 +641,11 @@ body::before {
 }
 
 .wizard-step__title {
-  font-size: 1.2rem;
-  font-weight: 700;
-  margin-bottom: 16px;
+  font-family: var(--font-brand-heading);
+  text-transform: uppercase;
+  letter-spacing: 0.1em;
+  font-size: 1.25rem;
+  margin-bottom: 24px;
   color: hsl(var(--foreground));
 }
 
@@ -694,24 +662,23 @@ body::before {
 
 .wizard-card {
   text-align: left;
-  border-radius: 18px;
+  border-radius: 0;
   border: 1px solid hsl(var(--border));
   padding: 18px;
-  background: color-mix(in srgb, hsl(var(--foreground)) 18%, hsl(var(--background)));
-  box-shadow: 0 12px 24px -18px hsl(var(--foreground) / 0.25);
+  background: hsl(var(--background));
+  box-shadow: none;
   cursor: pointer;
   aspect-ratio: 1 / 1;
   min-height: 240px;
-  transition: transform 0.2s ease, box-shadow 0.2s ease, border-color 0.2s ease;
   display: flex;
   flex-direction: column;
   gap: 12px;
 }
 
 .wizard-card:hover {
-  transform: translateY(-2px);
-  box-shadow: 0 16px 32px -20px hsl(var(--foreground) / 0.25);
-  border-color: hsl(var(--brand-blue));
+  transform: none;
+  box-shadow: none;
+  border-color: hsl(var(--foreground));
 }
 
 .wizard-card:focus-visible {
@@ -818,11 +785,9 @@ body::before {
 }
 
 .wizard-static-card {
-  border-radius: 12px;
+  border-radius: 0;
   border: 1px solid hsl(var(--border));
-  background-color: hsl(var(--card) / var(--surface-alpha));
-  -webkit-backdrop-filter: blur(var(--surface-blur)) saturate(120%);
-  backdrop-filter: blur(var(--surface-blur)) saturate(120%);
+  background-color: hsl(var(--background));
   color: hsl(var(--foreground));
   padding: 16px;
   min-height: var(--item-size, 240px);
@@ -838,10 +803,10 @@ body::before {
 .wizard-static-card__image {
   width: 100%;
   height: 58%;
-  border-radius: 10px;
+  border-radius: 0;
   overflow: hidden;
   border: 1px solid hsl(var(--border));
-  background: color-mix(in srgb, hsl(var(--foreground)) 8%, hsl(var(--background)));
+  background: color-mix(in srgb, hsl(var(--muted)) 20%, hsl(var(--background)));
 }
 
 .wizard-static-card__image img {
@@ -852,15 +817,15 @@ body::before {
 }
 
 .wizard-static-card:hover {
-  transform: scale(1.02);
-  border-color: hsl(var(--brand-blue));
-  box-shadow: 0 12px 26px -18px rgba(0, 0, 0, 0.35);
+  transform: none;
+  border-color: hsl(var(--foreground));
+  box-shadow: none;
 }
 
 .wizard-static-card.is-selected {
-  border-color: hsl(var(--brand-blue));
-  box-shadow: 0 0 0 3px color-mix(in srgb, hsl(var(--brand-blue)) 22%, transparent);
-  background: hsl(var(--card));
+  border-color: hsl(var(--foreground));
+  box-shadow: none;
+  background: hsl(var(--muted) / 0.5);
 }
 
 .wizard-static-card.is-dimmed {

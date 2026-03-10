@@ -102,7 +102,7 @@ const Profile = () => {
 
   const [savedElements] = useState([
     { id: 1, type: "image", name: "Logo Empresa", preview: "/api/placeholder/100/100" },
-    { id: 2, type: "text",  name: "Frase Motivacional", content: "Seja a mudança" },
+    { id: 2, type: "text", name: "Frase Motivacional", content: "Seja a mudança" },
     { id: 3, type: "drawing", name: "Desenho Abstrato", preview: "/api/placeholder/100/100" },
     { id: 4, type: "pattern", name: "Padrão Geométrico", preview: "/api/placeholder/100/100" },
   ]);
@@ -342,7 +342,7 @@ const Profile = () => {
 
     const path = `${authUser.id}/${Date.now()}_${file.name.replace(/\s+/g, "_")}`;
 
-  const { error: upErr } = await supabase.storage.from(AVATAR_BUCKET).upload(path, file, { upsert: true });
+    const { error: upErr } = await supabase.storage.from(AVATAR_BUCKET).upload(path, file, { upsert: true });
     if (upErr) throw upErr;
 
     const { error: updErr } = await supabase
@@ -351,7 +351,7 @@ const Profile = () => {
       .eq("id", authUser.id);
     if (updErr) throw updErr;
 
-  return supabase.storage.from(AVATAR_BUCKET).getPublicUrl(path).data.publicUrl;
+    return supabase.storage.from(AVATAR_BUCKET).getPublicUrl(path).data.publicUrl;
   };
 
   const handleSaveAvatar = async () => {
@@ -421,7 +421,7 @@ const Profile = () => {
       if (error) throw error;
 
       // (opcional) atualiza metadados do usuário
-      try { await supabase.auth.updateUser({ data: { nickname: newNick } }); } catch {}
+      try { await supabase.auth.updateUser({ data: { nickname: newNick } }); } catch { }
 
       setUser((prev) => ({ ...prev, name: newNick }));
       setEditing((e) => ({ ...e, nickname: false }));
@@ -454,7 +454,7 @@ const Profile = () => {
       if (error) throw error;
 
       // (opcional) atualiza metadados do usuário
-      try { await supabase.auth.updateUser({ data: { username: newUser } }); } catch {}
+      try { await supabase.auth.updateUser({ data: { username: newUser } }); } catch { }
 
       setUser((prev) => ({ ...prev, username: newUser }));
       setEditing((e) => ({ ...e, username: false }));
@@ -664,27 +664,27 @@ const Profile = () => {
             {draftsLoading ? (
               <div className="grid grid-cols-2 md:grid-cols-3 lg:grid-cols-4 gap-4">
                 {Array.from({ length: 5 }).map((_, idx) => (
-                  <Card key={idx} className="shadow-md">
-                    <CardHeader className="p-3 pb-2">
-                      <div className="h-4 w-24 rounded bg-muted/60 animate-pulse" />
-                      <div className="mt-1 h-3 w-16 rounded bg-muted/60 animate-pulse" />
+                  <Card key={idx} className="border border-border bg-background shadow-none rounded-none">
+                    <CardHeader className="p-3 pb-2 border-b border-border">
+                      <div className="h-4 w-24 rounded-none bg-muted animate-pulse" />
+                      <div className="mt-1 h-3 w-16 rounded-none bg-muted animate-pulse" />
                     </CardHeader>
-                    <CardContent className="p-3 pt-0">
-                      <div className="aspect-[3/4] w-full overflow-hidden rounded-md bg-muted/60 mb-3 animate-pulse" />
+                    <CardContent className="p-3 pt-3">
+                      <div className="aspect-[3/4] w-full overflow-hidden rounded-none border border-border bg-muted mb-3 animate-pulse" />
                       <div className="flex gap-1.5">
-                        <div className="h-8 w-full rounded bg-muted/60 animate-pulse" />
-                        <div className="h-8 w-full rounded bg-muted/60 animate-pulse" />
+                        <div className="h-8 w-full rounded-none bg-muted animate-pulse" />
+                        <div className="h-8 w-full rounded-none bg-muted animate-pulse" />
                       </div>
                     </CardContent>
                   </Card>
                 ))}
               </div>
             ) : draftsError ? (
-              <div className="rounded-xl border border-destructive/40 bg-destructive/10 px-4 py-3 text-sm text-destructive">
+              <div className="rounded-none border border-destructive bg-destructive/10 px-4 py-3 text-sm text-destructive font-bold uppercase tracking-widest">
                 {draftsError}
               </div>
             ) : creations.length === 0 ? (
-              <div className="rounded-xl border border-dashed px-4 py-8 text-sm text-muted-foreground text-center">
+              <div className="rounded-none border border-border bg-background px-4 py-8 text-sm text-muted-foreground text-center font-bold uppercase tracking-widest">
                 Nenhum rascunho salvo ainda.
               </div>
             ) : (
@@ -694,18 +694,18 @@ const Profile = () => {
                   const total = creations.length;
                   if (total <= 8) {
                     return creations.map((item) => (
-                      <Card key={item.id} className="shadow-md hover:shadow-lg transition-shadow">
-                        <CardHeader className="p-3 pb-2">
+                      <Card key={item.id} className="border border-border bg-background shadow-none transition-none hover:border-foreground rounded-none filter-none">
+                        <CardHeader className="p-3 pb-2 border-b border-border">
                           <div className="flex items-center justify-between gap-1">
-                            <CardTitle className="text-sm font-medium truncate">{item.title}</CardTitle>
+                            <CardTitle className="text-sm font-bold uppercase tracking-widest truncate">{item.title}</CardTitle>
                             {getStatusBadge(item.status)}
                           </div>
-                          <p className="text-xs text-gray-500">
+                          <p className="text-xs text-gray-500 font-bold uppercase tracking-widest">
                             {item.date ? `Criado em ${item.date}` : ""}
                           </p>
                         </CardHeader>
-                        <CardContent className="p-3 pt-0">
-                          <div className="aspect-[3/4] w-full overflow-hidden rounded-md bg-transparent mb-3">
+                        <CardContent className="p-3 pt-3">
+                          <div className="aspect-[3/4] w-full overflow-hidden rounded-none border border-border bg-background mb-3">
                             <Canvas3DViewer
                               baseColor={item.baseColor || "#ffffff"}
                               externalDecals={item.externalDecals || []}
@@ -718,7 +718,7 @@ const Profile = () => {
                             <Button
                               variant="outline"
                               size="sm"
-                              className="w-full text-xs"
+                              className="w-full text-xs rounded-none uppercase tracking-widest font-bold"
                               onClick={() => item.draft && handleEditDraft(item.draft)}
                               disabled={!item.draft}
                             >
@@ -726,7 +726,7 @@ const Profile = () => {
                             </Button>
                             <Button
                               size="sm"
-                              className="w-full text-xs"
+                              className="w-full text-xs rounded-none uppercase tracking-widest font-bold bg-foreground text-background"
                               onClick={() => item.draft && handleProduceDraft(item.draft)}
                               disabled={!item.draft}
                             >
@@ -751,18 +751,18 @@ const Profile = () => {
                   return creations.map((item, idx) => {
                     const isActive = idx >= start && idx < end;
                     return (
-                      <Card key={item.id} className="shadow-md hover:shadow-lg transition-shadow">
-                        <CardHeader className="p-3 pb-2">
+                      <Card key={item.id} className="border border-border bg-background shadow-none transition-none hover:border-foreground rounded-none filter-none">
+                        <CardHeader className="p-3 pb-2 border-b border-border">
                           <div className="flex items-center justify-between gap-1">
-                            <CardTitle className="text-sm font-medium truncate">{item.title}</CardTitle>
+                            <CardTitle className="text-sm font-bold uppercase tracking-widest truncate">{item.title}</CardTitle>
                             {getStatusBadge(item.status)}
                           </div>
-                          <p className="text-xs text-gray-500">
+                          <p className="text-xs text-gray-500 font-bold uppercase tracking-widest">
                             {item.date ? `Criado em ${item.date}` : ""}
                           </p>
                         </CardHeader>
-                        <CardContent className="p-3 pt-0">
-                          <div className="aspect-[3/4] w-full overflow-hidden rounded-md bg-transparent mb-3">
+                        <CardContent className="p-3 pt-3">
+                          <div className="aspect-[3/4] w-full overflow-hidden rounded-none border border-border bg-background mb-3">
                             {isActive ? (
                               <Canvas3DViewer
                                 baseColor={item.baseColor || "#ffffff"}
@@ -772,7 +772,7 @@ const Profile = () => {
                                 className="h-full w-full"
                               />
                             ) : (
-                              <div className="h-full w-full bg-muted flex items-center justify-center text-xs text-muted-foreground select-none">
+                              <div className="h-full w-full bg-muted flex items-center justify-center text-xs text-muted-foreground select-none uppercase tracking-widest font-bold">
                                 Pré-visualização 3D
                               </div>
                             )}
@@ -781,7 +781,7 @@ const Profile = () => {
                             <Button
                               variant="outline"
                               size="sm"
-                              className="w-full text-xs"
+                              className="w-full text-xs rounded-none uppercase tracking-widest font-bold"
                               onClick={() => item.draft && handleEditDraft(item.draft)}
                               disabled={!item.draft}
                             >
@@ -789,7 +789,7 @@ const Profile = () => {
                             </Button>
                             <Button
                               size="sm"
-                              className="w-full text-xs"
+                              className="w-full text-xs rounded-none uppercase tracking-widest font-bold bg-foreground text-background"
                               onClick={() => item.draft && handleProduceDraft(item.draft)}
                               disabled={!item.draft}
                             >

@@ -81,7 +81,8 @@ export default {
 			fontFamily: {
 				brandHeading: ['var(--font-brand-heading)', 'sans-serif'],
 				brandBody: ['var(--font-brand-body)', 'sans-serif'],
-				brandAccent: ['var(--font-brand-accent)', 'sans-serif']
+				brandAccent: ['var(--font-brand-accent)', 'sans-serif'],
+				sans: ['var(--font-brand-body)', 'sans-serif'],
 			},
 			keyframes: {
 				'accordion-down': {

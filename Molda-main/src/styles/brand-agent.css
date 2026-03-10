@@ -19,9 +19,9 @@
   --brand-muted-hsl: 0 0% 50%;
   --brand-border-hsl: 0 0% 90%;
 
-  --font-brand-heading: "Inter";
-  --font-brand-body: "Inter";
-  --font-brand-accent: "Inter";
+  --font-brand-heading: "Archivo Black", sans-serif;
+  --font-brand-body: "Space Grotesk", sans-serif;
+  --font-brand-accent: "Space Grotesk", sans-serif;
 
   --background: var(--brand-bg-hsl);
   --foreground: var(--brand-text-hsl);

@@ -45,10 +45,10 @@ const App = () => {
         <AuthProvider>
           {/* Canvas do fundo (fixo e atrás de tudo) */}
           {/* <ShaderBackground /> */}
-          <div className="fixed inset-0 z-0 pointer-events-none brand-black-base" />
+          <div className="fixed inset-0 z-0 pointer-events-none bg-background" />
 
           {/* Conteúdo do app acima do fundo */}
-          <div className="relative z-10 min-h-screen is-glassy">
+          <div className="relative z-10 min-h-screen">
             <BrowserRouter>
               <TopProgressBar />
               <Routes>
