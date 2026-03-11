@@ -9,19 +9,14 @@ export default function Index() {
 
       {/* HERO */}
       <section className="relative mx-auto max-w-6xl px-4 sm:px-6 lg:px-10 xl:px-16 2xl:px-24 pt-20 pb-16">
-        {/* blobs decorativos */}
-        <div aria-hidden className="pointer-events-none absolute inset-0 -z-10">
-          <div className="absolute -top-10 -left-8 h-56 w-56 rounded-full blur-3xl opacity-70"
-               style={{ background: "radial-gradient(circle, rgba(78,65,135,0.35) 0%, transparent 60%)" }} />
-          <div className="absolute -top-8 right-0 h-72 w-72 rounded-full blur-3xl opacity-70"
-               style={{ background: "radial-gradient(circle, rgba(46,191,165,0.30) 0%, transparent 60%)" }} />
-        </div>
+        {/* blobs decorativos removidos pelo design minimalista */}
+        <div aria-hidden className="pointer-events-none absolute inset-0 -z-10" />
 
         <div className="grid gap-8 md:grid-cols-[1.2fr,0.8fr] items-center">
           <div>
-            <h1 className="text-4xl md:text-6xl font-extrabold tracking-tight leading-[1.05]">
-              Personalize suas roupas <span className="text-[hsl(var(--primary))]">do seu jeito</span> —{" "}
-              <span className="bg-[hsl(var(--muted))] px-2 rounded-lg">criativo e divertido</span>.
+            <h1 className="text-4xl md:text-6xl font-brandHeading tracking-tight leading-[1.05]">
+              Personalize suas roupas <span className="text-[hsl(var(--foreground))] text-black">do seu jeito</span> —{" "}
+              <span className="bg-foreground text-background px-2 py-0.5 rounded-none uppercase tracking-widest text-lg md:text-3xl">criativo e direto</span>.
             </h1>
             <p className="mt-5 text-lg text-muted-foreground">
               Desenhe no 2D, visualize em 3D e publique sua criação.
@@ -30,41 +25,41 @@ export default function Index() {
 
             <div className="mt-8 flex flex-wrap items-center gap-4">
               <Link to="/create">
-                <Button variant="cta" size="lg" rounded="full" className="shadow-[0_12px_28px_rgba(48,131,220,0.35)]">
-                  ✨ Criar agora
+                <Button size="lg" className="rounded-none uppercase tracking-widest h-12 px-8">
+                  Criar Agora
                 </Button>
               </Link>
               <Link to="/creation">
-                <Button variant="outline" size="lg" rounded="full">
-                  Abrir projeto recente
+                <Button variant="outline" size="lg" className="rounded-none uppercase tracking-widest h-12 px-8">
+                  Abrir Projeto
                 </Button>
               </Link>
             </div>
 
-            <div className="mt-6 flex items-center gap-3 text-sm text-muted-foreground">
-              <span className="inline-flex h-2 w-2 rounded-full bg-[hsl(var(--brand-green))]"></span>
-              Sem travar: salvamento de rascunho automático e exportação PNG do canvas.
+            <div className="mt-6 flex items-center gap-3 text-sm text-muted-foreground uppercase tracking-widest text-xs">
+              <span className="inline-block h-2 w-2 rounded-none bg-foreground border border-border"></span>
+              Sem travar: salvamento automático e exportação PNG.
             </div>
           </div>
 
           {/* Card de destaque */}
-          <div className="section-soft p-5 md:p-6 border shadow-sm">
-            <h3 className="text-xl font-semibold">Como funciona?</h3>
-            <ol className="mt-3 space-y-2 text-sm text-muted-foreground list-decimal pl-5">
+          <div className="border border-border bg-background p-5 md:p-6 shadow-none">
+            <h3 className="text-xl font-brandHeading uppercase tracking-widest">Como funciona?</h3>
+            <ol className="mt-4 space-y-3 text-sm text-muted-foreground list-decimal pl-5">
               <li>Escolha a peça e o modelo.</li>
-              <li>Brinque com formas, pincéis e cores (2D).</li>
-              <li>Veja o resultado aplicado em 3D.</li>
-              <li>Exporte ou salve o rascunho para continuar depois.</li>
+              <li>Brinque com formas, pincéis e cores.</li>
+              <li>Veja o resultado no 3D.</li>
+              <li>Exporte ou salve o projeto para mais tarde.</li>
             </ol>
-            <div className="mt-4 grid grid-cols-3 gap-2">
-              <div className="h-16 rounded-lg bg-white border flex items-center justify-center">
-                <span className="text-xs">Formas</span>
+            <div className="mt-6 grid grid-cols-3 gap-0 border border-border">
+              <div className="h-16 bg-background border-r border-border flex items-center justify-center">
+                <span className="text-xs uppercase tracking-widest">Formas</span>
               </div>
-              <div className="h-16 rounded-lg bg-white border flex items-center justify-center">
-                <span className="text-xs">Pincéis</span>
+              <div className="h-16 bg-background border-r border-border flex items-center justify-center">
+                <span className="text-xs uppercase tracking-widest">Pincéis</span>
               </div>
-              <div className="h-16 rounded-lg bg-white border flex items-center justify-center">
-                <span className="text-xs">3D</span>
+              <div className="h-16 bg-background flex items-center justify-center">
+                <span className="text-xs uppercase tracking-widest">3D</span>
               </div>
             </div>
           </div>
@@ -98,22 +93,17 @@ export default function Index() {
 function Feature({
   title,
   desc,
-  color
 }: {
   title: string
   desc: string
   color: string
 }) {
   return (
-    <div className="relative overflow-hidden rounded-2xl border bg-white p-6">
-      <div
-        aria-hidden
-        className={`pointer-events-none absolute -right-8 -top-12 h-28 w-28 rounded-full blur-2xl opacity-50 bg-gradient-to-br ${color}`}
-      />
-      <h4 className="text-lg font-semibold">{title}</h4>
+    <div className="relative overflow-hidden rounded-none border border-border bg-background p-6">
+      <h4 className="text-lg font-brandHeading uppercase tracking-widest">{title}</h4>
       <p className="mt-2 text-sm text-muted-foreground">{desc}</p>
-      <div className="mt-4">
-        <Button variant="ghost" rounded="full" className="gap-1">
+      <div className="mt-6">
+        <Button variant="outline" className="gap-1 rounded-none uppercase tracking-widest text-xs h-8">
           Explorar
           <span aria-hidden>→</span>
         </Button>

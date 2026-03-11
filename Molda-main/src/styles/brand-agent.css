@@ -1,27 +1,27 @@
 :root {
   --brand-grain-shift-x: 0px;
   --brand-grain-shift-y: 0px;
-  --brand-primary: #962CDD;
-  --brand-secondary: #C3289F;
-  --brand-accent: #67DA1B;
-  --brand-bg: #FAF8FB;
-  --brand-surface: #F3F0F5;
-  --brand-text: #2B1F33;
-  --brand-muted: #5E4F69;
-  --brand-border: #D8D0DD;
+  --brand-primary: #111111;
+  --brand-secondary: #333333;
+  --brand-accent: #666666;
+  --brand-bg: #FAFAFA;
+  --brand-surface: #F5F5F5;
+  --brand-text: #111111;
+  --brand-muted: #888888;
+  --brand-border: #E5E5E5;
 
-  --brand-primary-hsl: 276 72% 52%;
-  --brand-secondary-hsl: 314 66% 46%;
-  --brand-accent-hsl: 96 78% 48%;
-  --brand-bg-hsl: 276 30% 98%;
-  --brand-surface-hsl: 276 20% 95%;
-  --brand-text-hsl: 276 24% 16%;
-  --brand-muted-hsl: 276 14% 36%;
-  --brand-border-hsl: 276 16% 84%;
+  --brand-primary-hsl: 0 0% 9%;
+  --brand-secondary-hsl: 0 0% 20%;
+  --brand-accent-hsl: 0 0% 40%;
+  --brand-bg-hsl: 0 0% 98%;
+  --brand-surface-hsl: 0 0% 96%;
+  --brand-text-hsl: 0 0% 9%;
+  --brand-muted-hsl: 0 0% 50%;
+  --brand-border-hsl: 0 0% 90%;
 
-  --font-brand-heading: "Sora";
-  --font-brand-body: "Inter";
-  --font-brand-accent: "Plus Jakarta Sans";
+  --font-brand-heading: "Archivo Black", sans-serif;
+  --font-brand-body: "Space Grotesk", sans-serif;
+  --font-brand-accent: "Space Grotesk", sans-serif;
 
   --background: var(--brand-bg-hsl);
   --foreground: var(--brand-text-hsl);
@@ -43,8 +43,8 @@
 }
 
 .dark {
-  --primary: var(--brand-accent-hsl);
-  --ring: var(--brand-accent-hsl);
+  --primary: var(--brand-bg-hsl);
+  --ring: var(--brand-bg-hsl);
 }
 
 .brand-black-base {
@@ -54,25 +54,7 @@
 .brand-pattern-grid {
   background-color: var(--brand-bg);
   background-image:
-    linear-gradient(to right, color-mix(in srgb, var(--brand-primary) 18%, transparent) 1px, transparent 1px),
-    linear-gradient(to bottom, color-mix(in srgb, var(--brand-primary) 18%, transparent) 1px, transparent 1px);
-  background-size: 24px 24px;
-  transition: background-size 280ms ease;
-}
-
-.brand-pattern-grid:hover {
-  background-size: 18px 18px;
-}
-
-.brand-pattern-aurora {
-  background: radial-gradient(circle at 18% 22%, color-mix(in srgb, var(--brand-accent) 34%, transparent), transparent 45%),
-              radial-gradient(circle at 82% 26%, color-mix(in srgb, var(--brand-secondary) 30%, transparent), transparent 42%),
-              radial-gradient(circle at 48% 84%, color-mix(in srgb, var(--brand-primary) 28%, transparent), transparent 46%),
-              var(--brand-bg);
-  animation: brandFloat 8s ease-in-out infinite alternate;
-}
-
-@keyframes brandFloat {
-  from { filter: hue-rotate(0deg) saturate(1); }
-  to { filter: hue-rotate(16deg) saturate(1.06); }
+    linear-gradient(to right, color-mix(in srgb, var(--brand-primary) 5%, transparent) 1px, transparent 1px),
+    linear-gradient(to bottom, color-mix(in srgb, var(--brand-primary) 5%, transparent) 1px, transparent 1px);
+  background-size: 40px 40px;
 }

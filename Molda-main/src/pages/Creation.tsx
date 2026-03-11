@@ -10,6 +10,7 @@ import FloatingEditorToolbar from "../components/FloatingEditorToolbar";
 import TextToolbar from "../components/TextToolbar";
 import ImageToolbar from "../components/ImageToolbar";
 import { useRecentFonts } from "../hooks/use-recent-fonts";
+import { EyeTabDivider } from "../components/ui/EyeTabDivider";
 
 import Editor2D, {
   Editor2DHandle,
@@ -1498,10 +1499,16 @@ const Creation = () => {
   useEffect(() => {
     if (prevTabRef.current && prevTabRef.current !== activeCanvasTab) {
       void saveActiveTabSnapshot(prevTabRef.current);
+
+      if (activeCanvasTab === "3d") {
+        const visible2DTabs = canvasTabsRef.current.filter(t => t.type === "2d" && tabVisibilityRef.current[t.id]);
+        Promise.all(visible2DTabs.map(t => captureTabImage(t.id))).catch(() => { });
+      }
+
       void saveDraft();
     }
     prevTabRef.current = activeCanvasTab;
-  }, [activeCanvasTab, saveActiveTabSnapshot, saveDraft]);
+  }, [activeCanvasTab, saveActiveTabSnapshot, saveDraft, captureTabImage]);
 
   useEffect(() => {
     if (user?.id && pendingRemotePayloadRef.current) {
@@ -1541,15 +1548,15 @@ const Creation = () => {
   };
 
   return (
-    <div className="h-[100dvh] overflow-hidden flex flex-col">
+    <div className="h-[100dvh] overflow-hidden flex flex-col bg-background">
       <Header />
 
-      <main className="flex-1 min-h-0 w-full mx-auto max-w-[1400px] 2xl:max-w-[1680px] px-3 sm:px-4 md:px-6 lg:px-8 xl:px-10 2xl:px-12 py-4">
-        {/* Layout responsivo: empilha no mobile, 2 colunas no desktop */}
-        <section className="grid h-full min-h-0 overflow-hidden gap-4 lg:gap-5 xl:gap-6 grid-cols-1 [grid-template-rows:auto_minmax(0,1fr)] lg:[grid-template-rows:1fr] lg:[grid-template-columns:max-content_minmax(0,1fr)]">
+      <main className="flex-1 min-h-0 w-full overflow-hidden">
+        {/* Layout responsivo: empilha no mobile, 2 colunas no desktop, sem espaços (brutalismo) */}
+        <section className="grid h-full w-full min-h-0 overflow-hidden grid-cols-1 [grid-template-rows:auto_minmax(0,1fr)] lg:[grid-template-rows:1fr] lg:[grid-template-columns:300px_minmax(0,1fr)]">
 
-          {/* Sidebar toma 100% da altura do grid */}
-          <div className="h-auto lg:h-full min-h-0 min-w-0 max-h-[40dvh] lg:max-h-none overflow-y-hidden overflow-x-visible">
+          {/* Sidebar toma 100% da altura do grid. Borda a direita no lg */}
+          <div className="h-auto lg:h-full min-h-0 min-w-0 max-h-[40dvh] lg:max-h-none overflow-y-auto overflow-x-hidden border-b lg:border-b-0 lg:border-r border-border">
             <ExpandableSidebar
               projectId={draftId}
               projectName={projectName}
@@ -1635,31 +1642,16 @@ const Creation = () => {
             />
           </div>
 
-          {/* Coluna direita: sem cabeçalho acima do canvas para alinhar o topo */}
-          <div className="flex flex-col h-full min-w-0 min-h-0">
-            {/* === ÁREA DO CANVAS (preenche toda altura) === */}
-            <div className="relative w-full flex-1 min-h-0 glass rounded-2xl border shadow-xl overflow-hidden min-w-0">
-              {!isDraftPermanent && (
-                <div className="absolute right-4 top-4 z-30 flex">
-                  <Button
-                    type="button"
-                    variant="outline"
-                    size="sm"
-                    onClick={() => {
-                      void saveDraft({ immediateRemote: true, markPermanent: true });
-                    }}
-                  >
-                    Salvar rascunho
-                  </Button>
-                </div>
-              )}
-              {/* Abas do canvas — divididas em "Na peça" e "Somente canvas" com drag customizado */}
-              <div
-                ref={tabContainerRef}
-                className="absolute left-4 top-4 z-20 rounded-xl p-1.5 carousel-item-enter inline-flex min-w-0 max-w-[calc(100%-2rem)] overflow-hidden"
-                style={{ position: "absolute" }}
-              >
-                <div className="flex flex-nowrap items-stretch gap-0 min-w-0 max-w-full whitespace-nowrap relative">
+          {/* Coluna direita: canvas e ferramentas */}
+          <div className="flex flex-col h-full min-w-0 min-h-0 bg-background relative">
+
+            {/* Abas do canvas — Docked no topo separadas por 1px */}
+            <div
+              ref={tabContainerRef}
+              className="w-full flex-none flex items-center border-b border-border bg-background p-2 z-20 overflow-x-auto overflow-y-hidden"
+            >
+              <div className="flex items-center w-full justify-between">
+                <div className="flex flex-nowrap items-stretch gap-0 whitespace-nowrap relative">
                   {/* === Seção: Na peça (visível no 3D) === */}
                   <div
                     ref={visibleSectionRef}
@@ -1760,8 +1752,8 @@ const Creation = () => {
                     })()}
                   </div>
 
-                  {/* Divisor vertical */}
-                  <div className="w-px bg-white/20 mx-1 my-1 self-stretch" />
+                  {/* Divisor vertical animado (O Olho) */}
+                  <EyeTabDivider isDragging={!!draggedTabId} />
 
                   {/* === Seção: Somente canvas (não projetado no 3D) === */}
                   <div
@@ -1855,9 +1847,25 @@ const Creation = () => {
                   );
                 })()}
               </div>
+              {!isDraftPermanent && (
+                <div className="flex-none ml-4 flex items-center pr-2">
+                  <Button
+                    type="button"
+                    variant="outline"
+                    size="sm"
+                    className="rounded-none uppercase tracking-widest text-xs h-8 px-4"
+                    onClick={() => {
+                      void saveDraft({ immediateRemote: true, markPermanent: true });
+                    }}
+                  >
+                    Salvar rascunho
+                  </Button>
+                </div>
+              )}
+            </div>
 
-              {/* opcional: “chip” com part/subtype SEM deslocar o layout */}
-              {/* Canvas ocupa toda a área — manter 3D e 2D sempre montados */}
+            {/* === ÁREA DO CANVAS (preenche a altura RESTANTE) === */}
+            <div className="relative w-full flex-1 min-h-0 overflow-hidden min-w-0 bg-background">
               <div
                 className="absolute inset-0"
                 style={{
@@ -2326,7 +2334,7 @@ const Creation = () => {
           </div>
         </section>
       </main>
-    </div>
+    </div >
   );
 };
 
