@@ -42,6 +42,18 @@ type CurveMeta = {
   opacity: number;
   fill: string | null;
 };
+
+/** Um ponto de cor em um degradê */
+export type GradientStop = { offset: number; color: string };
+
+/** Configuração de preenchimento com degradê */
+export type GradientFill = {
+  type: 'gradient';
+  gradientType: 'linear';
+  angle: number;          // 0-360
+  colorStops: GradientStop[];
+};
+
 export type TextStyle = Partial<{
   fontFamily: string;
   fontSize: number;
@@ -52,7 +64,7 @@ export type TextStyle = Partial<{
   charSpacing: number;
   underline: boolean;
   linethrough: boolean;
-  fill: string;
+  fill: string | GradientFill;
   stroke: string;
   strokeWidth: number;
   shadow: { color: string; blur: number; offsetX: number; offsetY: number } | null;
@@ -249,6 +261,8 @@ export type Editor2DHandle = {
   refresh: () => void;
   listUsedFonts: () => string[];
   waitForIdle: () => Promise<void>;
+  /** Aplica um degradê (GradientFill) como fill do objeto selecionado. */
+  applyGradientToSelection?: (gradient: GradientFill) => void;
 };
 
 type Props = {
@@ -6662,6 +6676,31 @@ const Editor2D = forwardRef<Editor2DHandle, Props>(function Editor2D(
       }
     } catch { }
 
+    // Detecta se o fill do objeto é um Gradient do Fabric.js
+    let fillResult: string | GradientFill = charStyle.fill ?? active.fill;
+    try {
+      const rawFill = active.fill;
+      if (rawFill && typeof rawFill === 'object' && rawFill.type === 'linear' && Array.isArray(rawFill.colorStops)) {
+        // Extrai ângulo a partir de coords (x1,y1,x2,y2)
+        const coords = rawFill.coords || {};
+        const x1 = Number(coords.x1 ?? 0);
+        const y1 = Number(coords.y1 ?? 0);
+        const x2 = Number(coords.x2 ?? 0);
+        const y2 = Number(coords.y2 ?? 0);
+        const angleRad = Math.atan2(y2 - y1, x2 - x1);
+        const angleDeg = ((angleRad * 180 / Math.PI) + 360) % 360;
+        fillResult = {
+          type: 'gradient',
+          gradientType: 'linear',
+          angle: Math.round(angleDeg),
+          colorStops: rawFill.colorStops.map((s: any) => ({
+            offset: Number(s.offset ?? 0),
+            color: String(s.color || '#000000'),
+          })),
+        };
+      }
+    } catch { }
+
     return {
       fontFamily: charStyle.fontFamily || active.fontFamily,
       fontSize: charStyle.fontSize ?? active.fontSize,
@@ -6669,7 +6708,7 @@ const Editor2D = forwardRef<Editor2DHandle, Props>(function Editor2D(
       fontStyle: charStyle.fontStyle ?? active.fontStyle,
       underline: !!(charStyle.underline ?? active.underline),
       linethrough: !!(charStyle.linethrough ?? active.linethrough),
-      fill: charStyle.fill ?? active.fill,
+      fill: fillResult,
       stroke: charStyle.stroke ?? active.stroke,
       strokeWidth: charStyle.strokeWidth ?? active.strokeWidth,
       textAlign: active.textAlign,
@@ -6701,10 +6740,44 @@ const Editor2D = forwardRef<Editor2DHandle, Props>(function Editor2D(
 
     const nextPatch: any = { ...patch };
     if (nextPatch.fontFamily == null) {
-      // Usa getActiveTextStyle que lê estilos no nível de caractere,
-      // não apenas active.fontFamily (nível de objeto, que pode ser o default "Inter")
       const liveStyle = getActiveTextStyle();
       nextPatch.fontFamily = liveStyle?.fontFamily || active.fontFamily || "Inter";
+    }
+
+    // ===== Gradient fill handling =====
+    // Se o fill for um GradientFill, converte para fabric.Gradient e aplica no objeto inteiro
+    const gradientFill = nextPatch.fill;
+    let fabricGradient: any = null;
+    if (gradientFill && typeof gradientFill === 'object' && gradientFill.type === 'gradient') {
+      try {
+        const fabric: any = fabricRef.current;
+        const angleRad = (gradientFill.angle || 0) * Math.PI / 180;
+        const objW = Number(active.width ?? 100);
+        const objH = Number(active.height ?? 100);
+        // Calcula coords a partir do ângulo
+        const cos = Math.cos(angleRad);
+        const sin = Math.sin(angleRad);
+        const halfW = objW / 2;
+        const halfH = objH / 2;
+        const x1 = halfW - cos * halfW;
+        const y1 = halfH - sin * halfH;
+        const x2 = halfW + cos * halfW;
+        const y2 = halfH + sin * halfH;
+        fabricGradient = new fabric.Gradient({
+          type: 'linear',
+          gradientUnits: 'pixels',
+          coords: { x1, y1, x2, y2 },
+          colorStops: (gradientFill.colorStops || []).map((s: any) => ({
+            offset: Number(s.offset ?? 0),
+            color: String(s.color || '#000000'),
+            opacity: 1,
+          })),
+        });
+      } catch (err) {
+        console.warn('[setActiveTextStyle] Failed to create gradient:', err);
+      }
+      // Remove fill do patch — será aplicado separadamente como objeto
+      delete nextPatch.fill;
     }
 
     const isIText = typeof active?.setSelectionStyles === "function";
@@ -6743,6 +6816,11 @@ const Editor2D = forwardRef<Editor2DHandle, Props>(function Editor2D(
       }
     } else {
       try { active.set(nextPatch); } catch { }
+    }
+
+    // Aplica gradiente no objeto inteiro (sempre object-level, nunca per-char)
+    if (fabricGradient) {
+      try { active.set('fill', fabricGradient); } catch { }
     }
 
     try { active.setCoords?.(); } catch { }
@@ -10365,6 +10443,43 @@ const Editor2D = forwardRef<Editor2DHandle, Props>(function Editor2D(
     return Array.from(fonts);
   };
 
+  // ---- Aplica degradê a qualquer objeto selecionado ----
+  const applyGradientToSelection = (gfill: GradientFill) => {
+    const c: any = canvasRef.current;
+    if (!c) return;
+    const active: any = c.getActiveObject?.();
+    if (!active) return;
+    try {
+      const fabric: any = fabricRef.current;
+      const angleRad = (gfill.angle || 0) * Math.PI / 180;
+      const objW = Number(active.width ?? 100);
+      const objH = Number(active.height ?? 100);
+      const cos = Math.cos(angleRad);
+      const sin = Math.sin(angleRad);
+      const halfW = objW / 2;
+      const halfH = objH / 2;
+      const x1 = halfW - cos * halfW;
+      const y1 = halfH - sin * halfH;
+      const x2 = halfW + cos * halfW;
+      const y2 = halfH + sin * halfH;
+      const grad = new fabric.Gradient({
+        type: 'linear',
+        gradientUnits: 'pixels',
+        coords: { x1, y1, x2, y2 },
+        colorStops: (gfill.colorStops || []).map((s: any) => ({
+          offset: Number(s.offset ?? 0),
+          color: String(s.color || '#000000'),
+          opacity: 1,
+        })),
+      });
+      active.set('fill', grad);
+      active.setCoords?.();
+      c.requestRenderAll?.();
+    } catch (err) {
+      console.warn('[applyGradientToSelection] Failed:', err);
+    }
+  };
+
   useImperativeHandle(ref, () => ({
     clear,
     exportPNG,
@@ -10395,6 +10510,7 @@ const Editor2D = forwardRef<Editor2DHandle, Props>(function Editor2D(
     getActiveTextStyle,
     setActiveTextStyle,
     applyTextStyle,
+    applyGradientToSelection,
     getActiveImageAdjustments,
     applyActiveImageAdjustments,
     getActiveImageEffects,

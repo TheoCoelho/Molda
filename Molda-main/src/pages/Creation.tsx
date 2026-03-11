@@ -54,6 +54,7 @@ type DraftPayload = {
   tabVisibility: Record<string, boolean>;
   tabDecalPreviews: Record<string, string>;
   tabDecalPlacements: Record<string, DecalTransform>;
+  tabPrintTypes?: Record<string, string>;
   activeCanvasTab: string;
   savedAt: string;
   draftKey: string;
@@ -579,9 +580,11 @@ const Creation = () => {
   }, [computeVisibleInsertIndex, cacheVisibleTabRects, scheduleDragUpdate]);
   const [tabDecalPreviews, setTabDecalPreviews] = useState<Record<string, string>>({});
   const [tabDecalPlacements, setTabDecalPlacements] = useState<Record<string, DecalTransform>>({});
+  const [tabPrintTypes, setTabPrintTypes] = useState<Record<string, string>>({});
   const tabVisibilityRef = useRef<Record<string, boolean>>(tabVisibility);
   const tabDecalPreviewsRef = useRef<Record<string, string>>(tabDecalPreviews);
   const tabDecalPlacementsRef = useRef<Record<string, DecalTransform>>(tabDecalPlacements);
+  const tabPrintTypesRef = useRef<Record<string, string>>(tabPrintTypes);
   useEffect(() => {
     tabVisibilityRef.current = tabVisibility;
   }, [tabVisibility]);
@@ -591,6 +594,9 @@ const Creation = () => {
   useEffect(() => {
     tabDecalPlacementsRef.current = tabDecalPlacements;
   }, [tabDecalPlacements]);
+  useEffect(() => {
+    tabPrintTypesRef.current = tabPrintTypes;
+  }, [tabPrintTypes]);
 
   const captureTabImage = useCallback(async (tabId: string): Promise<string | null> => {
     const inst = editorRefs.current[tabId];
@@ -720,6 +726,11 @@ const Creation = () => {
       const placements = payload.tabDecalPlacements as Record<string, DecalTransform>;
       tabDecalPlacementsRef.current = placements;
       setTabDecalPlacements(placements);
+    }
+    if (payload.tabPrintTypes && typeof payload.tabPrintTypes === "object") {
+      const ptypes = payload.tabPrintTypes as Record<string, string>;
+      tabPrintTypesRef.current = ptypes;
+      setTabPrintTypes(ptypes);
     }
 
     if (typeof payload.isPermanent === "boolean") {
@@ -1401,6 +1412,7 @@ const Creation = () => {
       tabVisibility: tabVisibilityRef.current,
       tabDecalPreviews: tabDecalPreviewsRef.current,
       tabDecalPlacements: tabDecalPlacementsRef.current,
+      tabPrintTypes: tabPrintTypesRef.current,
       activeCanvasTab,
       savedAt: nowIso,
       draftKey,
@@ -1547,13 +1559,24 @@ const Creation = () => {
     })();
   };
 
+  const visibleTabsWithPreviews = useMemo(() => {
+    return canvasTabs
+      .filter((t) => t.type === "2d" && tabVisibility[t.id])
+      .map((t) => ({
+        id: t.id,
+        name: t.name,
+        type: t.type as "2d" | "3d",
+        dataUrl: tabDecalPreviews[t.id] ?? null,
+      }));
+  }, [canvasTabs, tabVisibility, tabDecalPreviews]);
+
   return (
     <div className="h-[100dvh] overflow-hidden flex flex-col bg-background">
       <Header />
 
       <main className="flex-1 min-h-0 w-full overflow-hidden">
         {/* Layout responsivo: empilha no mobile, 2 colunas no desktop, sem espaços (brutalismo) */}
-        <section className="grid h-full w-full min-h-0 overflow-hidden grid-cols-1 [grid-template-rows:auto_minmax(0,1fr)] lg:[grid-template-rows:1fr] lg:[grid-template-columns:300px_minmax(0,1fr)]">
+        <section className="grid h-full w-full min-h-0 overflow-hidden grid-cols-1 [grid-template-rows:auto_minmax(0,1fr)] lg:[grid-template-rows:1fr] lg:[grid-template-columns:auto_minmax(0,1fr)] overflow-x-hidden">
 
           {/* Sidebar toma 100% da altura do grid. Borda a direita no lg */}
           <div className="h-auto lg:h-full min-h-0 min-w-0 max-h-[40dvh] lg:max-h-none overflow-y-auto overflow-x-hidden border-b lg:border-b-0 lg:border-r border-border">
@@ -1567,6 +1590,11 @@ const Creation = () => {
               setSize={setSize}
               fabric={fabric}
               setFabric={setFabric}
+              tabPrintTypes={tabPrintTypes}
+              setTabPrintType={(tabId, value) => {
+                setTabPrintTypes((prev) => ({ ...prev, [tabId]: value }));
+              }}
+              visibleTabs={visibleTabsWithPreviews}
               onExpandChange={() => { }}
               tool={tool}
               setTool={setTool}
@@ -1648,9 +1676,9 @@ const Creation = () => {
             {/* Abas do canvas — Docked no topo separadas por 1px */}
             <div
               ref={tabContainerRef}
-              className="w-full flex-none flex items-center border-b border-border bg-background p-2 z-20 overflow-x-auto overflow-y-hidden"
+              className="w-full flex-none flex items-center border-b border-border bg-background p-2 z-20 overflow-x-auto overflow-y-hidden relative"
             >
-              <div className="flex items-center w-full justify-between">
+              <div className="flex items-center w-full justify-between relative">
                 <div className="flex flex-nowrap items-stretch gap-0 whitespace-nowrap relative">
                   {/* === Seção: Na peça (visível no 3D) === */}
                   <div
@@ -1673,7 +1701,7 @@ const Creation = () => {
                           items.push(
                             <div
                               key="drop-placeholder"
-                              className="w-14 h-8 rounded-lg border-2 border-dashed border-blue-400/50 bg-blue-400/10 shrink-0 transition-all duration-200"
+                              className="w-14 h-8 rounded-lg bg-blue-400/10 shrink-0 transition-all duration-200"
                             />
                           );
                         }
@@ -1743,7 +1771,7 @@ const Creation = () => {
                         items.push(
                           <div
                             key="drop-placeholder"
-                            className="w-14 h-8 rounded-lg border-2 border-dashed border-blue-400/50 bg-blue-400/10 shrink-0 transition-all duration-200"
+                            className="w-14 h-8 rounded-lg bg-blue-400/10 shrink-0 transition-all duration-200"
                           />
                         );
                       }
@@ -1763,7 +1791,7 @@ const Creation = () => {
                     title="Somente canvas"
                   >
                     {draggedTabId && dragOverSection === "hidden" && !!tabVisibility[draggedTabId] && (
-                      <div className="w-14 h-8 rounded-lg border-2 border-dashed border-slate-400/50 bg-slate-400/10 shrink-0 transition-all duration-200" />
+                      <div className="w-14 h-8 rounded-lg bg-slate-400/10 shrink-0 transition-all duration-200" />
                     )}
                     {canvasTabs.filter((t) => t.type === "2d" && !tabVisibility[t.id]).map((tab) => {
                       const isDragging = draggedTabId === tab.id;
@@ -1771,7 +1799,7 @@ const Creation = () => {
                       return (
                         <div key={tab.id} className="flex items-center">
                           {isDragging && dragOverSection === "hidden" && (
-                            <div className="w-14 h-8 rounded-lg border-2 border-dashed border-slate-400/50 bg-slate-400/10 shrink-0 transition-all duration-200" />
+                            <div className="w-14 h-8 rounded-lg bg-slate-400/10 shrink-0 transition-all duration-200" />
                           )}
                           <div
                             onPointerDown={(e) => handleTabPointerDown(e, tab.id)}
@@ -1916,6 +1944,7 @@ const Creation = () => {
                       onRedo={activeIs2D ? () => editorRefs.current[activeCanvasTab]?.redo?.() : undefined}
                       canUndo={canUndo}
                       canRedo={canRedo}
+                      onApplyGradient={(gradient) => editorRefs.current[activeCanvasTab]?.applyGradientToSelection?.(gradient)}
                     />
                   )}
                 </div>
@@ -2196,6 +2225,7 @@ const Creation = () => {
                                 onRedo={activeIs2D ? () => editorRefs.current[activeCanvasTab]?.redo?.() : undefined}
                                 canUndo={canUndo}
                                 canRedo={canRedo}
+                                onApplyGradient={(gradient) => editorRefs.current[activeCanvasTab]?.applyGradientToSelection?.(gradient)}
                               />
                             </div>
                           </div>

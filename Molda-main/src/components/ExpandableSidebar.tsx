@@ -222,6 +222,9 @@ interface ExpandableSidebarProps {
   setSize: (value: string) => void;
   fabric: string;
   setFabric: (value: string) => void;
+  tabPrintTypes?: Record<string, string>;
+  setTabPrintType?: (tabId: string, value: string) => void;
+  visibleTabs?: { id: string; name: string; type: "2d" | "3d"; dataUrl: string | null }[];
   onExpandChange?: (isExpanded: boolean) => void;
 
   // Editor 2D
@@ -285,6 +288,9 @@ const ExpandableSidebar: React.FC<ExpandableSidebarProps> = (props) => {
     setSize,
     fabric,
     setFabric,
+    tabPrintTypes,
+    setTabPrintType,
+    visibleTabs,
     onExpandChange,
     tool,
     setTool,
@@ -380,10 +386,9 @@ const ExpandableSidebar: React.FC<ExpandableSidebarProps> = (props) => {
       {/* Painel de conteúdo */}
       {isExpanded && (
         <div
-          className={`flex-1 min-w-0 min-h-0 max-h-full overflow-hidden flex flex-col ${activeSection === "brush" ? "p-0" : "p-4"
-            }`}
+          className={`flex-1 min-w-0 min-h-0 max-h-full overflow-hidden flex flex-col`}
         >
-          <div className={activeSection === "brush" ? "flex h-full flex-1 min-h-0 max-h-full flex-col px-2" : "flex-1 overflow-y-auto rounded-2xl p-6"}>
+          <div className={activeSection === "brush" ? "flex h-full flex-1 min-h-0 max-h-full flex-col px-2" : "flex-1 overflow-y-auto rounded-2xl p-4 lg:p-6 pb-2"}>
             {activeSection === "settings" && (
               <SettingsContent
                 projectId={projectId}
@@ -395,6 +400,9 @@ const ExpandableSidebar: React.FC<ExpandableSidebarProps> = (props) => {
                 setSize={setSize}
                 fabric={fabric}
                 setFabric={setFabric}
+                tabPrintTypes={tabPrintTypes}
+                setTabPrintType={setTabPrintType}
+                visibleTabs={visibleTabs}
               />
             )}
             {activeSection === "upload" && (
@@ -470,8 +478,11 @@ function SettingsContent(props: {
   setSize: (v: string) => void;
   fabric: string;
   setFabric: (v: string) => void;
+  tabPrintTypes?: Record<string, string>;
+  setTabPrintType?: (tabId: string, value: string) => void;
+  visibleTabs?: { id: string; name: string; type: "2d" | "3d"; dataUrl: string | null }[];
 }) {
-  const { projectId, projectName, setProjectName, baseColor, setBaseColor, size, setSize, fabric, setFabric } = props;
+  const { projectId, projectName, setProjectName, baseColor, setBaseColor, size, setSize, fabric, setFabric, tabPrintTypes, setTabPrintType, visibleTabs } = props;
   const placeholderName = generateCreativeName(projectId ?? undefined);
   return (
     <div className="space-y-4">
@@ -508,11 +519,44 @@ function SettingsContent(props: {
           </select>
         </div>
       </div>
-      <div>
-        <Label htmlFor="notes">Observações</Label>
-        <Textarea id="notes" placeholder="Algum detalhe importante..." value={""} onChange={() => { }} />
-        <p className="text-xs text-gray-500 mt-1">(Campo livre — não conectado à lógica por enquanto)</p>
-      </div>
+      
+      {visibleTabs && visibleTabs.length > 0 && (
+        <div className="mt-6 -mx-4 lg:-mx-6">
+          <h4 className="text-md font-semibold text-gray-800 mb-3 border-b pb-2 px-4 lg:px-6">Técnicas de Estamparia</h4>
+          <div className="space-y-4 px-4 lg:px-6">
+            {visibleTabs.map((tab) => (
+              <div key={tab.id} className="flex items-stretch bg-gray-50 rounded-lg border overflow-hidden">
+                {/* Preview Thumbnail */}
+                <div className="w-[100px] flex-shrink-0 bg-white border-r p-0 overflow-hidden flex items-center justify-center">
+                  {tab.dataUrl ? (
+                    <img src={tab.dataUrl} alt={tab.name} className="w-full h-full object-cover" />
+                  ) : (
+                    <span className="text-xs text-gray-400 p-2">Sem Img</span>
+                  )}
+                </div>
+                
+                {/* Info & Select */}
+                <div className="flex-1 min-w-0 p-3">
+                  <p className="text-sm font-semibold text-gray-800 truncate mb-1.5" title={tab.name}>
+                    {tab.name}
+                  </p>
+                  <select
+                    className="w-full px-2 py-1.5 border rounded text-xs bg-white text-gray-700 focus:outline-none focus:ring-1 focus:ring-black cursor-pointer"
+                    value={tabPrintTypes?.[tab.id] || "Dtf"}
+                    onChange={(e) => setTabPrintType?.(tab.id, e.target.value)}
+                  >
+                    <option value="Dtf">DTF</option>
+                    <option value="Bordado">Bordado</option>
+                    <option value="Silk">Silk Screen</option>
+                    <option value="Sublimação">Sublimação</option>
+                    <option value="Transfer">Transfer</option>
+                  </select>
+                </div>
+              </div>
+            ))}
+          </div>
+        </div>
+      )}
     </div>
   );
 }
