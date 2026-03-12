@@ -74,7 +74,7 @@ const Header = () => {
 
   return (
     <header className="sticky top-0 z-40 w-full border-b glass-strong">
-      <div className="container mx-auto px-6 h-16 flex items-center justify-between">
+      <div className="mx-auto w-full max-w-7xl px-4 sm:px-6 lg:px-10 xl:px-16 2xl:px-24 h-16 flex items-center justify-between">
         <Link to="/" className="inline-flex items-center gap-2">
           <div className="h-7 w-7 rounded-lg bg-[linear-gradient(135deg,hsl(var(--primary))_0%,hsl(var(--brand-keppel))_100%)]" />
           <span className="font-semibold tracking-tight">Molda</span>

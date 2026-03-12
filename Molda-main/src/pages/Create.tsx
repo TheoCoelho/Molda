@@ -853,18 +853,29 @@ const Create = () => {
   };
 
   return (
-    <div className="min-h-screen">
+    <div className="min-h-screen bg-background flex flex-col">
       <Header />
 
-      <main className="mx-auto w-full max-w-6xl px-4 sm:px-6 lg:px-10 xl:px-16 2xl:px-24 py-10">
-        <div className="flex flex-col">
+      <main className="mx-auto w-full max-w-7xl px-4 sm:px-6 lg:px-8 py-2 md:py-4 flex-1 flex flex-col">
+        <div className="flex flex-col flex-1">
           <Tabs
             value={viewMode}
             onValueChange={(value: string) => setViewMode(value as ViewMode)}
-            className="mt-6"
+            className="flex flex-col flex-1 mt-2 md:mt-4"
           >
-            <div className="flex flex-col gap-4 md:flex-row md:items-center md:justify-between">
+            <div className="flex flex-col gap-4 md:flex-row md:items-end md:justify-between">
               <div className="w-full md:max-w-xl">
+                {viewMode === "create" ? (
+                  <div className="wizard-step__title mb-2 text-left">
+                    {currentStep === 1 && "Escolha a parte do corpo"}
+                    {currentStep === 2 && "Escolha o tipo de peca"}
+                    {currentStep === 3 && "Escolha a especificacao"}
+                  </div>
+                ) : viewMode === "drafts" ? (
+                  <div className="wizard-step__title mb-2 text-left">
+                    Escolha seu rascunho
+                  </div>
+                ) : null}
                 <Input
                   value={searchQuery}
                   onChange={(event) => setSearchQuery(event.target.value)}
@@ -892,7 +903,7 @@ const Create = () => {
 
             <TabsContent
               value="create"
-              className={`mt-6 ${viewTransitionDirection === "right" && viewMode === "create" ? "slide-in-right" : ""
+              className={`flex-1 flex flex-col pt-2 md:pt-6 ${viewTransitionDirection === "right" && viewMode === "create" ? "slide-in-right" : ""
                 }`}
             >
               {searchActive && searchMatch.mode === "empty" && (
@@ -912,7 +923,7 @@ const Create = () => {
                 </div>
               )}
 
-              <div key={`step-${currentStep}`} className="wizard-step mt-8">
+              <div key={`step-${currentStep}`} className="wizard-step flex-1 flex flex-col justify-center">
                 {currentStep === 1 && (
                   <div>
                     {showMannequin && (
@@ -925,7 +936,6 @@ const Create = () => {
                         />
                       </div>
                     )}
-                    <div className="wizard-step__title">Escolha a parte do corpo</div>
                     {bodyPartOptions.length <= 3
                       ? renderStaticCards(bodyPartOptions, selectedPart, (id) =>
                         handleSelectPart(id)
@@ -945,7 +955,6 @@ const Create = () => {
 
                 {currentStep === 2 && (
                   <div>
-                    <div className="wizard-step__title">Escolha o tipo de peca</div>
                     {typeCarouselItems.length <= 3
                       ? renderStaticCards(typeCarouselItems, selectedType, (id) => handleSelectType(id))
                       : (
@@ -969,7 +978,6 @@ const Create = () => {
 
                 {currentStep === 3 && (
                   <div>
-                    <div className="wizard-step__title">Escolha a especificacao</div>
                     {searchActive && searchMatch.mode === "subtype"
                       ? renderStaticCards(
                         searchSubtypeCardItems,
@@ -993,7 +1001,7 @@ const Create = () => {
                 )}
               </div>
 
-              <div className="mt-12 flex flex-wrap items-center gap-3">
+              <div className="mt-auto pt-4 flex flex-wrap items-center gap-3">
                 <Button variant="outline" className="px-6 rounded-none tracking-widest uppercase text-xs h-10" onClick={handleStepBack}>
                   Voltar
                 </Button>
@@ -1013,11 +1021,12 @@ const Create = () => {
 
             <TabsContent
               value="drafts"
-              className={`mt-6 ${viewTransitionDirection === "left" && viewMode === "drafts" ? "slide-in-left" : ""
+              className={`flex-1 flex flex-col pt-2 md:pt-6 ${viewTransitionDirection === "left" && viewMode === "drafts" ? "slide-in-left" : ""
                 }`}
             >
-              <div className="grid gap-6 lg:grid-cols-[minmax(260px,320px)_1fr] lg:items-start">
-                <div className="space-y-3 max-h-[calc(100vh-280px)] overflow-y-auto pr-2 scrollbar-soft">
+              <div className="flex flex-col lg:flex-row gap-0 flex-1 items-stretch min-h-[650px] pb-8">
+                <div className="w-full lg:w-[450px] shrink-0 flex flex-col">
+                  <div className="space-y-3 h-[400px] lg:h-[700px] overflow-y-auto scrollbar-soft">
                   {draftsLoading ? (
                     <div className="space-y-3">
                       <div className="h-14 bg-muted/30 animate-pulse border border-border" />
@@ -1102,9 +1111,10 @@ const Create = () => {
                       })}
                     </ul>
                   )}
+                  </div>
                 </div>
 
-                <div className="relative flex items-center justify-center border shadow-none bg-background h-[calc(100vh-280px)] min-h-[500px]">
+                <div className="w-full flex-1 shrink-0 relative flex items-center justify-center border shadow-none bg-background min-h-[400px] lg:min-h-[700px]">
                   {!render3DViewer ? (
                     <div className="flex flex-col items-center gap-3">
                       <div className="h-10 w-10 animate-spin rounded-full border-4 border-muted border-t-primary" />
