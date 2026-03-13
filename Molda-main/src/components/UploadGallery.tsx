@@ -15,7 +15,7 @@ import {
   DialogClose,
 } from "../components/ui/dialog";
 
-import { FileImage, Loader2 } from "lucide-react";
+import { Earth, FileImage, Loader2 } from "lucide-react";
 import { toast } from "sonner";
 
 
@@ -24,6 +24,7 @@ type GalleryItem = {
   previewUrl: string;   // URL (assinada ou pública)
   originalName: string;
   sortKey: string;      // 17 dígitos do timestamp no nome (string)
+  isPublic: boolean;
 };
 
 const slugify = (s: string) =>
@@ -79,6 +80,20 @@ export default function UploadGallery({ onImageInsert }: Props) {
   const [selectedFile, setSelectedFile] = useState<File | null>(null);
   const [previewUrl, setPreviewUrl] = useState<string | null>(null);
   const [isSaving, setIsSaving] = useState(false);
+  const [isPublicUpload, setIsPublicUpload] = useState(false);
+
+  const upsertGalleryVisibility = async (storagePath: string, visible: boolean) => {
+    if (!supabase || !user) return;
+    const { error } = await supabase.from("gallery_visibility").upsert(
+      {
+        user_id: user.id,
+        storage_path: storagePath,
+        is_public: visible,
+      },
+      { onConflict: "user_id,storage_path" }
+    );
+    if (error) throw error;
+  };
 
   const [brightness, setBrightness] = useState(100);
   const [contrast, setContrast] = useState(100);
@@ -211,6 +226,19 @@ export default function UploadGallery({ onImageInsert }: Props) {
       // Ordena por nome desc (nomes começam com timestamp)
       const ordered = (files || []).slice().sort((a, b) => (a.name < b.name ? 1 : a.name > b.name ? -1 : 0));
 
+      const { data: visibilityRows, error: visibilityError } = await supabase
+        .from("gallery_visibility")
+        .select("storage_path,is_public")
+        .eq("user_id", user.id);
+
+      if (visibilityError && visibilityError.code !== "42P01") {
+        throw visibilityError;
+      }
+
+      const visibilityMap = new Map<string, boolean>(
+        (visibilityRows || []).map((row: any) => [String(row.storage_path), Boolean(row.is_public)])
+      );
+
       const items: GalleryItem[] = [];
       for (const f of ordered) {
         const fullPath = `${prefix}/${f.name}`;
@@ -229,6 +257,7 @@ export default function UploadGallery({ onImageInsert }: Props) {
           previewUrl,
           originalName: f.name.replace(/^(\d{17})-/, ""),
           sortKey: f.name.slice(0, 17),
+          isPublic: visibilityMap.get(fullPath) ?? false,
         });
       }
 
@@ -267,6 +296,7 @@ export default function UploadGallery({ onImageInsert }: Props) {
         previewUrl: detail.previewUrl,
         originalName: detail.originalName || "imagem.png",
         sortKey: detail.sortKey || "",
+        isPublic: Boolean((detail as any).isPublic),
       };
 
       setGallery((prev) => [item, ...prev.filter((p) => p.id !== item.id)]);
@@ -281,12 +311,14 @@ export default function UploadGallery({ onImageInsert }: Props) {
       setIsSaving(true);
       const dataUrl = await exportWithFiltersToDataUrl();
       const saved = await uploadToSupabase(dataUrl);
+      await upsertGalleryVisibility(saved.path, isPublicUpload);
       setGallery((prev) => [
         {
           id: saved.path,
           previewUrl: saved.previewUrl,
           originalName: saved.originalName,
           sortKey: saved.path.split("/").pop()!.slice(0, 17),
+          isPublic: isPublicUpload,
         },
         ...prev,
       ]);
@@ -295,6 +327,7 @@ export default function UploadGallery({ onImageInsert }: Props) {
       if (previewUrl) URL.revokeObjectURL(previewUrl);
       setPreviewUrl(null);
       setSelectedFile(null);
+      setIsPublicUpload(false);
       resetFilters();
 } catch (err: any) {
   console.error("[handleConfirm]", err);
@@ -310,6 +343,7 @@ export default function UploadGallery({ onImageInsert }: Props) {
     if (previewUrl) URL.revokeObjectURL(previewUrl);
     setPreviewUrl(null);
     setSelectedFile(null);
+    setIsPublicUpload(false);
     resetFilters();
   };
 
@@ -419,6 +453,25 @@ export default function UploadGallery({ onImageInsert }: Props) {
 
             {/* Ferramentas horizontais */}
             <div className="flex flex-col gap-4">
+              <div className="flex items-center justify-between rounded-md border px-3 py-2">
+                <span className="text-sm">Visibilidade</span>
+                <Button
+                  type="button"
+                  variant="outline"
+                  size="icon"
+                  onClick={() => setIsPublicUpload((prev) => !prev)}
+                  title={isPublicUpload ? "Público" : "Não público"}
+                  aria-label={isPublicUpload ? "Definir como não público" : "Definir como público"}
+                >
+                  <span className={`relative inline-flex transition-transform duration-500 ${isPublicUpload ? "rotate-180" : "rotate-0"}`}>
+                    <Earth className="h-4 w-4" />
+                    {!isPublicUpload && (
+                      <span className="pointer-events-none absolute left-1/2 top-1/2 h-5 w-[2px] -translate-x-1/2 -translate-y-1/2 rotate-45 rounded-full bg-current" />
+                    )}
+                  </span>
+                </Button>
+              </div>
+
               <div className="flex items-center gap-4">
                 <span className="w-28 text-sm">Brilho</span>
                 <Slider value={[brightness]} min={0} max={200} step={1}

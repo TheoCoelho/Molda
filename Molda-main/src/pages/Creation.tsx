@@ -1071,6 +1071,16 @@ const Creation = () => {
           .upload(path, blob, { upsert: false, contentType: "image/png" });
         if (uploadErr) throw uploadErr;
 
+        const { error: visibilityErr } = await supabase.from("gallery_visibility").upsert(
+          {
+            user_id: user.id,
+            storage_path: path,
+            is_public: false,
+          },
+          { onConflict: "user_id,storage_path" }
+        );
+        if (visibilityErr && visibilityErr.code !== "42P01") throw visibilityErr;
+
         const { data: signed, error: signErr } = await supabase.storage
           .from(STORAGE_BUCKET)
           .createSignedUrl(path, 60 * 60 * 24 * 7);
@@ -1090,6 +1100,7 @@ const Creation = () => {
                 originalName: `${base}.png`,
                 sortKey: filename.slice(0, 17),
                 userId: user.id,
+                isPublic: false,
               },
             })
           );
