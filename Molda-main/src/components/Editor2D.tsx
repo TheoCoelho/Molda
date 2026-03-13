@@ -8383,8 +8383,10 @@ const Editor2D = forwardRef<Editor2DHandle, Props>(function Editor2D(
     const finalStrokeColor = style?.strokeColor ?? strokeColor;
     const finalFillColor = useFill ? finalStrokeColor : null;
 
-    const finalStrokeWidth = style?.strokeWidth ?? strokeWidth;
+    // Se for preenchido, removemos a borda para ser um objeto sólido unico (solicitação do usuário)
+    const finalStrokeWidth = useFill ? 0 : (style?.strokeWidth ?? strokeWidth);
     const finalOpacity = style?.opacity ?? opacity;
+    const actualStroke = useFill ? null : finalStrokeColor;
 
     // Use 0,0 as local origin; we'll center after creation
     const cx = 0;
@@ -8399,7 +8401,7 @@ const Editor2D = forwardRef<Editor2DHandle, Props>(function Editor2D(
         width: 180,
         height: 180,
         fill: finalFillColor || "transparent",
-        stroke: finalStrokeColor,
+        stroke: actualStroke,
         strokeWidth: finalStrokeWidth,
         opacity: finalOpacity,
         erasable: true,
@@ -8411,7 +8413,7 @@ const Editor2D = forwardRef<Editor2DHandle, Props>(function Editor2D(
         top: cy,
         radius: 90,
         fill: finalFillColor || "transparent",
-        stroke: finalStrokeColor,
+        stroke: actualStroke,
         strokeWidth: finalStrokeWidth,
         opacity: finalOpacity,
         erasable: true,
@@ -8429,7 +8431,7 @@ const Editor2D = forwardRef<Editor2DHandle, Props>(function Editor2D(
       }
       obj = new fabric.Polygon(points, {
         fill: finalFillColor || "transparent",
-        stroke: finalStrokeColor,
+        stroke: actualStroke,
         strokeWidth: finalStrokeWidth,
         opacity: finalOpacity,
         erasable: true,
@@ -8447,7 +8449,7 @@ const Editor2D = forwardRef<Editor2DHandle, Props>(function Editor2D(
       }
       obj = new fabric.Polygon(points, {
         fill: finalFillColor || "transparent",
-        stroke: finalStrokeColor,
+        stroke: actualStroke,
         strokeWidth: finalStrokeWidth,
         opacity: finalOpacity,
         erasable: true,
@@ -8464,7 +8466,7 @@ const Editor2D = forwardRef<Editor2DHandle, Props>(function Editor2D(
       }
       obj = new fabric.Polygon(points, {
         fill: finalFillColor || "transparent",
-        stroke: finalStrokeColor,
+        stroke: actualStroke,
         strokeWidth: finalStrokeWidth,
         opacity: finalOpacity,
         erasable: true,
@@ -8480,7 +8482,7 @@ const Editor2D = forwardRef<Editor2DHandle, Props>(function Editor2D(
       ];
       obj = new fabric.Polygon(points, {
         fill: finalFillColor || "transparent",
-        stroke: finalStrokeColor,
+        stroke: actualStroke,
         strokeWidth: finalStrokeWidth,
         opacity: finalOpacity,
         erasable: true,
@@ -8497,7 +8499,7 @@ const Editor2D = forwardRef<Editor2DHandle, Props>(function Editor2D(
       }
       obj = new fabric.Polygon(points, {
         fill: finalFillColor || "transparent",
-        stroke: finalStrokeColor,
+        stroke: actualStroke,
         strokeWidth: finalStrokeWidth,
         opacity: finalOpacity,
         erasable: true,
@@ -8514,7 +8516,7 @@ const Editor2D = forwardRef<Editor2DHandle, Props>(function Editor2D(
       }
       obj = new fabric.Polygon(points, {
         fill: finalFillColor || "transparent",
-        stroke: finalStrokeColor,
+        stroke: actualStroke,
         strokeWidth: finalStrokeWidth,
         opacity: finalOpacity,
         erasable: true,
@@ -8539,7 +8541,7 @@ const Editor2D = forwardRef<Editor2DHandle, Props>(function Editor2D(
       ];
       obj = new fabric.Polygon(points, {
         fill: finalFillColor || "transparent",
-        stroke: finalStrokeColor,
+        stroke: actualStroke,
         strokeWidth: finalStrokeWidth,
         opacity: finalOpacity,
         erasable: true,
@@ -8557,7 +8559,7 @@ const Editor2D = forwardRef<Editor2DHandle, Props>(function Editor2D(
         `C ${hx + 5 * s},${hy + 15 * s} ${hx},${hy + 26 * s} ${hx},${hy + 30 * s} Z`;
       obj = new fabric.Path(path, {
         fill: finalFillColor || "transparent",
-        stroke: finalStrokeColor,
+        stroke: actualStroke,
         strokeWidth: finalStrokeWidth,
         opacity: finalOpacity,
         erasable: true,
@@ -8574,7 +8576,7 @@ const Editor2D = forwardRef<Editor2DHandle, Props>(function Editor2D(
       ];
       obj = new fabric.Polygon(points, {
         fill: finalFillColor || "transparent",
-        stroke: finalStrokeColor,
+        stroke: actualStroke,
         strokeWidth: finalStrokeWidth,
         opacity: finalOpacity,
         erasable: true,
@@ -8591,7 +8593,7 @@ const Editor2D = forwardRef<Editor2DHandle, Props>(function Editor2D(
       ];
       obj = new fabric.Polygon(points, {
         fill: finalFillColor || "transparent",
-        stroke: finalStrokeColor,
+        stroke: actualStroke,
         strokeWidth: finalStrokeWidth,
         opacity: finalOpacity,
         erasable: true,
@@ -8603,7 +8605,7 @@ const Editor2D = forwardRef<Editor2DHandle, Props>(function Editor2D(
         `C 45,60 5,20 0,0 Z`;
       obj = new fabric.Path(path, {
         fill: finalFillColor || "transparent",
-        stroke: finalStrokeColor,
+        stroke: actualStroke,
         strokeWidth: finalStrokeWidth,
         opacity: finalOpacity,
         erasable: true,
@@ -8614,7 +8616,7 @@ const Editor2D = forwardRef<Editor2DHandle, Props>(function Editor2D(
       const path = `M -35,-42.4 A 55 55 0 1 1 -35,42.4 A 45 45 0 0 1 -35,-42.4 Z`;
       obj = new fabric.Path(path, {
         fill: finalFillColor || "transparent",
-        stroke: finalStrokeColor,
+        stroke: actualStroke,
         strokeWidth: finalStrokeWidth,
         opacity: finalOpacity,
         erasable: true,
@@ -8631,7 +8633,7 @@ const Editor2D = forwardRef<Editor2DHandle, Props>(function Editor2D(
       }
       obj = new fabric.Polygon(points, {
         fill: finalFillColor || "transparent",
-        stroke: finalStrokeColor,
+        stroke: actualStroke,
         strokeWidth: finalStrokeWidth,
         opacity: finalOpacity,
         erasable: true,
@@ -9965,6 +9967,14 @@ const Editor2D = forwardRef<Editor2DHandle, Props>(function Editor2D(
       });
     } else {
       patch.fill = pattern;
+      // Quando aplicamos padrão ao preenchimento, removemos a borda para ser objeto sólido
+      // (solicitação do usuário: degradê/padrão deve colorir o objeto todo)
+      const t = String(obj?.type || "").toLowerCase();
+      const isPathLike = t === "path" || t === "line" || t === "poly-line";
+      if (!isPathLike) {
+        patch.stroke = null;
+        patch.strokeWidth = 0;
+      }
     }
     obj.set(patch);
     // Centraliza a invalidação de cache/bounds em um único lugar
@@ -10472,7 +10482,24 @@ const Editor2D = forwardRef<Editor2DHandle, Props>(function Editor2D(
           opacity: 1,
         })),
       });
-      active.set('fill', grad);
+      const t = String(active.type || "").toLowerCase();
+      // Paths, lines and poly-lines should have the gradient on the stroke, not fill.
+      const isPathLike = t === "path" || t === "line" || t === "poly-line";
+
+      if (isPathLike) {
+        active.set('stroke', grad);
+        active.set('fill', null);
+      } else {
+        active.set('fill', grad);
+        // Se não for um "path" (onde borda e preenchimento se confundem),
+        // removemos a borda para que o degradê tome conta de todo o objeto "sólido"
+        // conforme solicitado pelo usuário.
+        active.set({
+          stroke: null,
+          strokeWidth: 0
+        });
+      }
+
       active.setCoords?.();
       c.requestRenderAll?.();
     } catch (err) {

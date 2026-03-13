@@ -632,6 +632,25 @@ const Admin = () => {
     }
   };
 
+  const handleDeleteSubtype = async (id: string, name: string) => {
+    if (!window.confirm(`Tem certeza que deseja excluir o subtipo "${name}"?`)) {
+      return;
+    }
+
+    setLoading(true);
+    try {
+      const { error } = await supabase.from("product_subtypes").delete().eq("id", id);
+      if (error) throw error;
+      toast.success("Subtipo excluído com sucesso.");
+      await loadCatalog();
+    } catch (err: any) {
+      console.error("[admin.handleDeleteSubtype]", err);
+      toast.error(err?.message || "Falha ao excluir subtipo.");
+    } finally {
+      setLoading(false);
+    }
+  };
+
   const handleSaveMaterial = async (event: React.FormEvent) => {
     event.preventDefault();
     const payload = {
@@ -1203,25 +1222,35 @@ const Admin = () => {
                           </div>
                         </div>
                       </div>
-                      <Button
-                        size="sm"
-                        variant="outline"
-                        onClick={() =>
-                          setSubtypeForm({
-                            id: subtype.id,
-                            type_id: subtype.type_id,
-                            name: subtype.name,
-                            slug: subtype.slug,
-                            description: subtype.description || "",
-                            sort_order: String(subtype.sort_order ?? 0),
-                            is_active: subtype.is_active,
-                            card_image_path: subtype.card_image_path || "",
-                            model_3d_path: (subtype as any).model_3d_path || "",
-                          })
-                        }
-                      >
-                        Editar
-                      </Button>
+                      <div className="flex items-center gap-2">
+                        <Button
+                          size="sm"
+                          variant="outline"
+                          onClick={() =>
+                            setSubtypeForm({
+                              id: subtype.id,
+                              type_id: subtype.type_id,
+                              name: subtype.name,
+                              slug: subtype.slug,
+                              description: subtype.description || "",
+                              sort_order: String(subtype.sort_order ?? 0),
+                              is_active: subtype.is_active,
+                              card_image_path: subtype.card_image_path || "",
+                              model_3d_path: (subtype as any).model_3d_path || "",
+                            })
+                          }
+                        >
+                          Editar
+                        </Button>
+                        <Button
+                          size="sm"
+                          variant="destructive"
+                          onClick={() => handleDeleteSubtype(subtype.id, subtype.name)}
+                          disabled={loading}
+                        >
+                          Excluir
+                        </Button>
+                      </div>
                     </div>
                   ))
                 )}
