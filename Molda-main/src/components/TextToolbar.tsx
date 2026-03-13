@@ -437,12 +437,59 @@ export default function TextToolbar({ editor, visible, position = "bottom" }: Pr
     }
   }, [style.fill]);
 
-  // Ref para sempre acessar a versão mais recente de apply (evita stale closure)
-  const applyRef = useRef(apply);
-  useEffect(() => { applyRef.current = apply; });
+  const gradientWriteInFlightRef = useRef(false);
+  const queuedGradientRef = useRef<GradientFill | null>(null);
 
-  // Aplica degradê em tempo real enquanto arrasta
-  const applyGradient = useCallback((stops: GradientStop[], angle: number, type: any = gradType, radius: number = gradRadius) => {
+  const pushGradientLive = useCallback((gradFill: GradientFill) => {
+    queuedGradientRef.current = gradFill;
+    if (gradientWriteInFlightRef.current) return;
+
+    gradientWriteInFlightRef.current = true;
+
+    const flush = async () => {
+      const next = queuedGradientRef.current;
+      queuedGradientRef.current = null;
+      if (!next) {
+        gradientWriteInFlightRef.current = false;
+        return;
+      }
+
+      try {
+        await editor.current?.setActiveTextStyle({
+          fill: next as any,
+          from: 'gradient-live',
+        });
+      } catch { }
+
+      if (queuedGradientRef.current) {
+        requestAnimationFrame(() => {
+          void flush();
+        });
+      } else {
+        gradientWriteInFlightRef.current = false;
+      }
+    };
+
+    void flush();
+  }, [editor]);
+
+  // Refs para valores atuais do degradê (evita stale closures e re-renders desnecessários)
+  const gradStopsRef = useRef(gradStops);
+  const gradAngleRef = useRef(gradAngle);
+  const gradTypeRef = useRef(gradType);
+  const gradRadiusRef = useRef(gradRadius);
+  useEffect(() => { gradStopsRef.current = gradStops; }, [gradStops]);
+  useEffect(() => { gradAngleRef.current = gradAngle; }, [gradAngle]);
+  useEffect(() => { gradTypeRef.current = gradType; }, [gradType]);
+  useEffect(() => { gradRadiusRef.current = gradRadius; }, [gradRadius]);
+
+  // applyGradient é estável (sem deps que mudam) — usa refs para valores atuais
+  const applyGradient = useCallback((
+    stops = gradStopsRef.current,
+    angle = gradAngleRef.current,
+    type: any = gradTypeRef.current,
+    radius = gradRadiusRef.current,
+  ) => {
     gradApplyingRef.current = true;
     const gradFill: GradientFill = {
       type: 'gradient',
@@ -451,12 +498,27 @@ export default function TextToolbar({ editor, visible, position = "bottom" }: Pr
       colorStops: stops,
       radius,
     };
-    applyRef.current({ fill: gradFill as any });
-    // Limpa a flag após o React processar o re-render
+    pushGradientLive(gradFill);
     requestAnimationFrame(() => { gradApplyingRef.current = false; });
-  }, [gradType, gradRadius]);
+  }, [pushGradientLive]);
 
-  // Handler do stop drag na barra
+  // Aplica degradê em tempo real quando stops ou ângulo mudam
+  // applyGradient é estável (deps vazios), então não haverá cascata
+  const gradRafRef = useRef<number | null>(null);
+  useEffect(() => {
+    if (colorMode !== 'gradient') return;
+    if (gradRafRef.current) cancelAnimationFrame(gradRafRef.current);
+    gradRafRef.current = requestAnimationFrame(() => {
+      applyGradient(gradStops, gradAngleRef.current, gradTypeRef.current, gradRadiusRef.current);
+    });
+    return () => {
+      if (gradRafRef.current) cancelAnimationFrame(gradRafRef.current);
+      gradRafRef.current = null;
+    };
+  // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [gradStops, gradAngle, colorMode]);
+
+  // Handlers do stop drag na barra
   const onStopBarPointer = useCallback((e: React.PointerEvent, idx: number) => {
     const bar = gradBarRef.current;
     if (!bar) return;
@@ -484,21 +546,6 @@ export default function TextToolbar({ editor, visible, position = "bottom" }: Pr
       return next;
     });
   }, [stopDragging]);
-
-  // Aplica em tempo real quando stops ou ângulo mudam durante drag
-  const gradRafRef = useRef<number | null>(null);
-  useEffect(() => {
-    if (!stopDragging && colorMode !== 'gradient') return;
-    if (colorMode !== 'gradient') return;
-    if (gradRafRef.current) cancelAnimationFrame(gradRafRef.current);
-    gradRafRef.current = requestAnimationFrame(() => {
-      applyGradient(gradStops, gradAngle, gradType, gradRadius);
-    });
-    return () => {
-      if (gradRafRef.current) cancelAnimationFrame(gradRafRef.current);
-      gradRafRef.current = null;
-    };
-  }, [gradStops, gradAngle, gradType, gradRadius, stopDragging, colorMode, applyGradient]);
 
   // Gera CSS do degradê para preview
   const gradientCSS = useMemo(() => {

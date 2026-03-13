@@ -232,7 +232,7 @@ export type Editor2DHandle = {
   // ==== Texto ====
   addText: (value?: string, opts?: { x?: number; y?: number }) => void;
   getActiveTextStyle: () => TextStyle | null;
-  setActiveTextStyle: (patch: TextStyle & { from?: "font-picker" | "inspector" }) => Promise<void>;
+  setActiveTextStyle: (patch: TextStyle & { from?: "font-picker" | "inspector" | "gradient-live" }) => Promise<void>;
   applyTextStyle: (patch: TextStyle) => void;
   onSelectionChange?: (cb: (k: "none" | "text" | "image" | "other") => void) => void;
 
@@ -6733,16 +6733,21 @@ const Editor2D = forwardRef<Editor2DHandle, Props>(function Editor2D(
     } catch { }
   };
 
-  const setActiveTextStyle = async (patch: TextStyle & { from?: "font-picker" | "inspector" }) => {
+  const setActiveTextStyle = async (patch: TextStyle & { from?: "font-picker" | "inspector" | "gradient-live" }) => {
     const c: any = canvasRef.current as any;
     if (!c) return;
     const active: any = c.getActiveObject && c.getActiveObject();
     if (!active || !String(active.type || "").toLowerCase().includes("text")) return;
 
     const nextPatch: any = { ...patch };
+    const isGradientLive = patch.from === "gradient-live";
     if (nextPatch.fontFamily == null) {
-      const liveStyle = getActiveTextStyle();
-      nextPatch.fontFamily = liveStyle?.fontFamily || active.fontFamily || "Inter";
+      if (isGradientLive) {
+        nextPatch.fontFamily = active.fontFamily || "Inter";
+      } else {
+        const liveStyle = getActiveTextStyle();
+        nextPatch.fontFamily = liveStyle?.fontFamily || active.fontFamily || "Inter";
+      }
     }
 
     // ===== Gradient fill handling =====
@@ -6827,14 +6832,16 @@ const Editor2D = forwardRef<Editor2DHandle, Props>(function Editor2D(
     try { active.setCoords?.(); } catch { }
     try { c.requestRenderAll?.(); } catch { }
 
-    if (!isRestoringRef.current && !isLoadingRef.current) {
+    if (!isGradientLive && !isRestoringRef.current && !isLoadingRef.current) {
       historyRef.current?.push("modify");
       emitHistory();
     }
 
-    emitTextStyleEvent("editor2d:activeTextStyle", getActiveTextStyle());
-    emitTextStyleEvent("editor2d:selectionStyle", getActiveTextStyle());
-    emitFontUsed(nextPatch.fontFamily);
+    if (!isGradientLive) {
+      emitTextStyleEvent("editor2d:activeTextStyle", getActiveTextStyle());
+      emitTextStyleEvent("editor2d:selectionStyle", getActiveTextStyle());
+      emitFontUsed(nextPatch.fontFamily);
+    }
   };
 
   const applyTextStyle = (patch: TextStyle) => {
