@@ -10,12 +10,6 @@ import { Badge } from "@/components/ui/badge";
 import { Avatar, AvatarFallback, AvatarImage } from "@/components/ui/avatar";
 import { Dialog, DialogContent, DialogHeader, DialogTitle, DialogFooter } from "@/components/ui/dialog";
 import { Input } from "@/components/ui/input";
-import {
-  DropdownMenu,
-  DropdownMenuContent,
-  DropdownMenuItem,
-  DropdownMenuTrigger,
-} from "@/components/ui/dropdown-menu";
 import { Earth, Loader2, MoreVertical, Pencil } from "lucide-react";
 import { useAuth } from "@/contexts/AuthContext";
 import { supabase } from "@/integrations/supabase/client";
@@ -80,9 +74,10 @@ type GalleryItem = {
   id: string;
   previewUrl: string;
   originalName: string;
+  displayName: string;
   sortKey: string;
   isPublic: boolean;
-  designValue: number | null;
+  designValue: number;
 };
 
 const Profile = () => {
@@ -127,9 +122,10 @@ const Profile = () => {
   const [galleryError, setGalleryError] = useState<string | null>(null);
   const [togglingGalleryIds, setTogglingGalleryIds] = useState<Record<string, boolean>>({});
   const [selectedDesign, setSelectedDesign] = useState<GalleryItem | null>(null);
-  const [valueDialogOpen, setValueDialogOpen] = useState(false);
-  const [designValueInput, setDesignValueInput] = useState("");
-  const [savingDesignValue, setSavingDesignValue] = useState(false);
+  const [editPanelOpen, setEditPanelOpen] = useState(false);
+  const [editNameInput, setEditNameInput] = useState("");
+  const [editValueInput, setEditValueInput] = useState("0,00");
+  const [savingDesignEdit, setSavingDesignEdit] = useState(false);
   const [replacingDesign, setReplacingDesign] = useState(false);
   const replaceDesignInputRef = useRef<HTMLInputElement | null>(null);
 
@@ -164,9 +160,14 @@ const Profile = () => {
   };
 
   const formatCurrency = (value: number | null | undefined) => {
-    if (value == null || Number.isNaN(value)) return "Sem valor";
-    return new Intl.NumberFormat("pt-BR", { style: "currency", currency: "BRL" }).format(value);
+    const n = value == null || Number.isNaN(value) ? 0 : value;
+    return new Intl.NumberFormat("pt-BR", { style: "currency", currency: "BRL" }).format(n);
   };
+
+  const toEditValueString = (value: number | null | undefined) =>
+    (value == null || Number.isNaN(value) ? 0 : value)
+      .toFixed(2)
+      .replace(".", ",");
 
   const resolveDraftDecals = (data: DraftData): ExternalDecalData[] => {
     const tabs = data.canvasTabs ?? [];
@@ -292,21 +293,33 @@ const Profile = () => {
       setGalleryError(null);
 
       try {
-        const { data: visibilityRows, error: visibilityError } = await supabase
+        let { data: visibilityRows, error: visibilityError } = await supabase
           .from("gallery_visibility")
-          .select("storage_path,is_public,design_value,updated_at")
+          .select("storage_path,is_public,design_value,design_name,updated_at")
           .eq("user_id", viewedUserId)
           .order("updated_at", { ascending: false });
+
+        // Se design_name ainda não existe na tabela (42703), faz fallback sem ela
+        if (visibilityError?.code === "42703") {
+          const fallback = await supabase
+            .from("gallery_visibility")
+            .select("storage_path,is_public,design_value,updated_at")
+            .eq("user_id", viewedUserId)
+            .order("updated_at", { ascending: false });
+          visibilityRows = fallback.data;
+          visibilityError = fallback.error;
+        }
 
         if (cancelled) return;
         if (visibilityError && visibilityError.code !== "42P01") throw visibilityError;
 
-        const visibilityMap = new Map<string, { isPublic: boolean; designValue: number | null }>(
+        const visibilityMap = new Map<string, { isPublic: boolean; designValue: number; designName: string | null }>(
           (visibilityRows || []).map((row: any) => [
             String(row.storage_path),
             {
               isPublic: Boolean(row.is_public),
-              designValue: row.design_value != null ? Number(row.design_value) : null,
+              designValue: row.design_value != null ? Number(row.design_value) : 0,
+              designName: row.design_name ? String(row.design_name) : null,
             },
           ])
         );
@@ -340,7 +353,8 @@ const Profile = () => {
                 originalName: file.name.replace(/^(\d{17})-/, ""),
                 sortKey: file.name.slice(0, 17),
                 isPublic: visibilityMap.get(fullPath)?.isPublic ?? false,
-                designValue: visibilityMap.get(fullPath)?.designValue ?? null,
+                designValue: visibilityMap.get(fullPath)?.designValue ?? 0,
+                displayName: visibilityMap.get(fullPath)?.designName || file.name.replace(/^(\d{17})-/, ""),
               } satisfies GalleryItem;
             })
           );
@@ -355,7 +369,8 @@ const Profile = () => {
               originalName: fileName.replace(/^(\d{17})-/, ""),
               sortKey: fileName.slice(0, 17),
               isPublic: true,
-              designValue: row.design_value != null ? Number(row.design_value) : null,
+              designValue: row.design_value != null ? Number(row.design_value) : 0,
+              displayName: row.design_name ? String(row.design_name) : fileName.replace(/^(\d{17})-/, ""),
             } satisfies GalleryItem;
           });
         }
@@ -505,8 +520,9 @@ const Profile = () => {
 
   const closeSelectedDesign = () => {
     setSelectedDesign(null);
-    setValueDialogOpen(false);
-    setDesignValueInput("");
+    setEditPanelOpen(false);
+    setEditNameInput("");
+    setEditValueInput("0,00");
   };
 
   const updateDesignLocal = (itemId: string, partial: Partial<GalleryItem>) => {
@@ -545,23 +561,24 @@ const Profile = () => {
     }
   };
 
-  const openDesignValueEditor = () => {
+  const openEditPanel = () => {
     if (!selectedDesign) return;
-    setDesignValueInput(selectedDesign.designValue != null ? String(selectedDesign.designValue) : "");
-    setValueDialogOpen(true);
+    setEditNameInput(selectedDesign.displayName);
+    setEditValueInput(toEditValueString(selectedDesign.designValue));
+    setEditPanelOpen(true);
   };
 
-  const saveDesignValue = async () => {
+  const saveDesignEdit = async () => {
     if (!selectedDesign || !authUser?.id || !isOwnProfile) return;
 
-    const normalized = designValueInput.replace(",", ".").trim();
-    const parsed = normalized ? Number(normalized) : null;
+    const normalized = editValueInput.replace(",", ".").trim();
+    const parsed = normalized ? Number(normalized) : 0;
     if (normalized && (Number.isNaN(parsed) || parsed < 0)) {
       setGalleryError("Informe um valor válido para o design.");
       return;
     }
 
-    setSavingDesignValue(true);
+    setSavingDesignEdit(true);
     try {
       const { error } = await supabase.from("gallery_visibility").upsert(
         {
@@ -569,19 +586,23 @@ const Profile = () => {
           storage_path: selectedDesign.id,
           is_public: selectedDesign.isPublic,
           design_value: parsed,
+          design_name: editNameInput.trim() || null,
         },
         { onConflict: "user_id,storage_path" }
       );
 
       if (error) throw error;
 
-      updateDesignLocal(selectedDesign.id, { designValue: parsed });
-      setValueDialogOpen(false);
+      updateDesignLocal(selectedDesign.id, {
+        designValue: parsed,
+        displayName: editNameInput.trim() || selectedDesign.originalName,
+      });
+      setEditPanelOpen(false);
     } catch (err) {
-      console.error("Erro ao salvar valor do design:", err);
-      setGalleryError("Não foi possível salvar o valor do design.");
+      console.error("Erro ao salvar edição do design:", err);
+      setGalleryError("Não foi possível salvar as alterações do design.");
     } finally {
-      setSavingDesignValue(false);
+      setSavingDesignEdit(false);
     }
   };
 
@@ -1184,21 +1205,9 @@ const Profile = () => {
             <div className="relative">
               {isOwnProfile && (
                 <div className="absolute right-0 top-0 z-10">
-                  <DropdownMenu>
-                    <DropdownMenuTrigger asChild>
-                      <Button variant="ghost" size="icon" aria-label="Mais opções do design">
-                        <MoreVertical className="h-4 w-4" />
-                      </Button>
-                    </DropdownMenuTrigger>
-                    <DropdownMenuContent align="end">
-                      <DropdownMenuItem onClick={() => replaceDesignInputRef.current?.click()}>
-                        Editar imagem
-                      </DropdownMenuItem>
-                      <DropdownMenuItem onClick={openDesignValueEditor}>
-                        Definir valor
-                      </DropdownMenuItem>
-                    </DropdownMenuContent>
-                  </DropdownMenu>
+                  <Button variant="ghost" size="icon" aria-label="Editar design" onClick={openEditPanel}>
+                    <MoreVertical className="h-4 w-4" />
+                  </Button>
                 </div>
               )}
 
@@ -1215,7 +1224,7 @@ const Profile = () => {
                   <div className="max-h-[70vh] overflow-auto rounded-md bg-black/5 flex items-center justify-center">
                     <img
                       src={selectedDesign.previewUrl}
-                      alt={selectedDesign.originalName}
+                      alt={selectedDesign.displayName}
                       className="max-h-[68vh] w-auto object-contain"
                     />
                   </div>
@@ -1224,7 +1233,7 @@ const Profile = () => {
                 <div className="rounded-lg border p-4 space-y-4">
                   <div>
                     <p className="text-sm text-muted-foreground">Nome</p>
-                    <p className="font-semibold break-all">{selectedDesign.originalName}</p>
+                    <p className="font-semibold break-all">{selectedDesign.displayName}</p>
                   </div>
 
                   <div>
@@ -1277,29 +1286,40 @@ const Profile = () => {
         </DialogContent>
       </Dialog>
 
-      <Dialog open={valueDialogOpen} onOpenChange={setValueDialogOpen}>
+      <Dialog open={editPanelOpen} onOpenChange={(open) => { if (!open) setEditPanelOpen(false); }}>
         <DialogContent className="max-w-md">
           <DialogHeader>
-            <DialogTitle>Definir valor do design</DialogTitle>
+            <DialogTitle>Editar design</DialogTitle>
           </DialogHeader>
 
-          <div className="space-y-3">
-            <p className="text-sm text-muted-foreground">Informe um valor em reais (ex.: 79.90).</p>
-            <Input
-              value={designValueInput}
-              onChange={(event) => setDesignValueInput(event.target.value)}
-              placeholder="0,00"
-              inputMode="decimal"
-              disabled={savingDesignValue}
-            />
+          <div className="space-y-4">
+            <div className="space-y-1">
+              <label className="text-sm font-medium">Nome</label>
+              <Input
+                value={editNameInput}
+                onChange={(event) => setEditNameInput(event.target.value)}
+                placeholder="Nome do design"
+                disabled={savingDesignEdit}
+              />
+            </div>
+            <div className="space-y-1">
+              <label className="text-sm font-medium">Valor (R$)</label>
+              <Input
+                value={editValueInput}
+                onChange={(event) => setEditValueInput(event.target.value)}
+                placeholder="0,00"
+                inputMode="decimal"
+                disabled={savingDesignEdit}
+              />
+            </div>
           </div>
 
           <DialogFooter>
-            <Button variant="outline" onClick={() => setValueDialogOpen(false)} disabled={savingDesignValue}>
+            <Button variant="outline" onClick={() => setEditPanelOpen(false)} disabled={savingDesignEdit}>
               Cancelar
             </Button>
-            <Button onClick={saveDesignValue} disabled={savingDesignValue}>
-              {savingDesignValue ? "Salvando..." : "Salvar valor"}
+            <Button onClick={saveDesignEdit} disabled={savingDesignEdit}>
+              {savingDesignEdit ? "Salvando..." : "Salvar"}
             </Button>
           </DialogFooter>
         </DialogContent>

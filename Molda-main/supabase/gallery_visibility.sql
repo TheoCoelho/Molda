@@ -3,14 +3,17 @@ create table if not exists public.gallery_visibility (
   user_id uuid not null references auth.users(id) on delete cascade,
   storage_path text not null,
   is_public boolean not null default false,
-  design_value numeric(10,2),
+  design_value numeric(10,2) not null default 0,
+  design_name text,
   created_at timestamptz not null default now(),
   updated_at timestamptz not null default now(),
   unique(user_id, storage_path)
 );
 
 alter table public.gallery_visibility
-  add column if not exists design_value numeric(10,2);
+  add column if not exists design_value numeric(10,2) not null default 0;
+alter table public.gallery_visibility
+  add column if not exists design_name text;
 
 create index if not exists gallery_visibility_user_id_idx
   on public.gallery_visibility(user_id);
