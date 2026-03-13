@@ -1,5 +1,6 @@
 // src/components/FloatingEditorToolbar.tsx
 import React, { useEffect, useMemo, useRef, useState, useCallback } from "react";
+import { GradientAngleJoystick } from './GradientAngleJoystick';
 import type { GradientFill, GradientStop } from "./Editor2D";
 import "./FloatingEditorToolbar.custom.css";
 import {
@@ -191,10 +192,33 @@ export default function FloatingEditorToolbar({
     { offset: 1, color: "#FFFFFF" },
   ]);
   const [gradAngle, setGradAngle] = useState<number>(0);
+  const [gradType, setGradType] = useState<'linear' | 'radial'>('linear');
+  const [gradRadius, setGradRadius] = useState<number>(1.0);
   const [selectedStopIdx, setSelectedStopIdx] = useState<number>(0);
   const [stopDragging, setStopDragging] = useState(false);
   const gradBarRef = useRef<HTMLDivElement>(null);
   const gradApplyingRef = useRef(false);
+
+  // Sincroniza estado do gradient quando seleção muda
+  useEffect(() => {
+    if (gradApplyingRef.current) return;
+    
+    // Tenta pegar o preenchimento do objeto ativo
+    const fillVal = (editor2DRef as any)?.getActiveObject?.()?.get('fill') 
+                 || (editor2DRef as any)?.getActiveObject?.()?.get('stroke');
+                 
+    if (fillVal && typeof fillVal === 'object' && (fillVal as any).type === 'gradient') {
+      const gf = fillVal as GradientFill;
+      setColorMode('gradient');
+      setGradStops(gf.colorStops.length >= 2 ? gf.colorStops : [
+        { offset: 0, color: '#000000' },
+        { offset: 1, color: '#FFFFFF' },
+      ]);
+      setGradAngle(gf.angle || 0);
+      setGradType(gf.gradientType || 'linear');
+      setSelectedStopIdx(0);
+    }
+  }, [selectionKind, editor2DRef]);
 
   // aplica cor em tempo real ao arrastar (com rAF)
   const [svDragging, setSvDragging] = useState(false);
@@ -339,17 +363,18 @@ export default function FloatingEditorToolbar({
     );
   }
 
-  const applyGradient = useCallback((stops: GradientStop[], angle: number) => {
+  const applyGradient = useCallback((stops: GradientStop[], angle: number, type: any = gradType, radius: number = gradRadius) => {
     gradApplyingRef.current = true;
     const gradFill: GradientFill = {
       type: 'gradient',
-      gradientType: 'linear',
+      gradientType: type,
       angle,
       colorStops: stops,
+      radius,
     };
     onApplyGradient?.(gradFill);
     requestAnimationFrame(() => { gradApplyingRef.current = false; });
-  }, [onApplyGradient]);
+  }, [onApplyGradient, gradType, gradRadius]);
 
   const onStopBarPointer = useCallback((e: React.PointerEvent, idx: number) => {
     const bar = gradBarRef.current;
@@ -385,13 +410,13 @@ export default function FloatingEditorToolbar({
     if (colorMode !== 'gradient') return;
     if (gradRafRef.current) cancelAnimationFrame(gradRafRef.current);
     gradRafRef.current = requestAnimationFrame(() => {
-      applyGradient(gradStops, gradAngle);
+      applyGradient(gradStops, gradAngle, gradType, gradRadius);
     });
     return () => {
       if (gradRafRef.current) cancelAnimationFrame(gradRafRef.current);
       gradRafRef.current = null;
     };
-  }, [gradStops, gradAngle, colorMode]);
+  }, [gradStops, gradAngle, gradType, gradRadius, colorMode, applyGradient]);
 
   const gradientCSS = useMemo(() => {
     const sorted = [...gradStops].sort((a, b) => a.offset - b.offset);
@@ -796,46 +821,51 @@ export default function FloatingEditorToolbar({
                         />
                       </div>
 
-                      {/* Ângulo */}
-                      <div className="mt-3 flex items-center gap-1.5">
-                        <span className="text-[10px] text-muted-foreground whitespace-nowrap">Ângulo</span>
-                        {[0, 45, 90, 135, 180].map(a => (
-                          <button
-                            key={a}
-                            type="button"
-                            className={[
-                              "h-6 min-w-6 px-1 rounded text-[10px] border transition",
-                              gradAngle === a
-                                ? 'bg-primary/15 border-primary/30 text-primary font-medium'
-                                : 'border-black/10 dark:border-white/10 bg-white/70 dark:bg-neutral-800/70 hover:bg-black/5 dark:hover:bg-white/5',
-                            ].join(' ')}
-                            onClick={() => {
-                              setGradAngle(a);
-                              editor2DRef?.historyCapture?.();
-                            }}
-                          >
-                            {a}°
-                          </button>
-                        ))}
-                        <input
-                          type="number"
-                          min={0}
-                          max={360}
-                          value={gradAngle}
-                          onChange={(e) => {
-                            const val = Number(e.target.value) || 0;
-                            setGradAngle(((val % 360) + 360) % 360);
-                          }}
-                          onBlur={() => editor2DRef?.historyCapture?.()}
-                          className="w-12 h-6 text-center text-[10px] rounded border border-black/10 dark:border-white/10 bg-white/70 dark:bg-neutral-900/70"
-                          title="Ângulo personalizado"
+                      {/* Joystick de Ângulo (Animado com Efeito de Recolha) */}
+                      <div 
+                        className={[
+                          "overflow-hidden transition-all duration-300 ease-in-out flex justify-center border-t border-black/5 dark:border-white/5",
+                          gradType === 'linear' ? "max-h-40 opacity-100 mt-3 pt-3 scale-100" : "max-h-0 opacity-0 mt-0 pt-0 scale-90 pointer-events-none"
+                        ].join(' ')}
+                      >
+                        <GradientAngleJoystick 
+                          angle={gradAngle} 
+                          onChange={setGradAngle} 
+                          onFinalChange={() => editor2DRef?.historyCapture?.()}
                         />
                       </div>
 
-                      {/* HEX do stop selecionado */}
+                      {/* Raio (apenas para Radial) */}
+                      <div 
+                        className={[
+                          "overflow-hidden transition-all duration-300 ease-in-out",
+                          gradType === 'radial' ? "max-h-20 opacity-100 mt-3" : "max-h-0 opacity-0 mt-0 pointer-events-none"
+                        ].join(' ')}
+                      >
+                        <div className="flex items-center gap-2 border-t border-black/5 dark:border-white/5 pt-3">
+                          <span className="text-xs text-muted-foreground shrink-0 w-10">Raio</span>
+                          <input
+                            type="range"
+                            min={0.1}
+                            max={3}
+                            step={0.05}
+                            value={gradRadius}
+                            onChange={(e) => {
+                              const r = parseFloat(e.target.value);
+                              setGradRadius(r);
+                              applyGradient(gradStops, gradAngle, gradType, r);
+                            }}
+                            onPointerUp={() => editor2DRef?.historyCapture?.()}
+                            className="flex-1 accent-primary h-1.5 rounded"
+                          />
+                          <span className="text-xs text-muted-foreground w-8 text-right">{Math.round(gradRadius * 100)}%</span>
+                        </div>
+                      </div>
+
+                      {/* HEX do stop selecionado + Botões de tipo */}
                       <div className="mt-2 flex items-center gap-2">
                         <div
-                          className="h-6 w-6 rounded-md border border-black/10 dark:border-white/10"
+                          className="h-6 w-6 rounded-md border border-black/10 dark:border-white/10 shrink-0"
                           style={{ background: selectedStop?.color || '#000' }}
                         />
                         <input
@@ -849,9 +879,40 @@ export default function FloatingEditorToolbar({
                           }}
                           onBlur={() => editor2DRef?.historyCapture?.()}
                           maxLength={7}
-                          className="w-24 px-2 py-0.5 rounded border border-black/10 dark:border-white/10 bg-white/70 dark:bg-neutral-900/70 text-xs"
+                          className="w-20 px-2 py-0.5 rounded border border-black/10 dark:border-white/10 bg-white/70 dark:bg-neutral-900/70 text-xs"
                           placeholder="#000000"
                         />
+                        <div className="flex-1" />
+                        {(['linear', 'radial'] as const).map((t) => (
+                          <button
+                            key={t}
+                            type="button"
+                            title={t === 'linear' ? 'Degradê Linear' : 'Degradê Radial'}
+                            className={[
+                              "h-7 w-7 rounded border transition grid place-items-center",
+                              gradType === t
+                                ? 'bg-primary/15 border-primary/40 text-primary'
+                                : 'border-black/10 dark:border-white/10 bg-white/70 dark:bg-neutral-800/70 hover:bg-black/5 dark:hover:bg-white/5',
+                            ].join(' ')}
+                            onClick={() => {
+                              setGradType(t);
+                              applyGradient(gradStops, gradAngle, t, gradRadius);
+                              editor2DRef?.historyCapture?.();
+                            }}
+                          >
+                            {t === 'linear' ? (
+                              <svg width="14" height="14" viewBox="0 0 14 14" fill="none">
+                                <defs><linearGradient id="lg2" x1="0" y1="7" x2="14" y2="7" gradientUnits="userSpaceOnUse"><stop stopColor="currentColor" stopOpacity="0.2"/><stop offset="1" stopColor="currentColor"/></linearGradient></defs>
+                                <rect width="14" height="14" rx="2" fill="url(#lg2)"/>
+                              </svg>
+                            ) : (
+                              <svg width="14" height="14" viewBox="0 0 14 14" fill="none">
+                                <defs><radialGradient id="rg2" cx="50%" cy="50%" r="50%"><stop stopColor="currentColor"/><stop offset="1" stopColor="currentColor" stopOpacity="0.1"/></radialGradient></defs>
+                                <rect width="14" height="14" rx="2" fill="url(#rg2)"/>
+                              </svg>
+                            )}
+                          </button>
+                        ))}
                       </div>
                     </>
                   )}

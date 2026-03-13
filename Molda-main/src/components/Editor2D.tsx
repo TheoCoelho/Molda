@@ -49,9 +49,10 @@ export type GradientStop = { offset: number; color: string };
 /** Configuração de preenchimento com degradê */
 export type GradientFill = {
   type: 'gradient';
-  gradientType: 'linear';
+  gradientType: 'linear' | 'radial';
   angle: number;          // 0-360
   colorStops: GradientStop[];
+  radius?: number;        // 0-1 (fraction of max(w,h)/2), default 1.0
 };
 
 export type TextStyle = Partial<{
@@ -10464,40 +10465,61 @@ const Editor2D = forwardRef<Editor2DHandle, Props>(function Editor2D(
       const angleRad = (gfill.angle || 0) * Math.PI / 180;
       const objW = Number(active.width ?? 100);
       const objH = Number(active.height ?? 100);
-      const cos = Math.cos(angleRad);
-      const sin = Math.sin(angleRad);
-      const halfW = objW / 2;
-      const halfH = objH / 2;
-      const x1 = halfW - cos * halfW;
-      const y1 = halfH - sin * halfH;
-      const x2 = halfW + cos * halfW;
-      const y2 = halfH + sin * halfH;
-      const grad = new fabric.Gradient({
-        type: 'linear',
-        gradientUnits: 'pixels',
-        coords: { x1, y1, x2, y2 },
-        colorStops: (gfill.colorStops || []).map((s: any) => ({
-          offset: Number(s.offset ?? 0),
-          color: String(s.color || '#000000'),
-          opacity: 1,
-        })),
-      });
-      const t = String(active.type || "").toLowerCase();
-      // Paths, lines and poly-lines should have the gradient on the stroke, not fill.
-      const isPathLike = t === "path" || t === "line" || t === "poly-line";
+      
+      let grad: any;
+      const stops = (gfill.colorStops || []).map((s: any) => ({
+        offset: Number(s.offset ?? 0),
+        color: String(s.color || '#000000'),
+        opacity: 1,
+      }));
 
-      if (isPathLike) {
+      const gType = gfill.gradientType || 'linear';
+
+      if (gType === 'linear') {
+        const cos = Math.cos(angleRad);
+        const sin = Math.sin(angleRad);
+        const halfW = objW / 2;
+        const halfH = objH / 2;
+        const x1 = halfW - cos * halfW;
+        const y1 = halfH - sin * halfH;
+        const x2 = halfW + cos * halfW;
+        const y2 = halfH + sin * halfH;
+        grad = new fabric.Gradient({
+          type: 'linear',
+          gradientUnits: 'pixels',
+          coords: { x1, y1, x2, y2 },
+          colorStops: stops,
+        });
+      } 
+      else if (gType === 'radial') {
+        const radiusFraction = (gfill as any).radius ?? 1.0;
+        const r2 = Math.max(objW, objH) / 2 * radiusFraction;
+        grad = new fabric.Gradient({
+          type: 'radial',
+          gradientUnits: 'pixels',
+          coords: {
+            x1: objW / 2,
+            y1: objH / 2,
+            r1: 0,
+            x2: objW / 2,
+            y2: objH / 2,
+            r2,
+          },
+          colorStops: stops,
+        });
+      }
+
+      const t = String(active.type || "").toLowerCase();
+      const currentFill = active.get('fill');
+      const isUnfilled = !currentFill || currentFill === 'transparent' || currentFill === 'rgba(0,0,0,0)';
+
+      const shouldApplyToStroke = t === "path" || t === "line" || t === "poly-line" || isUnfilled;
+
+      if (shouldApplyToStroke) {
         active.set('stroke', grad);
-        active.set('fill', null);
+        active.set('fill', isUnfilled ? currentFill : null);
       } else {
         active.set('fill', grad);
-        // Se não for um "path" (onde borda e preenchimento se confundem),
-        // removemos a borda para que o degradê tome conta de todo o objeto "sólido"
-        // conforme solicitado pelo usuário.
-        active.set({
-          stroke: null,
-          strokeWidth: 0
-        });
       }
 
       active.setCoords?.();
@@ -10506,6 +10528,49 @@ const Editor2D = forwardRef<Editor2DHandle, Props>(function Editor2D(
       console.warn('[applyGradientToSelection] Failed:', err);
     }
   };
+
+  // Helper para interpolação de stops
+  function getInterpolatedColorAt(stops: any[], t: number) {
+    if (stops.length === 0) return '#000';
+    if (stops.length === 1) return stops[0].color;
+    const sorted = [...stops].sort((a,b) => a.offset - b.offset);
+    if (t <= sorted[0].offset) return sorted[0].color;
+    if (t >= sorted[sorted.length-1].offset) return sorted[sorted.length-1].color;
+    
+    for (let i = 0; i < sorted.length - 1; i++) {
+      const s1 = sorted[i];
+      const s2 = sorted[i+1];
+      if (t >= s1.offset && t <= s2.offset) {
+        const localT = (t - s1.offset) / (s2.offset - s1.offset);
+        return interpolateHex(s1.color, s2.color, localT);
+      }
+    }
+    return sorted[0].color;
+  }
+
+  function interpolateHex(hex1: string, hex2: string, t: number): string {
+    const h1 = hexToRgb(hex1);
+    const h2 = hexToRgb(hex2);
+    if (!h1 || !h2) return hex1;
+    const r = Math.round(h1.r + (h2.r - h1.r) * t);
+    const g = Math.round(h1.g + (h2.g - h1.g) * t);
+    const b = Math.round(h1.b + (h2.b - h1.b) * t);
+    const toHex = (n: number) => Math.min(255, Math.max(0, n)).toString(16).padStart(2, '0');
+    return `#${toHex(r)}${toHex(g)}${toHex(b)}`.toUpperCase();
+  }
+
+  function hexToRgb(hex: string) {
+    let cleanHex = hex.replace('#', '');
+    if (cleanHex.length === 3) {
+      cleanHex = cleanHex.split('').map(c => c + c).join('');
+    }
+    const m = /^([a-f\d]{2})([a-f\d]{2})([a-f\d]{2})$/i.exec(cleanHex);
+    return m ? {
+      r: parseInt(m[1], 16),
+      g: parseInt(m[2], 16),
+      b: parseInt(m[3], 16)
+    } : null;
+  }
 
   useImperativeHandle(ref, () => ({
     clear,
