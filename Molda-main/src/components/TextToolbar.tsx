@@ -1,5 +1,6 @@
 // src/components/TextToolbar.tsx
 import React, { useEffect, useMemo, useRef, useState, useCallback } from "react";
+import { GradientAngleJoystick } from './GradientAngleJoystick';
 import type { Editor2DHandle, TextStyle, GradientFill, GradientStop } from "../components/Editor2D";
 import { FONT_LIBRARY } from "../fonts/library";
 import { loadFontFamily } from "../utils/fonts";
@@ -227,7 +228,7 @@ export default function TextToolbar({ editor, visible, position = "bottom" }: Pr
 
   const [isColorPanelOpen, setIsColorPanelOpen] = useState(false);
   const [showSwatchBar, setShowSwatchBar] = useState(false);
-  const swatchBarTimeout = useRef<NodeJS.Timeout | null>(null);
+  const swatchBarTimeout = useRef<ReturnType<typeof setTimeout> | null>(null);
 
   /** ====== Modo do painel: "solid" ou "gradient" ====== */
   const [colorMode, setColorMode] = useState<"solid" | "gradient">("solid");
@@ -238,6 +239,8 @@ export default function TextToolbar({ editor, visible, position = "bottom" }: Pr
     { offset: 1, color: "#FFFFFF" },
   ]);
   const [gradAngle, setGradAngle] = useState<number>(0);
+  const [gradType, setGradType] = useState<'linear' | 'radial'>('linear');
+  const [gradRadius, setGradRadius] = useState<number>(1.0);
   const [selectedStopIdx, setSelectedStopIdx] = useState<number>(0);
   const [stopDragging, setStopDragging] = useState(false);
   const gradBarRef = useRef<HTMLDivElement>(null);
@@ -429,29 +432,93 @@ export default function TextToolbar({ editor, visible, position = "bottom" }: Pr
         { offset: 1, color: '#FFFFFF' },
       ]);
       setGradAngle(gf.angle || 0);
+      setGradType(gf.gradientType || 'linear');
       setSelectedStopIdx(0);
     }
   }, [style.fill]);
 
-  // Ref para sempre acessar a versão mais recente de apply (evita stale closure)
-  const applyRef = useRef(apply);
-  useEffect(() => { applyRef.current = apply; });
+  const gradientWriteInFlightRef = useRef(false);
+  const queuedGradientRef = useRef<GradientFill | null>(null);
 
-  // Aplica degradê em tempo real enquanto arrasta
-  const applyGradient = useCallback((stops: GradientStop[], angle: number) => {
+  const pushGradientLive = useCallback((gradFill: GradientFill) => {
+    queuedGradientRef.current = gradFill;
+    if (gradientWriteInFlightRef.current) return;
+
+    gradientWriteInFlightRef.current = true;
+
+    const flush = async () => {
+      const next = queuedGradientRef.current;
+      queuedGradientRef.current = null;
+      if (!next) {
+        gradientWriteInFlightRef.current = false;
+        return;
+      }
+
+      try {
+        await editor.current?.setActiveTextStyle({
+          fill: next as any,
+          from: 'gradient-live',
+        });
+      } catch { }
+
+      if (queuedGradientRef.current) {
+        requestAnimationFrame(() => {
+          void flush();
+        });
+      } else {
+        gradientWriteInFlightRef.current = false;
+      }
+    };
+
+    void flush();
+  }, [editor]);
+
+  // Refs para valores atuais do degradê (evita stale closures e re-renders desnecessários)
+  const gradStopsRef = useRef(gradStops);
+  const gradAngleRef = useRef(gradAngle);
+  const gradTypeRef = useRef(gradType);
+  const gradRadiusRef = useRef(gradRadius);
+  useEffect(() => { gradStopsRef.current = gradStops; }, [gradStops]);
+  useEffect(() => { gradAngleRef.current = gradAngle; }, [gradAngle]);
+  useEffect(() => { gradTypeRef.current = gradType; }, [gradType]);
+  useEffect(() => { gradRadiusRef.current = gradRadius; }, [gradRadius]);
+
+  // applyGradient é estável (sem deps que mudam) — usa refs para valores atuais
+  const applyGradient = useCallback((
+    stops = gradStopsRef.current,
+    angle = gradAngleRef.current,
+    type: any = gradTypeRef.current,
+    radius = gradRadiusRef.current,
+  ) => {
     gradApplyingRef.current = true;
     const gradFill: GradientFill = {
       type: 'gradient',
-      gradientType: 'linear',
+      gradientType: type,
       angle,
       colorStops: stops,
+      radius,
     };
-    applyRef.current({ fill: gradFill as any });
-    // Limpa a flag após o React processar o re-render
+    pushGradientLive(gradFill);
     requestAnimationFrame(() => { gradApplyingRef.current = false; });
-  }, []);
+  }, [pushGradientLive]);
 
-  // Handler do stop drag na barra
+  // Aplica degradê em tempo real quando stops ou ângulo mudam
+  // applyGradient é estável (deps vazios), então não haverá cascata
+  const gradRafRef = useRef<number | null>(null);
+  useEffect(() => {
+    if (colorMode !== 'gradient') return;
+    if (gradRafRef.current) cancelAnimationFrame(gradRafRef.current);
+    gradRafRef.current = requestAnimationFrame(() => {
+      applyGradient(gradStops, gradAngleRef.current, gradTypeRef.current, gradRadiusRef.current);
+    });
+    return () => {
+      if (gradRafRef.current) cancelAnimationFrame(gradRafRef.current);
+      gradRafRef.current = null;
+    };
+  // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [gradStops, gradAngle, colorMode]);
+
+  // Handlers do stop drag na barra
   const onStopBarPointer = useCallback((e: React.PointerEvent, idx: number) => {
     const bar = gradBarRef.current;
     if (!bar) return;
@@ -479,21 +546,6 @@ export default function TextToolbar({ editor, visible, position = "bottom" }: Pr
       return next;
     });
   }, [stopDragging]);
-
-  // Aplica em tempo real quando stops ou ângulo mudam durante drag
-  const gradRafRef = useRef<number | null>(null);
-  useEffect(() => {
-    if (!stopDragging && colorMode !== 'gradient') return;
-    if (colorMode !== 'gradient') return;
-    if (gradRafRef.current) cancelAnimationFrame(gradRafRef.current);
-    gradRafRef.current = requestAnimationFrame(() => {
-      applyGradient(gradStops, gradAngle);
-    });
-    return () => {
-      if (gradRafRef.current) cancelAnimationFrame(gradRafRef.current);
-      gradRafRef.current = null;
-    };
-  }, [gradStops, gradAngle, stopDragging, colorMode]);
 
   // Gera CSS do degradê para preview
   const gradientCSS = useMemo(() => {
@@ -746,7 +798,7 @@ export default function TextToolbar({ editor, visible, position = "bottom" }: Pr
               ) : (
                 <>
                   {/* ===== MODO DEGRADÊ ===== */}
-
+                  
                   {/* Barra de preview do degradê */}
                   <div
                     ref={gradBarRef}
@@ -921,46 +973,51 @@ export default function TextToolbar({ editor, visible, position = "bottom" }: Pr
                     />
                   </div>
 
-                  {/* Ângulo */}
-                  <div className="mt-3 flex items-center gap-1.5">
-                    <span className="text-[10px] text-muted-foreground whitespace-nowrap">Ângulo</span>
-                    {[0, 45, 90, 135, 180].map(a => (
-                      <button
-                        key={a}
-                        type="button"
-                        className={[
-                          "h-6 min-w-6 px-1 rounded text-[10px] border transition",
-                          gradAngle === a
-                            ? 'bg-primary/15 border-primary/30 text-primary font-medium'
-                            : 'border-black/10 dark:border-white/10 bg-white/70 dark:bg-neutral-800/70 hover:bg-black/5 dark:hover:bg-white/5',
-                        ].join(' ')}
-                        onClick={() => {
-                          setGradAngle(a);
-                          editor.current?.historyCapture?.();
-                        }}
-                      >
-                        {a}°
-                      </button>
-                    ))}
-                    <input
-                      type="number"
-                      min={0}
-                      max={360}
-                      value={gradAngle}
-                      onChange={(e) => {
-                        const v = Number(e.target.value) || 0;
-                        setGradAngle(((v % 360) + 360) % 360);
-                      }}
-                      onBlur={() => editor.current?.historyCapture?.()}
-                      className="w-12 h-6 text-center text-[10px] rounded border border-black/10 dark:border-white/10 bg-white/70 dark:bg-neutral-900/70"
-                      title="Ângulo personalizado"
+                  {/* Joystick de Ângulo (Animado com Efeito de Recolha) */}
+                  <div 
+                    className={[
+                      "overflow-hidden transition-all duration-300 ease-in-out flex justify-center border-t border-black/5 dark:border-white/5",
+                      gradType === 'linear' ? "max-h-40 opacity-100 mt-3 pt-3 scale-100" : "max-h-0 opacity-0 mt-0 pt-0 scale-90 pointer-events-none"
+                    ].join(' ')}
+                  >
+                    <GradientAngleJoystick 
+                      angle={gradAngle} 
+                      onChange={setGradAngle} 
+                      onFinalChange={() => editor.current?.historyCapture?.()}
                     />
                   </div>
 
-                  {/* HEX do stop selecionado */}
+                  {/* Raio (apenas para Radial) */}
+                  <div 
+                    className={[
+                      "overflow-hidden transition-all duration-300 ease-in-out",
+                      gradType === 'radial' ? "max-h-20 opacity-100 mt-3" : "max-h-0 opacity-0 mt-0 pointer-events-none"
+                    ].join(' ')}
+                  >
+                    <div className="flex items-center gap-2 border-t border-black/5 dark:border-white/5 pt-3">
+                      <span className="text-xs text-muted-foreground shrink-0 w-10">Raio</span>
+                      <input
+                        type="range"
+                        min={0.1}
+                        max={3}
+                        step={0.05}
+                        value={gradRadius}
+                        onChange={(e) => {
+                          const r = parseFloat(e.target.value);
+                          setGradRadius(r);
+                          applyGradient(gradStops, gradAngle, gradType, r);
+                        }}
+                        onPointerUp={() => editor.current?.historyCapture?.()}
+                        className="flex-1 accent-primary h-1.5 rounded"
+                      />
+                      <span className="text-xs text-muted-foreground w-8 text-right">{Math.round(gradRadius * 100)}%</span>
+                    </div>
+                  </div>
+
+                  {/* HEX do stop selecionado + Botões de tipo */}
                   <div className="mt-2 flex items-center gap-2">
                     <div
-                      className="h-6 w-6 rounded-md border border-black/10 dark:border-white/10"
+                      className="h-6 w-6 rounded-md border border-black/10 dark:border-white/10 shrink-0"
                       style={{ background: selectedStop?.color || '#000' }}
                     />
                     <input
@@ -977,6 +1034,38 @@ export default function TextToolbar({ editor, visible, position = "bottom" }: Pr
                       className="w-24 px-2 py-0.5 rounded border border-black/10 dark:border-white/10 bg-white/70 dark:bg-neutral-900/70 text-xs"
                       placeholder="#000000"
                     />
+                    <div className="flex-1" />
+                    {/* Botões de tipo Linear / Radial */}
+                    {(['linear', 'radial'] as const).map((t) => (
+                      <button
+                        key={t}
+                        type="button"
+                        title={t === 'linear' ? 'Degradê Linear' : 'Degradê Radial'}
+                        className={[
+                          "h-7 w-7 rounded border transition grid place-items-center",
+                          gradType === t
+                            ? 'bg-primary/15 border-primary/40 text-primary'
+                            : 'border-black/10 dark:border-white/10 bg-white/70 dark:bg-neutral-800/70 hover:bg-black/5 dark:hover:bg-white/5',
+                        ].join(' ')}
+                        onClick={() => {
+                          setGradType(t);
+                          applyGradient(gradStops, gradAngle, t, gradRadius);
+                          editor.current?.historyCapture?.();
+                        }}
+                      >
+                        {t === 'linear' ? (
+                          <svg width="14" height="14" viewBox="0 0 14 14" fill="none">
+                            <defs><linearGradient id="lg" x1="0" y1="7" x2="14" y2="7" gradientUnits="userSpaceOnUse"><stop stopColor="currentColor" stopOpacity="0.2"/><stop offset="1" stopColor="currentColor"/></linearGradient></defs>
+                            <rect width="14" height="14" rx="2" fill="url(#lg)"/>
+                          </svg>
+                        ) : (
+                          <svg width="14" height="14" viewBox="0 0 14 14" fill="none">
+                            <defs><radialGradient id="rg" cx="50%" cy="50%" r="50%"><stop stopColor="currentColor"/><stop offset="1" stopColor="currentColor" stopOpacity="0.1"/></radialGradient></defs>
+                            <rect width="14" height="14" rx="2" fill="url(#rg)"/>
+                          </svg>
+                        )}
+                      </button>
+                    ))}
                   </div>
                 </>
               )}

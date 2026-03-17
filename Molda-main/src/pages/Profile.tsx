@@ -1,6 +1,6 @@
 // src/pages/Profile.tsx
-import { useMemo, useState, useEffect } from "react";
-import { useNavigate } from "react-router-dom";
+import { useMemo, useRef, useState, useEffect } from "react";
+import { useNavigate, useSearchParams } from "react-router-dom";
 import Header from "@/components/Header";
 import Canvas3DViewer from "@/components/Canvas3DViewer";
 import { Button } from "@/components/ui/button";
@@ -10,10 +10,11 @@ import { Badge } from "@/components/ui/badge";
 import { Avatar, AvatarFallback, AvatarImage } from "@/components/ui/avatar";
 import { Dialog, DialogContent, DialogHeader, DialogTitle, DialogFooter } from "@/components/ui/dialog";
 import { Input } from "@/components/ui/input";
-import { Settings, Pencil } from "lucide-react";
+import { Earth, Loader2, MoreVertical, Pencil } from "lucide-react";
 import { useAuth } from "@/contexts/AuthContext";
 import { supabase } from "@/integrations/supabase/client";
 import { AVATAR_BUCKET } from "@/lib/constants/storage";
+import { STORAGE_BUCKET } from "@/lib/supabaseClient";
 import type { DecalTransform, ExternalDecalData } from "@/types/decals";
 import { getProjectDisplayName } from "@/lib/creativeNames";
 
@@ -69,9 +70,28 @@ type CreationItem = {
   externalDecals?: ExternalDecalData[];
 };
 
+type GalleryItem = {
+  id: string;
+  previewUrl: string;
+  originalName: string;
+  displayName: string;
+  sortKey: string;
+  isPublic: boolean;
+  designValue: number;
+};
+
 const Profile = () => {
-  const { user: authUser, session, getProfile } = useAuth();
+  const { user: authUser, getProfile } = useAuth();
   const navigate = useNavigate();
+  const [searchParams] = useSearchParams();
+
+  const viewedUserId = useMemo(() => {
+    const fromQuery = (searchParams.get("user") || "").trim();
+    if (fromQuery) return fromQuery;
+    return authUser?.id || "";
+  }, [searchParams, authUser?.id]);
+
+  const isOwnProfile = Boolean(authUser?.id && viewedUserId && authUser.id === viewedUserId);
 
   const [user, setUser] = useState<ViewUser>({
     name: "Usuário",
@@ -97,15 +117,19 @@ const Profile = () => {
   const [drafts, setDrafts] = useState<DraftRecord[]>([]);
   const [draftsLoading, setDraftsLoading] = useState(false);
   const [draftsError, setDraftsError] = useState<string | null>(null);
+  const [galleryItems, setGalleryItems] = useState<GalleryItem[]>([]);
+  const [galleryLoading, setGalleryLoading] = useState(false);
+  const [galleryError, setGalleryError] = useState<string | null>(null);
+  const [togglingGalleryIds, setTogglingGalleryIds] = useState<Record<string, boolean>>({});
+  const [selectedDesign, setSelectedDesign] = useState<GalleryItem | null>(null);
+  const [editPanelOpen, setEditPanelOpen] = useState(false);
+  const [editNameInput, setEditNameInput] = useState("");
+  const [editValueInput, setEditValueInput] = useState("0,00");
+  const [savingDesignEdit, setSavingDesignEdit] = useState(false);
+  const [replacingDesign, setReplacingDesign] = useState(false);
+  const replaceDesignInputRef = useRef<HTMLInputElement | null>(null);
 
   const [piecesFilter, setPiecesFilter] = useState<"todas" | "finalizadas" | "rascunhos">("todas");
-
-  const [savedElements] = useState([
-    { id: 1, type: "image", name: "Logo Empresa", preview: "/api/placeholder/100/100" },
-    { id: 2, type: "text", name: "Frase Motivacional", content: "Seja a mudança" },
-    { id: 3, type: "drawing", name: "Desenho Abstrato", preview: "/api/placeholder/100/100" },
-    { id: 4, type: "pattern", name: "Padrão Geométrico", preview: "/api/placeholder/100/100" },
-  ]);
 
   const formatShortDate = (iso: string | null | undefined) => {
     if (!iso) return "";
@@ -113,6 +137,37 @@ const Profile = () => {
     if (Number.isNaN(date.getTime())) return "";
     return date.toLocaleDateString("pt-BR");
   };
+
+  const formatGalleryDate = (sortKey: string | null | undefined) => {
+    if (!sortKey || sortKey.length < 14) return "";
+
+    const year = Number(sortKey.slice(0, 4));
+    const month = Number(sortKey.slice(4, 6)) - 1;
+    const day = Number(sortKey.slice(6, 8));
+    const hours = Number(sortKey.slice(8, 10));
+    const minutes = Number(sortKey.slice(10, 12));
+    const seconds = Number(sortKey.slice(12, 14));
+    const milliseconds = Number(sortKey.slice(14, 17) || "0");
+
+    const date = new Date(year, month, day, hours, minutes, seconds, milliseconds);
+    if (Number.isNaN(date.getTime())) return "";
+
+    return date.toLocaleDateString("pt-BR", {
+      day: "2-digit",
+      month: "2-digit",
+      year: "numeric",
+    });
+  };
+
+  const formatCurrency = (value: number | null | undefined) => {
+    const n = value == null || Number.isNaN(value) ? 0 : value;
+    return new Intl.NumberFormat("pt-BR", { style: "currency", currency: "BRL" }).format(n);
+  };
+
+  const toEditValueString = (value: number | null | undefined) =>
+    (value == null || Number.isNaN(value) ? 0 : value)
+      .toFixed(2)
+      .replace(".", ",");
 
   const resolveDraftDecals = (data: DraftData): ExternalDecalData[] => {
     const tabs = data.canvasTabs ?? [];
@@ -168,7 +223,13 @@ const Profile = () => {
   }, [drafts, piecesFilter]);
 
   useEffect(() => {
-    if (!authUser?.id) return;
+    if (!authUser?.id || !isOwnProfile) {
+      setDrafts([]);
+      setDraftsLoading(false);
+      setDraftsError(null);
+      return;
+    }
+
     let cancelled = false;
 
     const fetchDrafts = async () => {
@@ -179,7 +240,7 @@ const Profile = () => {
         const { data, error } = await supabase
           .from("project_drafts")
           .select("id, project_key, data, updated_at")
-          .eq("user_id", authUser.id)
+          .eq("user_id", viewedUserId)
           .order("updated_at", { ascending: false });
 
         if (cancelled) return;
@@ -215,7 +276,123 @@ const Profile = () => {
     return () => {
       cancelled = true;
     };
-  }, [authUser?.id]);
+  }, [authUser?.id, viewedUserId, isOwnProfile]);
+
+  useEffect(() => {
+    if (!viewedUserId) {
+      setGalleryItems([]);
+      setGalleryError(null);
+      setGalleryLoading(false);
+      return;
+    }
+
+    let cancelled = false;
+
+    const loadGallery = async () => {
+      setGalleryLoading(true);
+      setGalleryError(null);
+
+      try {
+        let { data: visibilityRows, error: visibilityError } = await supabase
+          .from("gallery_visibility")
+          .select("storage_path,is_public,design_value,design_name,updated_at")
+          .eq("user_id", viewedUserId)
+          .order("updated_at", { ascending: false });
+
+        // Se design_name ainda não existe na tabela (42703), faz fallback sem ela
+        if (visibilityError?.code === "42703") {
+          const fallback = await supabase
+            .from("gallery_visibility")
+            .select("storage_path,is_public,design_value,updated_at")
+            .eq("user_id", viewedUserId)
+            .order("updated_at", { ascending: false });
+          visibilityRows = fallback.data;
+          visibilityError = fallback.error;
+        }
+
+        if (cancelled) return;
+        if (visibilityError && visibilityError.code !== "42P01") throw visibilityError;
+
+        const visibilityMap = new Map<string, { isPublic: boolean; designValue: number; designName: string | null }>(
+          (visibilityRows || []).map((row: any) => [
+            String(row.storage_path),
+            {
+              isPublic: Boolean(row.is_public),
+              designValue: row.design_value != null ? Number(row.design_value) : 0,
+              designName: row.design_name ? String(row.design_name) : null,
+            },
+          ])
+        );
+
+        let items: GalleryItem[] = [];
+
+        if (isOwnProfile) {
+          const prefix = `${viewedUserId}/images`;
+          const { data: files, error } = await supabase.storage.from(STORAGE_BUCKET).list(prefix, {
+            limit: 100,
+          } as any);
+
+          if (cancelled) return;
+          if (error) throw error;
+
+          const ordered = (files || []).slice().sort((a, b) => (a.name < b.name ? 1 : a.name > b.name ? -1 : 0));
+
+          items = await Promise.all(
+            ordered.map(async (file) => {
+              const fullPath = `${prefix}/${file.name}`;
+              const { data: signed } = await supabase.storage
+                .from(STORAGE_BUCKET)
+                .createSignedUrl(fullPath, 60 * 60 * 24 * 7);
+
+              return {
+                id: fullPath,
+                previewUrl:
+                  signed?.signedUrl ||
+                  supabase.storage.from(STORAGE_BUCKET).getPublicUrl(fullPath).data.publicUrl ||
+                  "",
+                originalName: file.name.replace(/^(\d{17})-/, ""),
+                sortKey: file.name.slice(0, 17),
+                isPublic: visibilityMap.get(fullPath)?.isPublic ?? false,
+                designValue: visibilityMap.get(fullPath)?.designValue ?? 0,
+                displayName: visibilityMap.get(fullPath)?.designName || file.name.replace(/^(\d{17})-/, ""),
+              } satisfies GalleryItem;
+            })
+          );
+        } else {
+          const publicRows = (visibilityRows || []).filter((row: any) => Boolean(row.is_public));
+          items = publicRows.map((row: any) => {
+            const path = String(row.storage_path || "");
+            const fileName = path.split("/").pop() || "design.png";
+            return {
+              id: path,
+              previewUrl: supabase.storage.from(STORAGE_BUCKET).getPublicUrl(path).data.publicUrl || "",
+              originalName: fileName.replace(/^(\d{17})-/, ""),
+              sortKey: fileName.slice(0, 17),
+              isPublic: true,
+              designValue: row.design_value != null ? Number(row.design_value) : 0,
+              displayName: row.design_name ? String(row.design_name) : fileName.replace(/^(\d{17})-/, ""),
+            } satisfies GalleryItem;
+          });
+        }
+
+        if (!cancelled) setGalleryItems(items.filter((item) => Boolean(item.previewUrl)));
+      } catch (err) {
+        if (!cancelled) {
+          console.error("Erro ao carregar galeria do usuário:", err);
+          setGalleryError("Erro ao carregar a galeria.");
+          setGalleryItems([]);
+        }
+      } finally {
+        if (!cancelled) setGalleryLoading(false);
+      }
+    };
+
+    void loadGallery();
+
+    return () => {
+      cancelled = true;
+    };
+  }, [viewedUserId, isOwnProfile]);
 
   const persistDraftToLocal = (draft: DraftRecord) => {
     const data = draft.data ?? {};
@@ -264,12 +441,8 @@ const Profile = () => {
   // Carrega profile e converte avatar_path -> publicUrl (mantido)
   useEffect(() => {
     const load = async () => {
-      const createdAtStr = session?.user?.created_at
-        ? new Date(session.user.created_at).toLocaleDateString("pt-BR", { month: "long", year: "numeric" })
-        : "";
-
       let display: ViewUser = {
-        id: authUser?.id,
+        id: viewedUserId,
         name:
           (authUser?.user_metadata as any)?.nickname ??
           (authUser?.user_metadata as any)?.name ??
@@ -280,10 +453,17 @@ const Profile = () => {
       };
 
       try {
-        const prof = await getProfile();
+        const prof = isOwnProfile
+          ? await getProfile()
+          : (await supabase
+            .from("profiles")
+            .select("id, email, username, nickname, full_name, avatar_path")
+            .eq("id", viewedUserId)
+            .maybeSingle()).data;
+
         if (prof) {
           let avatarUrl = "";
-          if (prof.avatar_path) {
+          if ((prof as any).avatar_path) {
             const { data } = supabase.storage.from(AVATAR_BUCKET).getPublicUrl(prof.avatar_path);
             avatarUrl = data.publicUrl;
           }
@@ -309,7 +489,122 @@ const Profile = () => {
       setUser(display);
     };
     load();
-  }, [authUser, session, getProfile]);
+  }, [authUser, getProfile, isOwnProfile, viewedUserId]);
+
+  const toggleGalleryVisibility = async (itemId: string, nextIsPublic: boolean) => {
+    if (!authUser?.id || !isOwnProfile) return;
+
+    setTogglingGalleryIds((prev) => ({ ...prev, [itemId]: true }));
+    const previousItem = galleryItems.find((item) => item.id === itemId) ?? null;
+
+    updateDesignLocal(itemId, { isPublic: nextIsPublic });
+
+    try {
+      const { error } = await supabase.from("gallery_visibility").upsert(
+        {
+          user_id: authUser.id,
+          storage_path: itemId,
+          is_public: nextIsPublic,
+        },
+        { onConflict: "user_id,storage_path" }
+      );
+      if (error) throw error;
+    } catch (err) {
+      console.error("Erro ao atualizar visibilidade do design:", err);
+      if (previousItem) updateDesignLocal(itemId, { isPublic: previousItem.isPublic });
+      setGalleryError("Não foi possível atualizar a visibilidade deste design.");
+    } finally {
+      setTogglingGalleryIds((prev) => ({ ...prev, [itemId]: false }));
+    }
+  };
+
+  const closeSelectedDesign = () => {
+    setSelectedDesign(null);
+    setEditPanelOpen(false);
+    setEditNameInput("");
+    setEditValueInput("0,00");
+  };
+
+  const updateDesignLocal = (itemId: string, partial: Partial<GalleryItem>) => {
+    setGalleryItems((prev) => prev.map((item) => (item.id === itemId ? { ...item, ...partial } : item)));
+    setSelectedDesign((prev) => (prev && prev.id === itemId ? { ...prev, ...partial } : prev));
+  };
+
+  const handleReplaceDesignImage: React.ChangeEventHandler<HTMLInputElement> = async (event) => {
+    const file = event.target.files?.[0] ?? null;
+    if (!file || !selectedDesign || !authUser?.id || !isOwnProfile) return;
+
+    setReplacingDesign(true);
+    try {
+      const { error: uploadError } = await supabase.storage
+        .from(STORAGE_BUCKET)
+        .upload(selectedDesign.id, file, { upsert: true, contentType: file.type || "image/png" });
+
+      if (uploadError) throw uploadError;
+
+      const { data: signed } = await supabase.storage
+        .from(STORAGE_BUCKET)
+        .createSignedUrl(selectedDesign.id, 60 * 60 * 24 * 7);
+
+      const previewUrl =
+        signed?.signedUrl ||
+        supabase.storage.from(STORAGE_BUCKET).getPublicUrl(selectedDesign.id).data.publicUrl ||
+        selectedDesign.previewUrl;
+
+      updateDesignLocal(selectedDesign.id, { previewUrl });
+    } catch (err) {
+      console.error("Erro ao substituir imagem do design:", err);
+      setGalleryError("Não foi possível editar a imagem deste design.");
+    } finally {
+      setReplacingDesign(false);
+      event.target.value = "";
+    }
+  };
+
+  const openEditPanel = () => {
+    if (!selectedDesign) return;
+    setEditNameInput(selectedDesign.displayName);
+    setEditValueInput(toEditValueString(selectedDesign.designValue));
+    setEditPanelOpen(true);
+  };
+
+  const saveDesignEdit = async () => {
+    if (!selectedDesign || !authUser?.id || !isOwnProfile) return;
+
+    const normalized = editValueInput.replace(",", ".").trim();
+    const parsed = normalized ? Number(normalized) : 0;
+    if (normalized && (Number.isNaN(parsed) || parsed < 0)) {
+      setGalleryError("Informe um valor válido para o design.");
+      return;
+    }
+
+    setSavingDesignEdit(true);
+    try {
+      const { error } = await supabase.from("gallery_visibility").upsert(
+        {
+          user_id: authUser.id,
+          storage_path: selectedDesign.id,
+          is_public: selectedDesign.isPublic,
+          design_value: parsed,
+          design_name: editNameInput.trim() || null,
+        },
+        { onConflict: "user_id,storage_path" }
+      );
+
+      if (error) throw error;
+
+      updateDesignLocal(selectedDesign.id, {
+        designValue: parsed,
+        displayName: editNameInput.trim() || selectedDesign.originalName,
+      });
+      setEditPanelOpen(false);
+    } catch (err) {
+      console.error("Erro ao salvar edição do design:", err);
+      setGalleryError("Não foi possível salvar as alterações do design.");
+    } finally {
+      setSavingDesignEdit(false);
+    }
+  };
 
   const getStatusBadge = (status: "finalizada" | "rascunho" | "producao") => {
     switch (status) {
@@ -481,33 +776,37 @@ const Profile = () => {
                     <AvatarImage src={user.avatar} alt={user.name} />
                     <AvatarFallback>{getAvatarFallback(user.name)}</AvatarFallback>
                   </Avatar>
-                  <button
-                    aria-label="Editar foto de perfil"
-                    onClick={() => setOpenUpload(true)}
-                    className="hidden group-hover:flex absolute inset-0 items-center justify-center rounded-full bg-black/40"
-                    title="Editar foto"
-                  >
-                    <Pencil className="w-5 h-5 text-white" />
-                  </button>
+                  {isOwnProfile && (
+                    <button
+                      aria-label="Editar foto de perfil"
+                      onClick={() => setOpenUpload(true)}
+                      className="hidden group-hover:flex absolute inset-0 items-center justify-center rounded-full bg-black/40"
+                      title="Editar foto"
+                    >
+                      <Pencil className="w-5 h-5 text-white" />
+                    </button>
+                  )}
                 </div>
 
                 <div>
                   {/* Linha do NICKNAME com lápis no hover */}
                   <div className="group flex items-center gap-2">
-                    {!editing.nickname ? (
+                    {!isOwnProfile || !editing.nickname ? (
                       <>
                         <h1 className="text-2xl font-semibold">{user.name}</h1>
-                        <button
-                          type="button"
-                          className="opacity-0 group-hover:opacity-100 transition"
-                          title="Editar nickname"
-                          onClick={() => {
-                            setForm((f) => ({ ...f, nickname: user.name || "" }));
-                            setEditing((e) => ({ ...e, nickname: true }));
-                          }}
-                        >
-                          <Pencil className="w-4 h-4 text-gray-500" />
-                        </button>
+                        {isOwnProfile && (
+                          <button
+                            type="button"
+                            className="opacity-0 group-hover:opacity-100 transition"
+                            title="Editar nickname"
+                            onClick={() => {
+                              setForm((f) => ({ ...f, nickname: user.name || "" }));
+                              setEditing((e) => ({ ...e, nickname: true }));
+                            }}
+                          >
+                            <Pencil className="w-4 h-4 text-gray-500" />
+                          </button>
+                        )}
                       </>
                     ) : (
                       <div className="flex items-center gap-2">
@@ -540,21 +839,23 @@ const Profile = () => {
 
                   {/* Linha do USERNAME com lápis no hover */}
                   <div className="group flex items-center gap-2">
-                    {!editing.username ? (
+                    {!isOwnProfile || !editing.username ? (
                       <>
                         <p className="text-gray-600 mb-1">@{user.username || "defina um usuário"}</p>
-                        <button
-                          type="button"
-                          className="opacity-0 group-hover:opacity-100 transition"
-                          title="Editar username"
-                          onClick={() => {
-                            setUsernameTaken(null);
-                            setForm((f) => ({ ...f, username: user.username || "" }));
-                            setEditing((e) => ({ ...e, username: true }));
-                          }}
-                        >
-                          <Pencil className="w-4 h-4 text-gray-500" />
-                        </button>
+                        {isOwnProfile && (
+                          <button
+                            type="button"
+                            className="opacity-0 group-hover:opacity-100 transition"
+                            title="Editar username"
+                            onClick={() => {
+                              setUsernameTaken(null);
+                              setForm((f) => ({ ...f, username: user.username || "" }));
+                              setEditing((e) => ({ ...e, username: true }));
+                            }}
+                          >
+                            <Pencil className="w-4 h-4 text-gray-500" />
+                          </button>
+                        )}
                       </>
                     ) : (
                       <div className="flex items-center gap-2">
@@ -617,8 +918,8 @@ const Profile = () => {
               <div className="flex items-center gap-3">
 
                 <div className="text-center">
-                  <div className="text-2xl font-bold text-purple-600">{creations.length}</div>
-                  <div className="text-xs text-gray-500">Criações</div>
+                  <div className="text-2xl font-bold text-purple-600">{isOwnProfile ? creations.length : galleryItems.length}</div>
+                  <div className="text-xs text-gray-500">{isOwnProfile ? "Criações" : "Designs públicos"}</div>
                 </div>
               </div>
             </div>
@@ -626,14 +927,15 @@ const Profile = () => {
         </Card>
 
         {/* ===== Seções abaixo do banner (RESTauradas) ===== */}
-        <Tabs defaultValue="creations" className="w-full">
-          <TabsList className="grid w-full grid-cols-2 max-w-md mx-auto">
-            <TabsTrigger value="creations">Minhas Peças</TabsTrigger>
-            <TabsTrigger value="elements">Elementos Salvos</TabsTrigger>
+        <Tabs defaultValue={isOwnProfile ? "creations" : "elements"} className="w-full">
+          <TabsList className={`grid w-full max-w-md mx-auto ${isOwnProfile ? "grid-cols-2" : "grid-cols-1"}`}>
+            {isOwnProfile && <TabsTrigger value="creations">Minhas Peças</TabsTrigger>}
+            <TabsTrigger value="elements">Designs</TabsTrigger>
           </TabsList>
 
           {/* Minhas Peças */}
-          <TabsContent value="creations" className="mt-6">
+          {isOwnProfile && (
+            <TabsContent value="creations" className="mt-6">
             <div className="flex items-center justify-between mb-4">
               <h2 className="text-xl font-semibold">Minhas Peças</h2>
               <div className="flex gap-2">
@@ -803,89 +1105,264 @@ const Profile = () => {
                 })()}
               </div>
             )}
-          </TabsContent>
+            </TabsContent>
+          )}
 
-          {/* Elementos Salvos */}
+          {/* Designs */}
           <TabsContent value="elements" className="mt-6">
             <div className="flex items-center justify-between mb-4">
-              <h2 className="text-xl font-semibold">Elementos Salvos</h2>
-              <div className="flex gap-2">
-                <Button variant="outline" size="sm">Todos</Button>
-                <Button variant="outline" size="sm">Imagens</Button>
-                <Button variant="outline" size="sm">Textos</Button>
-                <Button variant="outline" size="sm">Desenhos</Button>
-              </div>
+              <h2 className="text-xl font-semibold">{isOwnProfile ? "Designs" : "Designs públicos"}</h2>
             </div>
 
-            <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-3 gap-6">
-              {savedElements.map((el: any) => (
-                <Card key={el.id} className="shadow-lg hover:shadow-xl transition-shadow">
-                  <CardHeader className="pb-2">
-                    <CardTitle className="text-lg">{el.name}</CardTitle>
-                    <p className="text-sm text-gray-500">Tipo: {el.type}</p>
-                  </CardHeader>
-                  <CardContent>
-                    {"preview" in el ? (
-                      <div className="aspect-square w-full overflow-hidden rounded-md bg-muted mb-4">
-                        <img
-                          src={el.preview}
-                          alt={el.name}
-                          className="h-full w-full object-cover"
-                        />
+            {galleryLoading ? (
+              <div className="rounded-xl border border-dashed border-border bg-card/40 p-10 text-center text-sm text-muted-foreground">
+                Carregando designs da galeria...
+              </div>
+            ) : galleryError ? (
+              <div className="rounded-xl border border-dashed border-destructive/30 bg-destructive/5 p-10 text-center text-sm text-destructive">
+                {galleryError}
+              </div>
+            ) : galleryItems.length === 0 ? (
+              <div className="rounded-xl border border-dashed border-border bg-card/40 p-10 text-center text-sm text-muted-foreground">
+                {isOwnProfile ? "Nenhum item encontrado na sua galeria." : "Nenhum design público encontrado."}
+              </div>
+            ) : (
+              <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-3 gap-6">
+                {galleryItems.map((item) => (
+                  <Card
+                    key={item.id}
+                    className="shadow-lg hover:shadow-xl transition-shadow overflow-hidden cursor-pointer"
+                    onClick={() => setSelectedDesign(item)}
+                  >
+                    <CardContent className="p-0">
+                      <div>
+                        <div className="aspect-square w-full overflow-hidden bg-muted">
+                          <img
+                            src={item.previewUrl}
+                            alt={item.originalName}
+                            className="h-full w-full object-cover"
+                            loading="lazy"
+                          />
+                        </div>
+
                       </div>
-                    ) : (
-                      <div className="rounded-md border p-4 mb-4">
-                        <p className="text-gray-700">{el.content}</p>
+
+                      <div className="p-4">
+                        <CardTitle className="text-lg break-all">{item.originalName}</CardTitle>
+                        <p className="mt-2 text-sm text-muted-foreground">
+                          {formatGalleryDate(item.sortKey) ? `Adicionado em ${formatGalleryDate(item.sortKey)}` : "Item da galeria"}
+                        </p>
+                        {isOwnProfile && (
+                          <p className="mt-1 text-xs text-muted-foreground">
+                            {item.isPublic ? "Visível para todos" : "Somente você"}
+                          </p>
+                        )}
                       </div>
-                    )}
-                    <div className="flex gap-2">
-                      <Button variant="outline" className="w-full">Editar</Button>
-                      <Button className="w-full">Adicionar à peça</Button>
-                    </div>
-                  </CardContent>
-                </Card>
-              ))}
-            </div>
+                      {isOwnProfile && (
+                        <div className="flex justify-end px-4 pb-4">
+                          <Button
+                            type="button"
+                            variant="secondary"
+                            size="icon"
+                            className="bg-background/90"
+                            onClick={(event) => {
+                              event.stopPropagation();
+                              void toggleGalleryVisibility(item.id, !item.isPublic);
+                            }}
+                            disabled={Boolean(togglingGalleryIds[item.id])}
+                            title={item.isPublic ? "Público" : "Não público"}
+                            aria-label={item.isPublic ? "Definir como não público" : "Definir como público"}
+                          >
+                            {togglingGalleryIds[item.id] ? (
+                              <Loader2 className="h-4 w-4 animate-spin" />
+                            ) : (
+                              <span className={`relative inline-flex transition-transform duration-500 ${item.isPublic ? "rotate-180" : "rotate-0"}`}>
+                                <Earth className="h-4 w-4" />
+                                {!item.isPublic && (
+                                  <span className="pointer-events-none absolute left-1/2 top-1/2 h-5 w-[2px] -translate-x-1/2 -translate-y-1/2 rotate-45 rounded-full bg-current" />
+                                )}
+                              </span>
+                            )}
+                          </Button>
+                        </div>
+                      )}
+                    </CardContent>
+                  </Card>
+                ))}
+              </div>
+            )}
           </TabsContent>
         </Tabs>
       </main>
 
-      {/* Dialog de upload (inalterado) */}
-      <Dialog open={openUpload} onOpenChange={setOpenUpload}>
-        <DialogContent>
+      <Dialog open={Boolean(selectedDesign)} onOpenChange={(open) => (!open ? closeSelectedDesign() : undefined)}>
+        <DialogContent className="max-w-6xl">
+          <DialogHeader className="sr-only">
+            <DialogTitle>Detalhes do design</DialogTitle>
+          </DialogHeader>
+
+          {selectedDesign && (
+            <div className="relative">
+              {isOwnProfile && (
+                <div className="absolute right-0 top-0 z-10">
+                  <Button variant="ghost" size="icon" aria-label="Editar design" onClick={openEditPanel}>
+                    <MoreVertical className="h-4 w-4" />
+                  </Button>
+                </div>
+              )}
+
+              <input
+                ref={replaceDesignInputRef}
+                type="file"
+                accept="image/*"
+                className="hidden"
+                onChange={handleReplaceDesignImage}
+              />
+
+              <div className="grid grid-cols-1 gap-6 md:grid-cols-[minmax(0,2fr)_minmax(260px,1fr)]">
+                <div className="rounded-lg border bg-muted/20 p-2">
+                  <div className="max-h-[70vh] overflow-auto rounded-md bg-black/5 flex items-center justify-center">
+                    <img
+                      src={selectedDesign.previewUrl}
+                      alt={selectedDesign.displayName}
+                      className="max-h-[68vh] w-auto object-contain"
+                    />
+                  </div>
+                </div>
+
+                <div className="rounded-lg border p-4 space-y-4">
+                  <div>
+                    <p className="text-sm text-muted-foreground">Nome</p>
+                    <p className="font-semibold break-all">{selectedDesign.displayName}</p>
+                  </div>
+
+                  <div>
+                    <p className="text-sm text-muted-foreground">Data</p>
+                    <p className="font-medium">
+                      {formatGalleryDate(selectedDesign.sortKey) || "Data indisponível"}
+                    </p>
+                  </div>
+
+                  <div>
+                    <p className="text-sm text-muted-foreground">Valor</p>
+                    <p className="font-medium">{formatCurrency(selectedDesign.designValue)}</p>
+                  </div>
+
+                  <div className="pt-2">
+                    <p className="text-sm text-muted-foreground mb-2">Visibilidade</p>
+                    <Button
+                      type="button"
+                      variant="secondary"
+                      size="icon"
+                      className="bg-background/90"
+                      onClick={() => void toggleGalleryVisibility(selectedDesign.id, !selectedDesign.isPublic)}
+                      disabled={!isOwnProfile || Boolean(togglingGalleryIds[selectedDesign.id])}
+                      title={selectedDesign.isPublic ? "Público" : "Não público"}
+                      aria-label={selectedDesign.isPublic ? "Definir como não público" : "Definir como público"}
+                    >
+                      {togglingGalleryIds[selectedDesign.id] ? (
+                        <Loader2 className="h-4 w-4 animate-spin" />
+                      ) : (
+                        <span className={`relative inline-flex transition-transform duration-500 ${selectedDesign.isPublic ? "rotate-180" : "rotate-0"}`}>
+                          <Earth className="h-4 w-4" />
+                          {!selectedDesign.isPublic && (
+                            <span className="pointer-events-none absolute left-1/2 top-1/2 h-5 w-[2px] -translate-x-1/2 -translate-y-1/2 rotate-45 rounded-full bg-current" />
+                          )}
+                        </span>
+                      )}
+                    </Button>
+                  </div>
+
+                  {replacingDesign && (
+                    <div className="flex items-center gap-2 text-sm text-muted-foreground">
+                      <Loader2 className="h-4 w-4 animate-spin" />
+                      Atualizando imagem...
+                    </div>
+                  )}
+                </div>
+              </div>
+            </div>
+          )}
+        </DialogContent>
+      </Dialog>
+
+      <Dialog open={editPanelOpen} onOpenChange={(open) => { if (!open) setEditPanelOpen(false); }}>
+        <DialogContent className="max-w-md">
           <DialogHeader>
-            <DialogTitle>Atualizar foto de perfil</DialogTitle>
+            <DialogTitle>Editar design</DialogTitle>
           </DialogHeader>
 
           <div className="space-y-4">
-            {previewUrl ? (
-              <div className="flex items-center gap-4">
-                <Avatar className="h-16 w-16">
-                  <AvatarImage src={previewUrl} />
-                  <AvatarFallback>{getAvatarFallback(user.name)}</AvatarFallback>
-                </Avatar>
-                <div className="text-sm text-gray-600">Pré-visualização</div>
-              </div>
-            ) : (
-              <div className="text-sm text-gray-500">Selecione uma imagem (JPG/PNG até ~5MB).</div>
-            )}
-
-            <input
-              type="file"
-              accept="image/*"
-              onChange={onPickFile}
-              className="block w-full text-sm file:mr-4 file:rounded-md file:border file:px-4 file:py-2 file:text-sm file:font-medium file:bg-white file:hover:bg-gray-50"
-            />
+            <div className="space-y-1">
+              <label className="text-sm font-medium">Nome</label>
+              <Input
+                value={editNameInput}
+                onChange={(event) => setEditNameInput(event.target.value)}
+                placeholder="Nome do design"
+                disabled={savingDesignEdit}
+              />
+            </div>
+            <div className="space-y-1">
+              <label className="text-sm font-medium">Valor (R$)</label>
+              <Input
+                value={editValueInput}
+                onChange={(event) => setEditValueInput(event.target.value)}
+                placeholder="0,00"
+                inputMode="decimal"
+                disabled={savingDesignEdit}
+              />
+            </div>
           </div>
 
           <DialogFooter>
-            <Button variant="outline" onClick={() => setOpenUpload(false)}>Cancelar</Button>
-            <Button onClick={handleSaveAvatar} disabled={!selectedFile || saving}>
-              {saving ? "Salvando..." : "Salvar"}
+            <Button variant="outline" onClick={() => setEditPanelOpen(false)} disabled={savingDesignEdit}>
+              Cancelar
+            </Button>
+            <Button onClick={saveDesignEdit} disabled={savingDesignEdit}>
+              {savingDesignEdit ? "Salvando..." : "Salvar"}
             </Button>
           </DialogFooter>
         </DialogContent>
       </Dialog>
+
+      {/* Dialog de upload (inalterado) */}
+      {isOwnProfile && (
+        <Dialog open={openUpload} onOpenChange={setOpenUpload}>
+          <DialogContent>
+            <DialogHeader>
+              <DialogTitle>Atualizar foto de perfil</DialogTitle>
+            </DialogHeader>
+
+            <div className="space-y-4">
+              {previewUrl ? (
+                <div className="flex items-center gap-4">
+                  <Avatar className="h-16 w-16">
+                    <AvatarImage src={previewUrl} />
+                    <AvatarFallback>{getAvatarFallback(user.name)}</AvatarFallback>
+                  </Avatar>
+                  <div className="text-sm text-gray-600">Pré-visualização</div>
+                </div>
+              ) : (
+                <div className="text-sm text-gray-500">Selecione uma imagem (JPG/PNG até ~5MB).</div>
+              )}
+
+              <input
+                type="file"
+                accept="image/*"
+                onChange={onPickFile}
+                className="block w-full text-sm file:mr-4 file:rounded-md file:border file:px-4 file:py-2 file:text-sm file:font-medium file:bg-white file:hover:bg-gray-50"
+              />
+            </div>
+
+            <DialogFooter>
+              <Button variant="outline" onClick={() => setOpenUpload(false)}>Cancelar</Button>
+              <Button onClick={handleSaveAvatar} disabled={!selectedFile || saving}>
+                {saving ? "Salvando..." : "Salvar"}
+              </Button>
+            </DialogFooter>
+          </DialogContent>
+        </Dialog>
+      )}
     </div>
   );
 };

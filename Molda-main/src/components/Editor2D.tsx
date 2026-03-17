@@ -49,9 +49,10 @@ export type GradientStop = { offset: number; color: string };
 /** Configuração de preenchimento com degradê */
 export type GradientFill = {
   type: 'gradient';
-  gradientType: 'linear';
+  gradientType: 'linear' | 'radial';
   angle: number;          // 0-360
   colorStops: GradientStop[];
+  radius?: number;        // 0-1 (fraction of max(w,h)/2), default 1.0
 };
 
 export type TextStyle = Partial<{
@@ -231,7 +232,7 @@ export type Editor2DHandle = {
   // ==== Texto ====
   addText: (value?: string, opts?: { x?: number; y?: number }) => void;
   getActiveTextStyle: () => TextStyle | null;
-  setActiveTextStyle: (patch: TextStyle & { from?: "font-picker" | "inspector" }) => Promise<void>;
+  setActiveTextStyle: (patch: TextStyle & { from?: "font-picker" | "inspector" | "gradient-live" }) => Promise<void>;
   applyTextStyle: (patch: TextStyle) => void;
   onSelectionChange?: (cb: (k: "none" | "text" | "image" | "other") => void) => void;
 
@@ -6732,16 +6733,21 @@ const Editor2D = forwardRef<Editor2DHandle, Props>(function Editor2D(
     } catch { }
   };
 
-  const setActiveTextStyle = async (patch: TextStyle & { from?: "font-picker" | "inspector" }) => {
+  const setActiveTextStyle = async (patch: TextStyle & { from?: "font-picker" | "inspector" | "gradient-live" }) => {
     const c: any = canvasRef.current as any;
     if (!c) return;
     const active: any = c.getActiveObject && c.getActiveObject();
     if (!active || !String(active.type || "").toLowerCase().includes("text")) return;
 
     const nextPatch: any = { ...patch };
+    const isGradientLive = patch.from === "gradient-live";
     if (nextPatch.fontFamily == null) {
-      const liveStyle = getActiveTextStyle();
-      nextPatch.fontFamily = liveStyle?.fontFamily || active.fontFamily || "Inter";
+      if (isGradientLive) {
+        nextPatch.fontFamily = active.fontFamily || "Inter";
+      } else {
+        const liveStyle = getActiveTextStyle();
+        nextPatch.fontFamily = liveStyle?.fontFamily || active.fontFamily || "Inter";
+      }
     }
 
     // ===== Gradient fill handling =====
@@ -6826,14 +6832,16 @@ const Editor2D = forwardRef<Editor2DHandle, Props>(function Editor2D(
     try { active.setCoords?.(); } catch { }
     try { c.requestRenderAll?.(); } catch { }
 
-    if (!isRestoringRef.current && !isLoadingRef.current) {
+    if (!isGradientLive && !isRestoringRef.current && !isLoadingRef.current) {
       historyRef.current?.push("modify");
       emitHistory();
     }
 
-    emitTextStyleEvent("editor2d:activeTextStyle", getActiveTextStyle());
-    emitTextStyleEvent("editor2d:selectionStyle", getActiveTextStyle());
-    emitFontUsed(nextPatch.fontFamily);
+    if (!isGradientLive) {
+      emitTextStyleEvent("editor2d:activeTextStyle", getActiveTextStyle());
+      emitTextStyleEvent("editor2d:selectionStyle", getActiveTextStyle());
+      emitFontUsed(nextPatch.fontFamily);
+    }
   };
 
   const applyTextStyle = (patch: TextStyle) => {
@@ -8383,8 +8391,10 @@ const Editor2D = forwardRef<Editor2DHandle, Props>(function Editor2D(
     const finalStrokeColor = style?.strokeColor ?? strokeColor;
     const finalFillColor = useFill ? finalStrokeColor : null;
 
-    const finalStrokeWidth = style?.strokeWidth ?? strokeWidth;
+    // Se for preenchido, removemos a borda para ser um objeto sólido unico (solicitação do usuário)
+    const finalStrokeWidth = useFill ? 0 : (style?.strokeWidth ?? strokeWidth);
     const finalOpacity = style?.opacity ?? opacity;
+    const actualStroke = useFill ? null : finalStrokeColor;
 
     // Use 0,0 as local origin; we'll center after creation
     const cx = 0;
@@ -8399,7 +8409,7 @@ const Editor2D = forwardRef<Editor2DHandle, Props>(function Editor2D(
         width: 180,
         height: 180,
         fill: finalFillColor || "transparent",
-        stroke: finalStrokeColor,
+        stroke: actualStroke,
         strokeWidth: finalStrokeWidth,
         opacity: finalOpacity,
         erasable: true,
@@ -8411,7 +8421,7 @@ const Editor2D = forwardRef<Editor2DHandle, Props>(function Editor2D(
         top: cy,
         radius: 90,
         fill: finalFillColor || "transparent",
-        stroke: finalStrokeColor,
+        stroke: actualStroke,
         strokeWidth: finalStrokeWidth,
         opacity: finalOpacity,
         erasable: true,
@@ -8429,7 +8439,7 @@ const Editor2D = forwardRef<Editor2DHandle, Props>(function Editor2D(
       }
       obj = new fabric.Polygon(points, {
         fill: finalFillColor || "transparent",
-        stroke: finalStrokeColor,
+        stroke: actualStroke,
         strokeWidth: finalStrokeWidth,
         opacity: finalOpacity,
         erasable: true,
@@ -8447,7 +8457,7 @@ const Editor2D = forwardRef<Editor2DHandle, Props>(function Editor2D(
       }
       obj = new fabric.Polygon(points, {
         fill: finalFillColor || "transparent",
-        stroke: finalStrokeColor,
+        stroke: actualStroke,
         strokeWidth: finalStrokeWidth,
         opacity: finalOpacity,
         erasable: true,
@@ -8464,7 +8474,7 @@ const Editor2D = forwardRef<Editor2DHandle, Props>(function Editor2D(
       }
       obj = new fabric.Polygon(points, {
         fill: finalFillColor || "transparent",
-        stroke: finalStrokeColor,
+        stroke: actualStroke,
         strokeWidth: finalStrokeWidth,
         opacity: finalOpacity,
         erasable: true,
@@ -8480,7 +8490,7 @@ const Editor2D = forwardRef<Editor2DHandle, Props>(function Editor2D(
       ];
       obj = new fabric.Polygon(points, {
         fill: finalFillColor || "transparent",
-        stroke: finalStrokeColor,
+        stroke: actualStroke,
         strokeWidth: finalStrokeWidth,
         opacity: finalOpacity,
         erasable: true,
@@ -8497,7 +8507,7 @@ const Editor2D = forwardRef<Editor2DHandle, Props>(function Editor2D(
       }
       obj = new fabric.Polygon(points, {
         fill: finalFillColor || "transparent",
-        stroke: finalStrokeColor,
+        stroke: actualStroke,
         strokeWidth: finalStrokeWidth,
         opacity: finalOpacity,
         erasable: true,
@@ -8514,7 +8524,7 @@ const Editor2D = forwardRef<Editor2DHandle, Props>(function Editor2D(
       }
       obj = new fabric.Polygon(points, {
         fill: finalFillColor || "transparent",
-        stroke: finalStrokeColor,
+        stroke: actualStroke,
         strokeWidth: finalStrokeWidth,
         opacity: finalOpacity,
         erasable: true,
@@ -8539,7 +8549,7 @@ const Editor2D = forwardRef<Editor2DHandle, Props>(function Editor2D(
       ];
       obj = new fabric.Polygon(points, {
         fill: finalFillColor || "transparent",
-        stroke: finalStrokeColor,
+        stroke: actualStroke,
         strokeWidth: finalStrokeWidth,
         opacity: finalOpacity,
         erasable: true,
@@ -8557,7 +8567,7 @@ const Editor2D = forwardRef<Editor2DHandle, Props>(function Editor2D(
         `C ${hx + 5 * s},${hy + 15 * s} ${hx},${hy + 26 * s} ${hx},${hy + 30 * s} Z`;
       obj = new fabric.Path(path, {
         fill: finalFillColor || "transparent",
-        stroke: finalStrokeColor,
+        stroke: actualStroke,
         strokeWidth: finalStrokeWidth,
         opacity: finalOpacity,
         erasable: true,
@@ -8574,7 +8584,7 @@ const Editor2D = forwardRef<Editor2DHandle, Props>(function Editor2D(
       ];
       obj = new fabric.Polygon(points, {
         fill: finalFillColor || "transparent",
-        stroke: finalStrokeColor,
+        stroke: actualStroke,
         strokeWidth: finalStrokeWidth,
         opacity: finalOpacity,
         erasable: true,
@@ -8591,7 +8601,7 @@ const Editor2D = forwardRef<Editor2DHandle, Props>(function Editor2D(
       ];
       obj = new fabric.Polygon(points, {
         fill: finalFillColor || "transparent",
-        stroke: finalStrokeColor,
+        stroke: actualStroke,
         strokeWidth: finalStrokeWidth,
         opacity: finalOpacity,
         erasable: true,
@@ -8603,7 +8613,7 @@ const Editor2D = forwardRef<Editor2DHandle, Props>(function Editor2D(
         `C 45,60 5,20 0,0 Z`;
       obj = new fabric.Path(path, {
         fill: finalFillColor || "transparent",
-        stroke: finalStrokeColor,
+        stroke: actualStroke,
         strokeWidth: finalStrokeWidth,
         opacity: finalOpacity,
         erasable: true,
@@ -8614,7 +8624,7 @@ const Editor2D = forwardRef<Editor2DHandle, Props>(function Editor2D(
       const path = `M -35,-42.4 A 55 55 0 1 1 -35,42.4 A 45 45 0 0 1 -35,-42.4 Z`;
       obj = new fabric.Path(path, {
         fill: finalFillColor || "transparent",
-        stroke: finalStrokeColor,
+        stroke: actualStroke,
         strokeWidth: finalStrokeWidth,
         opacity: finalOpacity,
         erasable: true,
@@ -8631,7 +8641,7 @@ const Editor2D = forwardRef<Editor2DHandle, Props>(function Editor2D(
       }
       obj = new fabric.Polygon(points, {
         fill: finalFillColor || "transparent",
-        stroke: finalStrokeColor,
+        stroke: actualStroke,
         strokeWidth: finalStrokeWidth,
         opacity: finalOpacity,
         erasable: true,
@@ -9965,6 +9975,14 @@ const Editor2D = forwardRef<Editor2DHandle, Props>(function Editor2D(
       });
     } else {
       patch.fill = pattern;
+      // Quando aplicamos padrão ao preenchimento, removemos a borda para ser objeto sólido
+      // (solicitação do usuário: degradê/padrão deve colorir o objeto todo)
+      const t = String(obj?.type || "").toLowerCase();
+      const isPathLike = t === "path" || t === "line" || t === "poly-line";
+      if (!isPathLike) {
+        patch.stroke = null;
+        patch.strokeWidth = 0;
+      }
     }
     obj.set(patch);
     // Centraliza a invalidação de cache/bounds em um único lugar
@@ -10454,31 +10472,112 @@ const Editor2D = forwardRef<Editor2DHandle, Props>(function Editor2D(
       const angleRad = (gfill.angle || 0) * Math.PI / 180;
       const objW = Number(active.width ?? 100);
       const objH = Number(active.height ?? 100);
-      const cos = Math.cos(angleRad);
-      const sin = Math.sin(angleRad);
-      const halfW = objW / 2;
-      const halfH = objH / 2;
-      const x1 = halfW - cos * halfW;
-      const y1 = halfH - sin * halfH;
-      const x2 = halfW + cos * halfW;
-      const y2 = halfH + sin * halfH;
-      const grad = new fabric.Gradient({
-        type: 'linear',
-        gradientUnits: 'pixels',
-        coords: { x1, y1, x2, y2 },
-        colorStops: (gfill.colorStops || []).map((s: any) => ({
-          offset: Number(s.offset ?? 0),
-          color: String(s.color || '#000000'),
-          opacity: 1,
-        })),
-      });
-      active.set('fill', grad);
+      
+      let grad: any;
+      const stops = (gfill.colorStops || []).map((s: any) => ({
+        offset: Number(s.offset ?? 0),
+        color: String(s.color || '#000000'),
+        opacity: 1,
+      }));
+
+      const gType = gfill.gradientType || 'linear';
+
+      if (gType === 'linear') {
+        const cos = Math.cos(angleRad);
+        const sin = Math.sin(angleRad);
+        const halfW = objW / 2;
+        const halfH = objH / 2;
+        const x1 = halfW - cos * halfW;
+        const y1 = halfH - sin * halfH;
+        const x2 = halfW + cos * halfW;
+        const y2 = halfH + sin * halfH;
+        grad = new fabric.Gradient({
+          type: 'linear',
+          gradientUnits: 'pixels',
+          coords: { x1, y1, x2, y2 },
+          colorStops: stops,
+        });
+      } 
+      else if (gType === 'radial') {
+        const radiusFraction = (gfill as any).radius ?? 1.0;
+        const r2 = Math.max(objW, objH) / 2 * radiusFraction;
+        grad = new fabric.Gradient({
+          type: 'radial',
+          gradientUnits: 'pixels',
+          coords: {
+            x1: objW / 2,
+            y1: objH / 2,
+            r1: 0,
+            x2: objW / 2,
+            y2: objH / 2,
+            r2,
+          },
+          colorStops: stops,
+        });
+      }
+
+      const t = String(active.type || "").toLowerCase();
+      const currentFill = active.get('fill');
+      const isUnfilled = !currentFill || currentFill === 'transparent' || currentFill === 'rgba(0,0,0,0)';
+
+      const shouldApplyToStroke = t === "path" || t === "line" || t === "poly-line" || isUnfilled;
+
+      if (shouldApplyToStroke) {
+        active.set('stroke', grad);
+        active.set('fill', isUnfilled ? currentFill : null);
+      } else {
+        active.set('fill', grad);
+      }
+
       active.setCoords?.();
       c.requestRenderAll?.();
     } catch (err) {
       console.warn('[applyGradientToSelection] Failed:', err);
     }
   };
+
+  // Helper para interpolação de stops
+  function getInterpolatedColorAt(stops: any[], t: number) {
+    if (stops.length === 0) return '#000';
+    if (stops.length === 1) return stops[0].color;
+    const sorted = [...stops].sort((a,b) => a.offset - b.offset);
+    if (t <= sorted[0].offset) return sorted[0].color;
+    if (t >= sorted[sorted.length-1].offset) return sorted[sorted.length-1].color;
+    
+    for (let i = 0; i < sorted.length - 1; i++) {
+      const s1 = sorted[i];
+      const s2 = sorted[i+1];
+      if (t >= s1.offset && t <= s2.offset) {
+        const localT = (t - s1.offset) / (s2.offset - s1.offset);
+        return interpolateHex(s1.color, s2.color, localT);
+      }
+    }
+    return sorted[0].color;
+  }
+
+  function interpolateHex(hex1: string, hex2: string, t: number): string {
+    const h1 = hexToRgb(hex1);
+    const h2 = hexToRgb(hex2);
+    if (!h1 || !h2) return hex1;
+    const r = Math.round(h1.r + (h2.r - h1.r) * t);
+    const g = Math.round(h1.g + (h2.g - h1.g) * t);
+    const b = Math.round(h1.b + (h2.b - h1.b) * t);
+    const toHex = (n: number) => Math.min(255, Math.max(0, n)).toString(16).padStart(2, '0');
+    return `#${toHex(r)}${toHex(g)}${toHex(b)}`.toUpperCase();
+  }
+
+  function hexToRgb(hex: string) {
+    let cleanHex = hex.replace('#', '');
+    if (cleanHex.length === 3) {
+      cleanHex = cleanHex.split('').map(c => c + c).join('');
+    }
+    const m = /^([a-f\d]{2})([a-f\d]{2})([a-f\d]{2})$/i.exec(cleanHex);
+    return m ? {
+      r: parseInt(m[1], 16),
+      g: parseInt(m[2], 16),
+      b: parseInt(m[3], 16)
+    } : null;
+  }
 
   useImperativeHandle(ref, () => ({
     clear,
