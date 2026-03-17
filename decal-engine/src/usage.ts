@@ -511,9 +511,17 @@ export async function initDecalDemo(container: HTMLElement, opts?: InitDecalDemo
       return;
     }
 
+    const srcChanged = item.src !== payload.src;
     item.label = label;
     item.src = payload.src;
     item.hidden = true;
+
+    // Se a imagem de origem mudou, descartamos a textura antiga para forçar recarregamento
+    if (srcChanged && item.texture) {
+      item.texture.dispose();
+      item.texture = undefined;
+    }
+
     pendingExternalDecals.add(id);
     renderGallery();
 

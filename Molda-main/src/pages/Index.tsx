@@ -1,6 +1,12 @@
+import { useEffect, useMemo, useState } from "react";
 import Header from "../components/Header";
-import { Link } from "react-router-dom";
+import { Link, useNavigate } from "react-router-dom";
 import { Button } from "../components/ui/button";
+import { Input } from "../components/ui/input";
+import { Avatar, AvatarFallback, AvatarImage } from "../components/ui/avatar";
+import { Loader2, Search } from "lucide-react";
+import { supabase } from "@/integrations/supabase/client";
+import { AVATAR_BUCKET } from "@/lib/constants/storage";
 
 export default function Index() {
   return (
@@ -86,8 +92,261 @@ export default function Index() {
           />
         </div>
       </section>
+
+      <SocialDiscoverySection />
     </main>
   )
+}
+
+type ProfileRow = {
+  id: string;
+  username: string | null;
+  nickname: string | null;
+  avatar_path: string | null;
+  designs_count: number | null;
+  pieces_count: number | null;
+};
+
+type SocialResult = {
+  id: string;
+  username: string;
+  nickname: string;
+  avatarUrl: string;
+  score: number;
+  designsCount: number;
+  piecesCount: number;
+};
+
+function normalizeText(value: string) {
+  return value
+    .normalize("NFD")
+    .replace(/[\u0300-\u036f]/g, "")
+    .toLowerCase()
+    .trim()
+    .replace(/^@+/, "");
+}
+
+function levenshteinDistance(a: string, b: string) {
+  if (a === b) return 0;
+  if (!a.length) return b.length;
+  if (!b.length) return a.length;
+
+  const prev = new Array(b.length + 1).fill(0);
+  const curr = new Array(b.length + 1).fill(0);
+
+  for (let j = 0; j <= b.length; j += 1) prev[j] = j;
+
+  for (let i = 1; i <= a.length; i += 1) {
+    curr[0] = i;
+    for (let j = 1; j <= b.length; j += 1) {
+      const cost = a[i - 1] === b[j - 1] ? 0 : 1;
+      curr[j] = Math.min(
+        curr[j - 1] + 1,
+        prev[j] + 1,
+        prev[j - 1] + cost,
+      );
+    }
+    for (let j = 0; j <= b.length; j += 1) prev[j] = curr[j];
+  }
+
+  return prev[b.length];
+}
+
+function usernameScore(row: ProfileRow, searchTerm: string) {
+  if (!searchTerm) return 1;
+
+  const username = normalizeText(row.username || "");
+  const nickname = normalizeText(row.nickname || "");
+  if (!username) return 0;
+
+  if (username === searchTerm) return 1000;
+
+  let score = 0;
+
+  if (username.startsWith(searchTerm)) {
+    score = Math.max(score, 820 - Math.abs(username.length - searchTerm.length));
+  }
+
+  if (username.includes(searchTerm)) {
+    score = Math.max(score, 680 - username.indexOf(searchTerm) * 8);
+  }
+
+  if (nickname.includes(searchTerm)) {
+    score = Math.max(score, 520 - nickname.indexOf(searchTerm) * 6);
+  }
+
+  const distance = levenshteinDistance(username, searchTerm);
+  const maxDistance = Math.max(2, Math.floor(searchTerm.length * 0.45));
+  if (distance <= maxDistance) {
+    score = Math.max(score, 420 - distance * 28);
+  }
+
+  return score;
+}
+
+function SocialDiscoverySection() {
+  const navigate = useNavigate();
+  const [query, setQuery] = useState("");
+  const [debouncedQuery, setDebouncedQuery] = useState("");
+  const [loading, setLoading] = useState(false);
+  const [error, setError] = useState<string | null>(null);
+  const [results, setResults] = useState<SocialResult[]>([]);
+
+  useEffect(() => {
+    const timeout = window.setTimeout(() => {
+      setDebouncedQuery(query.trim());
+    }, 250);
+
+    return () => window.clearTimeout(timeout);
+  }, [query]);
+
+  const normalizedSearch = useMemo(() => normalizeText(debouncedQuery), [debouncedQuery]);
+
+  useEffect(() => {
+    let cancelled = false;
+
+    const fetchUsers = async () => {
+      setLoading(true);
+      setError(null);
+
+      try {
+        const { data, error: rpcError } = await supabase.rpc("search_social_profiles", {
+          search_term: normalizedSearch || null,
+          limit_count: 120,
+        });
+
+        if (rpcError) throw rpcError;
+
+        const rows = (data ?? []) as ProfileRow[];
+
+        const scored = rows
+          .map((row) => ({
+            row,
+            score: usernameScore(row, normalizedSearch),
+          }))
+          .filter((entry) => (!normalizedSearch ? true : entry.score > 0))
+          .sort((a, b) => {
+            if (b.score !== a.score) return b.score - a.score;
+            return (a.row.username || "").localeCompare(b.row.username || "");
+          })
+          .slice(0, 12);
+
+        const nextResults = scored.map(({ row, score }) => {
+          const username = row.username || "usuário";
+          const avatarUrl = row.avatar_path
+            ? supabase.storage.from(AVATAR_BUCKET).getPublicUrl(row.avatar_path).data.publicUrl || ""
+            : "";
+
+          return {
+            id: row.id,
+            username,
+            nickname: row.nickname || "",
+            avatarUrl,
+            score,
+            designsCount: Number(row.designs_count ?? 0),
+            piecesCount: Number(row.pieces_count ?? 0),
+          } satisfies SocialResult;
+        });
+
+        if (!cancelled) setResults(nextResults);
+      } catch (err: unknown) {
+        if (!cancelled) {
+          console.error("Erro ao buscar usuários:", err);
+          const message = String((err as { message?: string } | null)?.message || "");
+          const missingRpc =
+            message.includes("search_social_profiles") ||
+            message.includes("PGRST202") ||
+            message.includes("Could not find the function");
+
+          setError(
+            missingRpc
+              ? "Busca social não configurada no banco. Execute o arquivo supabase/social_search_profiles.sql."
+              : "Não foi possível carregar os usuários agora.",
+          );
+          setResults([]);
+        }
+      } finally {
+        if (!cancelled) setLoading(false);
+      }
+    };
+
+    void fetchUsers();
+
+    return () => {
+      cancelled = true;
+    };
+  }, [normalizedSearch]);
+
+  return (
+    <section className="mx-auto max-w-6xl px-4 sm:px-6 lg:px-10 xl:px-16 2xl:px-24 pb-28">
+      <div className="border border-border bg-background p-5 md:p-6">
+        <h3 className="text-xl font-brandHeading uppercase tracking-widest">Comunidade</h3>
+        <p className="mt-2 text-sm text-muted-foreground">
+          Procure por username para encontrar pessoas, abrir perfis e ver seus designs e peças.
+        </p>
+
+        <div className="mt-5 relative">
+          <Search className="pointer-events-none absolute left-3 top-1/2 -translate-y-1/2 h-4 w-4 text-muted-foreground" />
+          <Input
+            value={query}
+            onChange={(event) => setQuery(event.target.value)}
+            placeholder="Pesquisar por username"
+            className="pl-9 rounded-none"
+            autoComplete="off"
+          />
+        </div>
+
+        <div className="mt-5 space-y-3">
+          {loading ? (
+            <div className="border border-border p-4 text-sm text-muted-foreground flex items-center gap-2">
+              <Loader2 className="h-4 w-4 animate-spin" />
+              Buscando usuários...
+            </div>
+          ) : error ? (
+            <div className="border border-border p-4 text-sm text-muted-foreground">{error}</div>
+          ) : results.length === 0 ? (
+            <div className="border border-border p-4 text-sm text-muted-foreground">
+              Nenhum usuário encontrado para “{debouncedQuery || query}”.
+            </div>
+          ) : (
+            results.map((person) => (
+              <div
+                key={person.id}
+                className="border border-border p-4 flex flex-col gap-3 sm:flex-row sm:items-center sm:justify-between"
+              >
+                <div className="flex items-center gap-3 min-w-0">
+                  <Avatar className="h-10 w-10 rounded-none border border-border">
+                    <AvatarImage src={person.avatarUrl} alt={person.username} />
+                    <AvatarFallback className="rounded-none uppercase">
+                      {person.username.slice(0, 2)}
+                    </AvatarFallback>
+                  </Avatar>
+
+                  <div className="min-w-0">
+                    <p className="text-sm font-medium truncate">@{person.username}</p>
+                    <p className="text-xs text-muted-foreground truncate">
+                      {person.nickname || "Sem nickname"}
+                    </p>
+                    <p className="text-xs text-muted-foreground mt-1">
+                      {person.designsCount} design(s) público(s) • {person.piecesCount} peça(s)
+                    </p>
+                  </div>
+                </div>
+
+                <Button
+                  variant="outline"
+                  className="rounded-none uppercase tracking-widest text-xs"
+                  onClick={() => navigate(`/profile?user=${person.id}`)}
+                >
+                  Ver perfil
+                </Button>
+              </div>
+            ))
+          )}
+        </div>
+      </div>
+    </section>
+  );
 }
 
 function Feature({

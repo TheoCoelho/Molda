@@ -165,6 +165,8 @@ const Creation = () => {
   const [baseColor, setBaseColor] = useState("#ffffff");
   const [size, setSize] = useState("M");
   const [fabric, setFabric] = useState("Algodão");
+  const [fixedSubtypeFabric, setFixedSubtypeFabric] = useState<string | null>(null);
+  const [isSubtypeFabricLocked, setIsSubtypeFabricLocked] = useState(false);
   const [notes, setNotes] = useState("");
 
   const [canvasTabs, setCanvasTabs] = useState<CanvasTab[]>([
@@ -182,6 +184,82 @@ const Creation = () => {
 
   const [canUndo, setCanUndo] = useState(false);
   const [canRedo, setCanRedo] = useState(false);
+
+  useEffect(() => {
+    let cancelled = false;
+
+    const resolveSubtypeFabric = async () => {
+      setFixedSubtypeFabric(null);
+      setIsSubtypeFabricLocked(false);
+
+      if (!subtype) return;
+
+      try {
+        let typeId: string | null = null;
+        if (type) {
+          const { data: typeRow } = await supabase
+            .from("product_types")
+            .select("id")
+            .ilike("name", type)
+            .maybeSingle();
+          typeId = typeRow?.id ?? null;
+        }
+
+        let subtypeQuery = supabase
+          .from("product_subtypes")
+          .select("id")
+          .ilike("name", subtype)
+          .limit(1);
+
+        if (typeId) {
+          subtypeQuery = supabase
+            .from("product_subtypes")
+            .select("id")
+            .eq("type_id", typeId)
+            .ilike("name", subtype)
+            .limit(1);
+        }
+
+        const { data: subtypeRows, error: subtypeErr } = await subtypeQuery;
+        if (subtypeErr) throw subtypeErr;
+
+        const subtypeId = subtypeRows?.[0]?.id;
+        if (!subtypeId) return;
+
+        const { data: relRows, error: relErr } = await supabase
+          .from("subtype_materials")
+          .select("material_id")
+          .eq("subtype_id", subtypeId)
+          .limit(1);
+        if (relErr) throw relErr;
+
+        const materialId = relRows?.[0]?.material_id;
+        if (!materialId) return;
+
+        const { data: materialRow, error: materialErr } = await supabase
+          .from("materials")
+          .select("name")
+          .eq("id", materialId)
+          .maybeSingle();
+        if (materialErr) throw materialErr;
+
+        if (cancelled) return;
+        const resolvedFabric = materialRow?.name ?? null;
+        if (!resolvedFabric) return;
+
+        setFixedSubtypeFabric(resolvedFabric);
+        setFabric(resolvedFabric);
+        setIsSubtypeFabricLocked(true);
+      } catch (err) {
+        console.warn("[creation.resolveSubtypeFabric]", err);
+      }
+    };
+
+    void resolveSubtypeFabric();
+    return () => {
+      cancelled = true;
+    };
+  }, [subtype, type]);
 
   const [tool, setTool] = useState<Tool>("select");
   const [brushVariant, setBrushVariant] = useState<BrushVariant>("pencil");
@@ -676,7 +754,7 @@ const Creation = () => {
     if (typeof payload.projectName === "string") setProjectName(payload.projectName);
     if (typeof payload.baseColor === "string") setBaseColor(payload.baseColor);
     if (typeof payload.size === "string") setSize(payload.size);
-    if (typeof payload.fabric === "string") setFabric(payload.fabric);
+    if (typeof payload.fabric === "string" && !isSubtypeFabricLocked) setFabric(payload.fabric);
     if (typeof payload.notes === "string") setNotes(payload.notes);
 
     let restoredTabs: CanvasTab[] = [];
@@ -1601,6 +1679,7 @@ const Creation = () => {
               setSize={setSize}
               fabric={fabric}
               setFabric={setFabric}
+              fabricLocked={isSubtypeFabricLocked || Boolean(fixedSubtypeFabric)}
               tabPrintTypes={tabPrintTypes}
               setTabPrintType={(tabId, value) => {
                 setTabPrintTypes((prev) => ({ ...prev, [tabId]: value }));

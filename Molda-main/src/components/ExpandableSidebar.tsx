@@ -1,4 +1,5 @@
 import React, { useEffect, useMemo, useState, useCallback } from "react";
+import { supabase } from "../integrations/supabase/client";
 import { Button } from "../components/ui/button";
 import { Input } from "../components/ui/input";
 import { Label } from "../components/ui/label";
@@ -222,6 +223,7 @@ interface ExpandableSidebarProps {
   setSize: (value: string) => void;
   fabric: string;
   setFabric: (value: string) => void;
+  fabricLocked?: boolean;
   tabPrintTypes?: Record<string, string>;
   setTabPrintType?: (tabId: string, value: string) => void;
   visibleTabs?: { id: string; name: string; type: "2d" | "3d"; dataUrl: string | null }[];
@@ -288,6 +290,7 @@ const ExpandableSidebar: React.FC<ExpandableSidebarProps> = (props) => {
     setSize,
     fabric,
     setFabric,
+    fabricLocked,
     tabPrintTypes,
     setTabPrintType,
     visibleTabs,
@@ -400,6 +403,7 @@ const ExpandableSidebar: React.FC<ExpandableSidebarProps> = (props) => {
                 setSize={setSize}
                 fabric={fabric}
                 setFabric={setFabric}
+                fabricLocked={fabricLocked}
                 tabPrintTypes={tabPrintTypes}
                 setTabPrintType={setTabPrintType}
                 visibleTabs={visibleTabs}
@@ -478,13 +482,78 @@ function SettingsContent(props: {
   setSize: (v: string) => void;
   fabric: string;
   setFabric: (v: string) => void;
+  fabricLocked?: boolean;
   tabPrintTypes?: Record<string, string>;
   setTabPrintType?: (tabId: string, value: string) => void;
   visibleTabs?: { id: string; name: string; type: "2d" | "3d"; dataUrl: string | null }[];
 }) {
-  const { projectId, projectName, setProjectName, baseColor, setBaseColor, size, setSize, fabric, setFabric, tabPrintTypes, setTabPrintType, visibleTabs } = props;
+  const { projectId, projectName, setProjectName, baseColor, setBaseColor, size, setSize, fabric, setFabric, fabricLocked, tabPrintTypes, setTabPrintType, visibleTabs } = props;
   const placeholderName = generateCreativeName(projectId ?? undefined);
-  return (
+
+  const [dbMaterials, setDbMaterials] = useState<{ id: string; name: string }[]>([]);
+  const [dbPrintingMethods, setDbPrintingMethods] = useState<{ id: string; name: string; sort_order: number | null }[]>([]);
+  const [dbMaterialPrinting, setDbMaterialPrinting] = useState<{ material_id: string; printing_method_id: string }[]>([]);
+
+  useEffect(() => {
+    (async () => {
+      const [mRes, pmRes, mpmRes] = await Promise.all([
+        supabase.from("materials").select("id,name").eq("is_active", true).order("name"),
+        supabase.from("printing_methods").select("id,name,sort_order").eq("is_active", true).order("sort_order"),
+        supabase.from("material_printing_methods").select("material_id,printing_method_id"),
+      ]);
+      if (!mRes.error && mRes.data) setDbMaterials(mRes.data);
+      if (!pmRes.error && pmRes.data) setDbPrintingMethods(pmRes.data);
+      if (!mpmRes.error && mpmRes.data) setDbMaterialPrinting(mpmRes.data);
+    })();
+  }, []);
+
+    const normalizeLabel = (value: string) =>
+      value
+        .toLowerCase()
+        .normalize("NFD")
+        .replace(/[\u0300-\u036f]/g, "")
+        .trim();
+
+    const selectedMaterial =
+      dbMaterials.find((m) => m.name === fabric) ??
+      dbMaterials.find((m) => normalizeLabel(m.name) === normalizeLabel(fabric));
+
+    // Quando os materiais do DB carregam, ajusta fabric para um nome canonico vindo do DB
+    useEffect(() => {
+      if (dbMaterials.length === 0) return;
+      if (selectedMaterial) {
+        if (fabric !== selectedMaterial.name) setFabric(selectedMaterial.name);
+        return;
+      }
+      setFabric(dbMaterials[0].name);
+    }, [dbMaterials, selectedMaterial, fabric, setFabric]);
+
+    const selectedMaterialId = selectedMaterial?.id ?? "";
+    const allowedMethodIds = selectedMaterial
+      ? new Set(dbMaterialPrinting.filter((r) => r.material_id === selectedMaterial.id).map((r) => r.printing_method_id))
+      : null;
+    // Material encontrado no DB: exibe somente metodos vinculados
+    // Material nao encontrado no DB: nao exibe metodos (evita liberar todos por engano)
+    const allowedMethods = selectedMaterial
+      ? dbPrintingMethods.filter((m) => allowedMethodIds!.has(m.id))
+      : [];
+
+    // Reseta tabPrintTypes quando fabric muda e metodos disponiveis mudam
+    const allowedMethodsKey = allowedMethods.map((m) => m.id).join(",");
+    const visibleTabsKey = visibleTabs?.map((t) => t.id).join(",") ?? "";
+    useEffect(() => {
+      if (!visibleTabs || !setTabPrintType || allowedMethods.length === 0) return;
+      const allowedNames = new Set(allowedMethods.map((m) => m.name));
+      visibleTabs.forEach((tab) => {
+        const current = tabPrintTypes?.[tab.id] ?? "";
+        if (!current || !allowedNames.has(current)) {
+          setTabPrintType(tab.id, allowedMethods[0].name);
+        }
+      });
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+    }, [allowedMethodsKey, visibleTabsKey]);
+
+    return (
     <div className="space-y-4">
       <h3 className="text-lg font-semibold text-gray-800">Configurações</h3>
       <div>
@@ -511,12 +580,38 @@ function SettingsContent(props: {
         </div>
         <div>
           <Label htmlFor="fabric">Tecido</Label>
-          <select id="fabric" className="w-full px-2 py-2 border rounded text-sm" value={fabric} onChange={(e) => setFabric(e.target.value)}>
-            <option>Algodão</option>
-            <option>Poliéster</option>
-            <option>Moletom</option>
-            <option>Dry Fit</option>
-          </select>
+          {fabricLocked ? (
+            <div
+              id="fabric"
+              className="w-full px-2 py-2 border rounded text-sm bg-muted/30 text-foreground"
+              aria-readonly="true"
+            >
+              {selectedMaterial?.name || fabric || "Tecido da peça"}
+            </div>
+          ) : (
+            <select
+              id="fabric"
+              className="w-full px-2 py-2 border rounded text-sm"
+              value={dbMaterials.length > 0 ? selectedMaterialId : fabric}
+              onChange={(e) => {
+                const material = dbMaterials.find((m) => m.id === e.target.value);
+                setFabric(material?.name ?? e.target.value);
+              }}
+            >
+              {dbMaterials.length > 0 ? (
+                dbMaterials.map((m) => (
+                  <option key={m.id} value={m.id}>{m.name}</option>
+                ))
+              ) : (
+                <>
+                  <option>Algodão</option>
+                  <option>Poliéster</option>
+                  <option>Moletom</option>
+                  <option>Dry Fit</option>
+                </>
+              )}
+            </select>
+          )}
         </div>
       </div>
       
@@ -542,14 +637,22 @@ function SettingsContent(props: {
                   </p>
                   <select
                     className="w-full px-2 py-1.5 border rounded text-xs bg-white text-gray-700 focus:outline-none focus:ring-1 focus:ring-black cursor-pointer"
-                    value={tabPrintTypes?.[tab.id] || "Dtf"}
+                    value={(() => {
+                      const cur = tabPrintTypes?.[tab.id] ?? "";
+                      if (allowedMethods.length === 0) return "";
+                      return allowedMethods.find((m) => m.name === cur) ? cur : allowedMethods[0].name;
+                    })()}
                     onChange={(e) => setTabPrintType?.(tab.id, e.target.value)}
                   >
-                    <option value="Dtf">DTF</option>
-                    <option value="Bordado">Bordado</option>
-                    <option value="Silk">Silk Screen</option>
-                    <option value="Sublimação">Sublimação</option>
-                    <option value="Transfer">Transfer</option>
+                    {allowedMethods.length > 0 ? (
+                      allowedMethods.map((m) => (
+                        <option key={m.id} value={m.name}>{m.name}</option>
+                      ))
+                    ) : (
+                      <option value="" disabled>
+                        Nenhuma técnica disponível para este tecido
+                      </option>
+                    )}
                   </select>
                 </div>
               </div>
