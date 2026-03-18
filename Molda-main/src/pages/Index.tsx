@@ -99,7 +99,8 @@ export default function Index() {
 }
 
 type ProfileRow = {
-  id: string;
+  id?: string | null;
+  user_id?: string | null;
   username: string | null;
   nickname: string | null;
   avatar_path: string | null;
@@ -232,13 +233,14 @@ function SocialDiscoverySection() {
           .slice(0, 12);
 
         const nextResults = scored.map(({ row, score }) => {
+          const id = row.id ?? row.user_id ?? "";
           const username = row.username || "usuário";
           const avatarUrl = row.avatar_path
             ? supabase.storage.from(AVATAR_BUCKET).getPublicUrl(row.avatar_path).data.publicUrl || ""
             : "";
 
           return {
-            id: row.id,
+            id,
             username,
             nickname: row.nickname || "",
             avatarUrl,
@@ -246,7 +248,7 @@ function SocialDiscoverySection() {
             designsCount: Number(row.designs_count ?? 0),
             piecesCount: Number(row.pieces_count ?? 0),
           } satisfies SocialResult;
-        });
+        }).filter((entry) => Boolean(entry.id));
 
         if (!cancelled) setResults(nextResults);
       } catch (err: unknown) {
@@ -336,7 +338,12 @@ function SocialDiscoverySection() {
                 <Button
                   variant="outline"
                   className="rounded-none uppercase tracking-widest text-xs"
-                  onClick={() => navigate(`/profile?user=${person.id}`)}
+                  onClick={() => {
+                    const params = new URLSearchParams();
+                    params.set("user", person.id);
+                    if (person.username) params.set("username", person.username);
+                    navigate(`/profile?${params.toString()}`);
+                  }}
                 >
                   Ver perfil
                 </Button>

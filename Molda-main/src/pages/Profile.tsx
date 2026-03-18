@@ -24,6 +24,8 @@ type ViewUser = {
   username?: string;
   email?: string;
   avatar?: string;       // URL pronta para exibição
+  designsCount?: number;
+  piecesCount?: number;
   createdAt?: string;
 };
 
@@ -80,14 +82,32 @@ type GalleryItem = {
   designValue: number;
 };
 
+type SocialProfileRow = {
+  id: string;
+  username: string | null;
+  nickname: string | null;
+  avatar_path: string | null;
+  designs_count: number | null;
+  pieces_count: number | null;
+};
+
+function normalizeUsername(value: string | null | undefined) {
+  return String(value || "").trim().toLowerCase().replace(/^@+/, "");
+}
+
+function isLikelyUuid(value: string) {
+  return /^[0-9a-f]{8}-[0-9a-f]{4}-[1-5][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i.test(value);
+}
+
 const Profile = () => {
   const { user: authUser, getProfile } = useAuth();
   const navigate = useNavigate();
   const [searchParams] = useSearchParams();
+  const viewedUsername = useMemo(() => normalizeUsername(searchParams.get("username")), [searchParams]);
 
   const viewedUserId = useMemo(() => {
     const fromQuery = (searchParams.get("user") || "").trim();
-    if (fromQuery) return fromQuery;
+    if (fromQuery && fromQuery !== "undefined" && fromQuery !== "null") return fromQuery;
     return authUser?.id || "";
   }, [searchParams, authUser?.id]);
 
@@ -98,6 +118,8 @@ const Profile = () => {
     username: "",
     email: "",
     avatar: "",
+    designsCount: 0,
+    piecesCount: 0,
     createdAt: "Janeiro 2024",
   });
 
@@ -293,21 +315,50 @@ const Profile = () => {
       setGalleryError(null);
 
       try {
-        let { data: visibilityRows, error: visibilityError } = await supabase
-          .from("gallery_visibility")
-          .select("storage_path,is_public,design_value,design_name,updated_at")
-          .eq("user_id", viewedUserId)
-          .order("updated_at", { ascending: false });
+        let visibilityRows: any[] | null = null;
+        let visibilityError: any = null;
 
-        // Se design_name ainda não existe na tabela (42703), faz fallback sem ela
-        if (visibilityError?.code === "42703") {
-          const fallback = await supabase
+        if (!isOwnProfile && isLikelyUuid(viewedUserId)) {
+          const rpcRows = await supabase.rpc("get_public_gallery_items", {
+            target_user_id: viewedUserId,
+            limit_count: 120,
+          });
+          if (!rpcRows.error) {
+            visibilityRows = (rpcRows.data as any[]) ?? [];
+          } else {
+            visibilityError = rpcRows.error;
+          }
+        }
+
+        if (!visibilityRows) {
+          let visibilityQuery = supabase
             .from("gallery_visibility")
-            .select("storage_path,is_public,design_value,updated_at")
+            .select("storage_path,is_public,design_value,design_name,updated_at")
             .eq("user_id", viewedUserId)
             .order("updated_at", { ascending: false });
-          visibilityRows = fallback.data;
-          visibilityError = fallback.error;
+
+          if (!isOwnProfile) {
+            visibilityQuery = visibilityQuery.eq("is_public", true);
+          }
+
+          const result = await visibilityQuery;
+          visibilityRows = result.data;
+          visibilityError = result.error;
+
+          // Se design_name ainda não existe na tabela (42703), faz fallback sem ela
+          if (visibilityError?.code === "42703") {
+            let fallbackQuery = supabase
+              .from("gallery_visibility")
+              .select("storage_path,is_public,design_value,updated_at")
+              .eq("user_id", viewedUserId)
+              .order("updated_at", { ascending: false });
+            if (!isOwnProfile) {
+              fallbackQuery = fallbackQuery.eq("is_public", true);
+            }
+            const fallback = await fallbackQuery;
+            visibilityRows = fallback.data;
+            visibilityError = fallback.error;
+          }
         }
 
         if (cancelled) return;
@@ -360,12 +411,31 @@ const Profile = () => {
           );
         } else {
           const publicRows = (visibilityRows || []).filter((row: any) => Boolean(row.is_public));
+          const paths = publicRows.map((row: any) => String(row.storage_path || "")).filter(Boolean);
+
+          // Gera signed URLs em lote — funcionam mesmo em buckets privados
+          let signedMap: Record<string, string> = {};
+          if (paths.length > 0) {
+            const { data: signedData } = await supabase.storage
+              .from(STORAGE_BUCKET)
+              .createSignedUrls(paths, 60 * 60 * 24 * 7);
+            if (signedData) {
+              for (const entry of signedData) {
+                if (entry.signedUrl) signedMap[entry.path] = entry.signedUrl;
+              }
+            }
+          }
+
           items = publicRows.map((row: any) => {
             const path = String(row.storage_path || "");
             const fileName = path.split("/").pop() || "design.png";
+            const previewUrl =
+              signedMap[path] ||
+              supabase.storage.from(STORAGE_BUCKET).getPublicUrl(path).data.publicUrl ||
+              "";
             return {
               id: path,
-              previewUrl: supabase.storage.from(STORAGE_BUCKET).getPublicUrl(path).data.publicUrl || "",
+              previewUrl,
               originalName: fileName.replace(/^(\d{17})-/, ""),
               sortKey: fileName.slice(0, 17),
               isPublic: true,
@@ -443,23 +513,49 @@ const Profile = () => {
     const load = async () => {
       let display: ViewUser = {
         id: viewedUserId,
-        name:
-          (authUser?.user_metadata as any)?.nickname ??
-          (authUser?.user_metadata as any)?.name ??
-          (authUser?.user_metadata as any)?.full_name ??
-          "Usuário",
-        username: (authUser?.user_metadata as any)?.username || "",
+        name: isOwnProfile
+          ? ((authUser?.user_metadata as any)?.nickname ??
+            (authUser?.user_metadata as any)?.name ??
+            (authUser?.user_metadata as any)?.full_name ??
+            "Usuário")
+          : "Usuário",
+        username: isOwnProfile ? ((authUser?.user_metadata as any)?.username || "") : "",
         avatar: "",
       };
 
       try {
-        const prof = isOwnProfile
-          ? await getProfile()
-          : (await supabase
-            .from("profiles")
-            .select("id, email, username, nickname, full_name, avatar_path")
-            .eq("id", viewedUserId)
-            .maybeSingle()).data;
+        let prof: (SocialProfileRow & { full_name?: string | null; email?: string | null }) | null = null;
+
+        if (isOwnProfile) {
+          prof = (await getProfile()) as (SocialProfileRow & { full_name?: string | null; email?: string | null }) | null;
+        } else {
+          if (isLikelyUuid(viewedUserId)) {
+            const rpcProfile = (await supabase
+              .rpc("get_social_profile", { target_user_id: viewedUserId })
+              .maybeSingle()).data as SocialProfileRow | null;
+            if (rpcProfile) prof = rpcProfile;
+          }
+
+          if (!prof && viewedUsername) {
+            const { data: rows } = await supabase.rpc("search_social_profiles", {
+              search_term: viewedUsername,
+              limit_count: 50,
+            });
+            const exact = ((rows ?? []) as SocialProfileRow[]).find(
+              (row) => normalizeUsername(row.username) === viewedUsername,
+            );
+            if (exact) prof = exact;
+          }
+
+          if (!prof && isLikelyUuid(viewedUserId)) {
+            const { data: rows } = await supabase.rpc("search_social_profiles", {
+              search_term: null,
+              limit_count: 200,
+            });
+            const byId = ((rows ?? []) as SocialProfileRow[]).find((row) => row.id === viewedUserId);
+            if (byId) prof = byId;
+          }
+        }
 
         if (prof) {
           let avatarUrl = "";
@@ -470,10 +566,12 @@ const Profile = () => {
 
           display = {
             ...display,
-            name: (prof.nickname ?? prof.full_name ?? display.name),
+            name: (prof.nickname ?? (prof as any).full_name ?? display.name),
             username: prof.username || display.username,
-            email: prof.email ?? display.email,
+            email: isOwnProfile ? ((prof as any).email ?? display.email) : undefined,
             avatar: avatarUrl,
+            designsCount: Number((prof as any).designs_count ?? display.designsCount ?? 0),
+            piecesCount: Number((prof as any).pieces_count ?? display.piecesCount ?? 0),
           };
         }
       } catch {
@@ -481,10 +579,12 @@ const Profile = () => {
       }
 
       // Prepara os campos de edição com os valores atuais
-      setForm({
-        nickname: display.name || "",
-        username: display.username || "",
-      });
+      if (isOwnProfile) {
+        setForm({
+          nickname: display.name || "",
+          username: display.username || "",
+        });
+      }
 
       setUser(display);
     };
@@ -918,9 +1018,17 @@ const Profile = () => {
               <div className="flex items-center gap-3">
 
                 <div className="text-center">
-                  <div className="text-2xl font-bold text-purple-600">{isOwnProfile ? creations.length : galleryItems.length}</div>
+                  <div className="text-2xl font-bold text-purple-600">
+                    {isOwnProfile ? creations.length : (user.designsCount ?? galleryItems.length)}
+                  </div>
                   <div className="text-xs text-gray-500">{isOwnProfile ? "Criações" : "Designs públicos"}</div>
                 </div>
+                {!isOwnProfile && (
+                  <div className="text-center">
+                    <div className="text-2xl font-bold text-purple-600">{user.piecesCount ?? 0}</div>
+                    <div className="text-xs text-gray-500">Peças públicas</div>
+                  </div>
+                )}
               </div>
             </div>
           </CardHeader>
