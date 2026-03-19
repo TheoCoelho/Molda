@@ -131,3 +131,35 @@ $$;
 revoke all on function public.get_public_gallery_items(uuid, int) from public;
 grant execute on function public.get_public_gallery_items(uuid, int) to anon;
 grant execute on function public.get_public_gallery_items(uuid, int) to authenticated;
+
+create or replace function public.get_public_project_drafts(
+  target_user_id uuid,
+  limit_count int default 100
+)
+returns table (
+  id uuid,
+  project_key text,
+  data jsonb,
+  updated_at timestamptz,
+  is_public boolean
+)
+language sql
+security definer
+set search_path = public
+as $$
+  select
+    pd.id,
+    pd.project_key,
+    pd.data,
+    pd.updated_at,
+    pd.is_public
+  from public.project_drafts pd
+  where pd.user_id = target_user_id
+    and pd.is_public = true
+  order by pd.updated_at desc nulls last
+  limit greatest(1, least(coalesce(limit_count, 100), 300));
+$$;
+
+revoke all on function public.get_public_project_drafts(uuid, int) from public;
+grant execute on function public.get_public_project_drafts(uuid, int) to anon;
+grant execute on function public.get_public_project_drafts(uuid, int) to authenticated;
