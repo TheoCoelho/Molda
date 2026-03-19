@@ -1,6 +1,54 @@
 -- Busca social de perfis (compatível com RLS restritivo em profiles)
 -- Execute no SQL Editor do Supabase.
 
+create or replace function public.count_public_project_drafts(
+  target_user_id uuid
+)
+returns int
+language plpgsql
+security definer
+set search_path = public
+as $$
+declare
+  has_is_public boolean;
+  result_count int;
+begin
+  select exists (
+    select 1
+    from information_schema.columns
+    where table_schema = 'public'
+      and table_name = 'project_drafts'
+      and column_name = 'is_public'
+  ) into has_is_public;
+
+  if has_is_public then
+    execute $sql$
+      select count(*)::int
+      from public.project_drafts pd
+      where pd.user_id = $1
+        and coalesce(pd.is_public, coalesce((pd.data->>'isPublic')::boolean, false)) = true
+    $sql$
+    into result_count
+    using target_user_id;
+  else
+    execute $sql$
+      select count(*)::int
+      from public.project_drafts pd
+      where pd.user_id = $1
+        and coalesce((pd.data->>'isPublic')::boolean, false) = true
+    $sql$
+    into result_count
+    using target_user_id;
+  end if;
+
+  return coalesce(result_count, 0);
+end;
+$$;
+
+revoke all on function public.count_public_project_drafts(uuid) from public;
+grant execute on function public.count_public_project_drafts(uuid) to anon;
+grant execute on function public.count_public_project_drafts(uuid) to authenticated;
+
 create or replace function public.search_social_profiles(
   search_term text default null,
   limit_count int default 80
@@ -38,9 +86,7 @@ as $$
       and gv.is_public = true
   ) g on true
   left join lateral (
-    select count(*) as pieces_count
-    from public.project_drafts pd
-    where pd.user_id = p.id
+    select public.count_public_project_drafts(p.id) as pieces_count
   ) d on true
   where p.username is not null
     and (auth.uid() is null or p.id <> auth.uid())
@@ -87,9 +133,7 @@ as $$
       and gv.is_public = true
   ) g on true
   left join lateral (
-    select count(*) as pieces_count
-    from public.project_drafts pd
-    where pd.user_id = p.id
+    select public.count_public_project_drafts(p.id) as pieces_count
   ) d on true
   where p.id = target_user_id
     and p.username is not null
@@ -143,21 +187,56 @@ returns table (
   updated_at timestamptz,
   is_public boolean
 )
-language sql
+language plpgsql
 security definer
 set search_path = public
 as $$
-  select
-    pd.id,
-    pd.project_key,
-    pd.data,
-    pd.updated_at,
-    pd.is_public
-  from public.project_drafts pd
-  where pd.user_id = target_user_id
-    and pd.is_public = true
-  order by pd.updated_at desc nulls last
-  limit greatest(1, least(coalesce(limit_count, 100), 300));
+declare
+  has_is_public boolean;
+  safe_limit int;
+begin
+  safe_limit := greatest(1, least(coalesce(limit_count, 100), 300));
+
+  select exists (
+    select 1
+    from information_schema.columns
+    where table_schema = 'public'
+      and table_name = 'project_drafts'
+      and column_name = 'is_public'
+  ) into has_is_public;
+
+  if has_is_public then
+    return query execute $sql$
+      select
+        pd.id,
+        pd.project_key,
+        pd.data,
+        pd.updated_at,
+        coalesce(pd.is_public, coalesce((pd.data->>'isPublic')::boolean, false)) as is_public
+      from public.project_drafts pd
+      where pd.user_id = $1
+        and coalesce(pd.is_public, coalesce((pd.data->>'isPublic')::boolean, false)) = true
+      order by pd.updated_at desc nulls last
+      limit $2
+    $sql$
+    using target_user_id, safe_limit;
+  else
+    return query execute $sql$
+      select
+        pd.id,
+        pd.project_key,
+        pd.data,
+        pd.updated_at,
+        coalesce((pd.data->>'isPublic')::boolean, false) as is_public
+      from public.project_drafts pd
+      where pd.user_id = $1
+        and coalesce((pd.data->>'isPublic')::boolean, false) = true
+      order by pd.updated_at desc nulls last
+      limit $2
+    $sql$
+    using target_user_id, safe_limit;
+  end if;
+end;
 $$;
 
 revoke all on function public.get_public_project_drafts(uuid, int) from public;

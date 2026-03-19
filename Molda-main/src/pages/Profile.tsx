@@ -50,6 +50,7 @@ type DraftData = {
   draftKey?: string;
   draftId?: string;
   projectKey?: string;
+  isPublic?: boolean;
   isPermanent?: boolean;
   ephemeralExpiresAt?: string | null;
 };
@@ -198,6 +199,11 @@ const Profile = () => {
       .toFixed(2)
       .replace(".", ",");
 
+  const resolveDraftIsPublic = (row: { is_public?: unknown; data?: DraftData | null }) => {
+    if (typeof row.is_public === "boolean") return row.is_public;
+    return Boolean(row.data?.isPublic);
+  };
+
   const resolveDraftDecals = (data: DraftData): ExternalDecalData[] => {
     const tabs = data.canvasTabs ?? [];
     const previews = data.tabDecalPreviews ?? {};
@@ -269,6 +275,7 @@ const Profile = () => {
       try {
         let data: any[] | null = null;
         let error: any = null;
+        let publicPiecesBackendMissing = false;
 
         if (isOwnProfile) {
           const result = await supabase
@@ -279,8 +286,8 @@ const Profile = () => {
           data = result.data;
           error = result.error;
 
-          // Compatibilidade com schema antigo sem is_public.
-          if (error?.code === "42703") {
+          // Compatibilidade com schema antigo ou cache sem is_public.
+          if (error?.code === "42703" || error?.code === "PGRST204" || String(error?.message || "").includes("is_public")) {
             const fallback = await supabase
               .from("project_drafts")
               .select("id, project_key, data, updated_at")
@@ -300,6 +307,7 @@ const Profile = () => {
 
           // Fallback caso RPC não esteja criada no banco.
           if (error && String(error.message || "").includes("get_public_project_drafts")) {
+            publicPiecesBackendMissing = true;
             const fallback = await supabase
               .from("project_drafts")
               .select("id, project_key, data, updated_at, is_public")
@@ -310,8 +318,9 @@ const Profile = () => {
             error = fallback.error;
           }
 
-          if (error?.code === "42703") {
+          if (error?.code === "42703" || error?.code === "PGRST204" || String(error?.message || "").includes("is_public")) {
             // Sem coluna de visibilidade, evita expor peças privadas.
+            publicPiecesBackendMissing = true;
             data = [];
             error = null;
           }
@@ -331,10 +340,13 @@ const Profile = () => {
           projectKey: String(row.project_key ?? ""),
           updatedAt: (row.updated_at ?? null) as string | null,
           data: (row.data ?? {}) as DraftData,
-          isPublic: Boolean(row.is_public),
+          isPublic: resolveDraftIsPublic(row),
         }));
 
         setDrafts(mapped);
+        if (!isOwnProfile && publicPiecesBackendMissing) {
+          setDraftsError("Peças públicas ainda não estão configuradas no banco. Execute os SQLs social_search_profiles.sql e draft_visibility.sql no Supabase.");
+        }
       } catch (err) {
         if (!cancelled) {
           console.error("Erro inesperado ao buscar peças:", err);
@@ -651,20 +663,50 @@ const Profile = () => {
     setTogglingPieceIds((prev) => ({ ...prev, [itemId]: true }));
     const previousDraft = drafts.find((d) => d.id === itemId) ?? null;
     setDrafts((prev) =>
-      prev.map((d) => (d.id === itemId ? { ...d, isPublic: nextIsPublic } : d))
+      prev.map((d) =>
+        d.id === itemId
+          ? { ...d, isPublic: nextIsPublic, data: { ...d.data, isPublic: nextIsPublic } }
+          : d
+      )
     );
 
     try {
-      const { error } = await supabase
+      let error: any = null;
+
+      const columnUpdate = await supabase
         .from("project_drafts")
         .update({ is_public: nextIsPublic })
         .eq("id", itemId);
+      error = columnUpdate.error;
+
+      // Fallback para bancos sem a coluna is_public: salva dentro do JSON data.
+      if (error?.code === "PGRST204" || String(error?.message || "").includes("is_public")) {
+        const fallbackData = {
+          ...(previousDraft?.data ?? {}),
+          isPublic: nextIsPublic,
+        } satisfies DraftData;
+
+        const fallbackUpdate = await supabase
+          .from("project_drafts")
+          .update({ data: fallbackData })
+          .eq("id", itemId);
+        error = fallbackUpdate.error;
+      }
+
       if (error) throw error;
     } catch (err) {
       console.error("Erro ao atualizar visibilidade da peça:", err);
       if (previousDraft) {
         setDrafts((prev) =>
-          prev.map((d) => (d.id === itemId ? { ...d, isPublic: previousDraft.isPublic } : d))
+          prev.map((d) =>
+            d.id === itemId
+              ? {
+                ...d,
+                isPublic: previousDraft.isPublic,
+                data: { ...d.data, isPublic: previousDraft.data?.isPublic ?? previousDraft.isPublic },
+              }
+              : d
+          )
         );
       }
     } finally {
