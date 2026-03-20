@@ -24,6 +24,8 @@ type ViewUser = {
   username?: string;
   email?: string;
   avatar?: string;       // URL pronta para exibição
+  designsCount?: number;
+  piecesCount?: number;
   createdAt?: string;
 };
 
@@ -48,6 +50,7 @@ type DraftData = {
   draftKey?: string;
   draftId?: string;
   projectKey?: string;
+  isPublic?: boolean;
   isPermanent?: boolean;
   ephemeralExpiresAt?: string | null;
 };
@@ -57,6 +60,7 @@ type DraftRecord = {
   projectKey: string;
   updatedAt: string | null;
   data: DraftData;
+  isPublic: boolean;
 };
 
 type CreationItem = {
@@ -68,6 +72,7 @@ type CreationItem = {
   baseColor?: string;
   selection?: { part?: string | null; type?: string | null; subtype?: string | null };
   externalDecals?: ExternalDecalData[];
+  isPublic: boolean;
 };
 
 type GalleryItem = {
@@ -80,26 +85,50 @@ type GalleryItem = {
   designValue: number;
 };
 
+type SocialProfileRow = {
+  id: string;
+  username: string | null;
+  nickname: string | null;
+  avatar_path: string | null;
+  designs_count: number | null;
+  pieces_count: number | null;
+};
+
+function normalizeUsername(value: string | null | undefined) {
+  return String(value || "").trim().toLowerCase().replace(/^@+/, "");
+}
+
+function isLikelyUuid(value: string) {
+  return /^[0-9a-f]{8}-[0-9a-f]{4}-[1-5][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i.test(value);
+}
+
 const Profile = () => {
   const { user: authUser, getProfile } = useAuth();
   const navigate = useNavigate();
   const [searchParams] = useSearchParams();
+  const viewedUsername = useMemo(() => normalizeUsername(searchParams.get("username")), [searchParams]);
 
   const viewedUserId = useMemo(() => {
     const fromQuery = (searchParams.get("user") || "").trim();
-    if (fromQuery) return fromQuery;
+    if (fromQuery && fromQuery !== "undefined" && fromQuery !== "null") return fromQuery;
+    // Se a rota vier por username, o id real será resolvido no load do profile.
+    if (viewedUsername) return "";
     return authUser?.id || "";
-  }, [searchParams, authUser?.id]);
-
-  const isOwnProfile = Boolean(authUser?.id && viewedUserId && authUser.id === viewedUserId);
+  }, [searchParams, authUser?.id, viewedUsername]);
 
   const [user, setUser] = useState<ViewUser>({
     name: "Usuário",
     username: "",
     email: "",
     avatar: "",
+    designsCount: 0,
+    piecesCount: 0,
     createdAt: "Janeiro 2024",
   });
+
+  const effectiveViewedUserId = user.id || viewedUserId;
+
+  const isOwnProfile = Boolean(authUser?.id && effectiveViewedUserId && authUser.id === effectiveViewedUserId);
 
   // Estado do upload (mantido)
   const [openUpload, setOpenUpload] = useState(false);
@@ -121,6 +150,7 @@ const Profile = () => {
   const [galleryLoading, setGalleryLoading] = useState(false);
   const [galleryError, setGalleryError] = useState<string | null>(null);
   const [togglingGalleryIds, setTogglingGalleryIds] = useState<Record<string, boolean>>({});
+  const [togglingPieceIds, setTogglingPieceIds] = useState<Record<string, boolean>>({});
   const [selectedDesign, setSelectedDesign] = useState<GalleryItem | null>(null);
   const [editPanelOpen, setEditPanelOpen] = useState(false);
   const [editNameInput, setEditNameInput] = useState("");
@@ -169,6 +199,11 @@ const Profile = () => {
       .toFixed(2)
       .replace(".", ",");
 
+  const resolveDraftIsPublic = (row: { is_public?: unknown; data?: DraftData | null }) => {
+    if (typeof row.is_public === "boolean") return row.is_public;
+    return Boolean(row.data?.isPublic);
+  };
+
   const resolveDraftDecals = (data: DraftData): ExternalDecalData[] => {
     const tabs = data.canvasTabs ?? [];
     const previews = data.tabDecalPreviews ?? {};
@@ -214,6 +249,7 @@ const Profile = () => {
           subtype: draft.data.subtype ?? null,
         },
         externalDecals: resolveDraftDecals(draft.data),
+        isPublic: draft.isPublic,
       } satisfies CreationItem;
     });
 
@@ -223,7 +259,7 @@ const Profile = () => {
   }, [drafts, piecesFilter]);
 
   useEffect(() => {
-    if (!authUser?.id || !isOwnProfile) {
+    if (!effectiveViewedUserId) {
       setDrafts([]);
       setDraftsLoading(false);
       setDraftsError(null);
@@ -237,17 +273,64 @@ const Profile = () => {
       setDraftsError(null);
 
       try {
-        const { data, error } = await supabase
-          .from("project_drafts")
-          .select("id, project_key, data, updated_at")
-          .eq("user_id", viewedUserId)
-          .order("updated_at", { ascending: false });
+        let data: any[] | null = null;
+        let error: any = null;
+        let publicPiecesBackendMissing = false;
+
+        if (isOwnProfile) {
+          const result = await supabase
+            .from("project_drafts")
+            .select("id, project_key, data, updated_at, is_public")
+            .eq("user_id", effectiveViewedUserId)
+            .order("updated_at", { ascending: false });
+          data = result.data;
+          error = result.error;
+
+          // Compatibilidade com schema antigo ou cache sem is_public.
+          if (error?.code === "42703" || error?.code === "PGRST204" || String(error?.message || "").includes("is_public")) {
+            const fallback = await supabase
+              .from("project_drafts")
+              .select("id, project_key, data, updated_at")
+              .eq("user_id", effectiveViewedUserId)
+              .order("updated_at", { ascending: false });
+            data = fallback.data;
+            error = fallback.error;
+          }
+        } else {
+          const rpcRows = await supabase.rpc("get_public_project_drafts", {
+            target_user_id: effectiveViewedUserId,
+            limit_count: 120,
+          });
+
+          data = (rpcRows.data as any[]) ?? null;
+          error = rpcRows.error;
+
+          // Fallback caso RPC não esteja criada no banco.
+          if (error && String(error.message || "").includes("get_public_project_drafts")) {
+            publicPiecesBackendMissing = true;
+            const fallback = await supabase
+              .from("project_drafts")
+              .select("id, project_key, data, updated_at, is_public")
+              .eq("user_id", effectiveViewedUserId)
+              .eq("is_public", true)
+              .order("updated_at", { ascending: false });
+            data = fallback.data;
+            error = fallback.error;
+          }
+
+          if (error?.code === "42703" || error?.code === "PGRST204" || String(error?.message || "").includes("is_public")) {
+            // Sem coluna de visibilidade, evita expor peças privadas.
+            publicPiecesBackendMissing = true;
+            data = [];
+            error = null;
+          }
+        }
 
         if (cancelled) return;
 
         if (error) {
-          console.error("Erro ao carregar rascunhos:", error);
-          setDraftsError("Erro ao carregar rascunhos.");
+          console.error("Erro ao carregar peças:", error);
+          setDraftsError("Erro ao carregar peças.");
           setDrafts([]);
           return;
         }
@@ -257,13 +340,17 @@ const Profile = () => {
           projectKey: String(row.project_key ?? ""),
           updatedAt: (row.updated_at ?? null) as string | null,
           data: (row.data ?? {}) as DraftData,
+          isPublic: resolveDraftIsPublic(row),
         }));
 
         setDrafts(mapped);
+        if (!isOwnProfile && publicPiecesBackendMissing) {
+          setDraftsError("Peças públicas ainda não estão configuradas no banco. Execute os SQLs social_search_profiles.sql e draft_visibility.sql no Supabase.");
+        }
       } catch (err) {
         if (!cancelled) {
-          console.error("Erro inesperado ao buscar rascunhos:", err);
-          setDraftsError("Erro inesperado ao carregar rascunhos.");
+          console.error("Erro inesperado ao buscar peças:", err);
+          setDraftsError("Erro inesperado ao carregar peças.");
           setDrafts([]);
         }
       } finally {
@@ -276,10 +363,10 @@ const Profile = () => {
     return () => {
       cancelled = true;
     };
-  }, [authUser?.id, viewedUserId, isOwnProfile]);
+  }, [effectiveViewedUserId, isOwnProfile]);
 
   useEffect(() => {
-    if (!viewedUserId) {
+    if (!effectiveViewedUserId) {
       setGalleryItems([]);
       setGalleryError(null);
       setGalleryLoading(false);
@@ -293,21 +380,50 @@ const Profile = () => {
       setGalleryError(null);
 
       try {
-        let { data: visibilityRows, error: visibilityError } = await supabase
-          .from("gallery_visibility")
-          .select("storage_path,is_public,design_value,design_name,updated_at")
-          .eq("user_id", viewedUserId)
-          .order("updated_at", { ascending: false });
+        let visibilityRows: any[] | null = null;
+        let visibilityError: any = null;
 
-        // Se design_name ainda não existe na tabela (42703), faz fallback sem ela
-        if (visibilityError?.code === "42703") {
-          const fallback = await supabase
+        if (!isOwnProfile && isLikelyUuid(effectiveViewedUserId)) {
+          const rpcRows = await supabase.rpc("get_public_gallery_items", {
+            target_user_id: effectiveViewedUserId,
+            limit_count: 120,
+          });
+          if (!rpcRows.error) {
+            visibilityRows = (rpcRows.data as any[]) ?? [];
+          } else {
+            visibilityError = rpcRows.error;
+          }
+        }
+
+        if (!visibilityRows) {
+          let visibilityQuery = supabase
             .from("gallery_visibility")
-            .select("storage_path,is_public,design_value,updated_at")
-            .eq("user_id", viewedUserId)
+            .select("storage_path,is_public,design_value,design_name,updated_at")
+            .eq("user_id", effectiveViewedUserId)
             .order("updated_at", { ascending: false });
-          visibilityRows = fallback.data;
-          visibilityError = fallback.error;
+
+          if (!isOwnProfile) {
+            visibilityQuery = visibilityQuery.eq("is_public", true);
+          }
+
+          const result = await visibilityQuery;
+          visibilityRows = result.data;
+          visibilityError = result.error;
+
+          // Se design_name ainda não existe na tabela (42703), faz fallback sem ela
+          if (visibilityError?.code === "42703") {
+            let fallbackQuery = supabase
+              .from("gallery_visibility")
+              .select("storage_path,is_public,design_value,updated_at")
+              .eq("user_id", effectiveViewedUserId)
+              .order("updated_at", { ascending: false });
+            if (!isOwnProfile) {
+              fallbackQuery = fallbackQuery.eq("is_public", true);
+            }
+            const fallback = await fallbackQuery;
+            visibilityRows = fallback.data;
+            visibilityError = fallback.error;
+          }
         }
 
         if (cancelled) return;
@@ -327,7 +443,7 @@ const Profile = () => {
         let items: GalleryItem[] = [];
 
         if (isOwnProfile) {
-          const prefix = `${viewedUserId}/images`;
+          const prefix = `${effectiveViewedUserId}/images`;
           const { data: files, error } = await supabase.storage.from(STORAGE_BUCKET).list(prefix, {
             limit: 100,
           } as any);
@@ -360,12 +476,31 @@ const Profile = () => {
           );
         } else {
           const publicRows = (visibilityRows || []).filter((row: any) => Boolean(row.is_public));
+          const paths = publicRows.map((row: any) => String(row.storage_path || "")).filter(Boolean);
+
+          // Gera signed URLs em lote — funcionam mesmo em buckets privados
+          let signedMap: Record<string, string> = {};
+          if (paths.length > 0) {
+            const { data: signedData } = await supabase.storage
+              .from(STORAGE_BUCKET)
+              .createSignedUrls(paths, 60 * 60 * 24 * 7);
+            if (signedData) {
+              for (const entry of signedData) {
+                if (entry.signedUrl) signedMap[entry.path] = entry.signedUrl;
+              }
+            }
+          }
+
           items = publicRows.map((row: any) => {
             const path = String(row.storage_path || "");
             const fileName = path.split("/").pop() || "design.png";
+            const previewUrl =
+              signedMap[path] ||
+              supabase.storage.from(STORAGE_BUCKET).getPublicUrl(path).data.publicUrl ||
+              "";
             return {
               id: path,
-              previewUrl: supabase.storage.from(STORAGE_BUCKET).getPublicUrl(path).data.publicUrl || "",
+              previewUrl,
               originalName: fileName.replace(/^(\d{17})-/, ""),
               sortKey: fileName.slice(0, 17),
               isPublic: true,
@@ -392,7 +527,7 @@ const Profile = () => {
     return () => {
       cancelled = true;
     };
-  }, [viewedUserId, isOwnProfile]);
+  }, [effectiveViewedUserId, isOwnProfile]);
 
   const persistDraftToLocal = (draft: DraftRecord) => {
     const data = draft.data ?? {};
@@ -442,24 +577,50 @@ const Profile = () => {
   useEffect(() => {
     const load = async () => {
       let display: ViewUser = {
-        id: viewedUserId,
-        name:
-          (authUser?.user_metadata as any)?.nickname ??
-          (authUser?.user_metadata as any)?.name ??
-          (authUser?.user_metadata as any)?.full_name ??
-          "Usuário",
-        username: (authUser?.user_metadata as any)?.username || "",
+        id: effectiveViewedUserId,
+        name: isOwnProfile
+          ? ((authUser?.user_metadata as any)?.nickname ??
+            (authUser?.user_metadata as any)?.name ??
+            (authUser?.user_metadata as any)?.full_name ??
+            "Usuário")
+          : "Usuário",
+        username: isOwnProfile ? ((authUser?.user_metadata as any)?.username || "") : "",
         avatar: "",
       };
 
       try {
-        const prof = isOwnProfile
-          ? await getProfile()
-          : (await supabase
-            .from("profiles")
-            .select("id, email, username, nickname, full_name, avatar_path")
-            .eq("id", viewedUserId)
-            .maybeSingle()).data;
+        let prof: (SocialProfileRow & { full_name?: string | null; email?: string | null }) | null = null;
+
+        if (isOwnProfile) {
+          prof = (await getProfile()) as (SocialProfileRow & { full_name?: string | null; email?: string | null }) | null;
+        } else {
+          if (isLikelyUuid(effectiveViewedUserId)) {
+            const rpcProfile = (await supabase
+              .rpc("get_social_profile", { target_user_id: effectiveViewedUserId })
+              .maybeSingle()).data as SocialProfileRow | null;
+            if (rpcProfile) prof = rpcProfile;
+          }
+
+          if (!prof && viewedUsername) {
+            const { data: rows } = await supabase.rpc("search_social_profiles", {
+              search_term: viewedUsername,
+              limit_count: 50,
+            });
+            const exact = ((rows ?? []) as SocialProfileRow[]).find(
+              (row) => normalizeUsername(row.username) === viewedUsername,
+            );
+            if (exact) prof = exact;
+          }
+
+          if (!prof && isLikelyUuid(effectiveViewedUserId)) {
+            const { data: rows } = await supabase.rpc("search_social_profiles", {
+              search_term: null,
+              limit_count: 200,
+            });
+            const byId = ((rows ?? []) as SocialProfileRow[]).find((row) => row.id === effectiveViewedUserId);
+            if (byId) prof = byId;
+          }
+        }
 
         if (prof) {
           let avatarUrl = "";
@@ -470,10 +631,13 @@ const Profile = () => {
 
           display = {
             ...display,
-            name: (prof.nickname ?? prof.full_name ?? display.name),
+            id: prof.id || display.id,
+            name: (prof.nickname ?? (prof as any).full_name ?? display.name),
             username: prof.username || display.username,
-            email: prof.email ?? display.email,
+            email: isOwnProfile ? ((prof as any).email ?? display.email) : undefined,
             avatar: avatarUrl,
+            designsCount: Number((prof as any).designs_count ?? display.designsCount ?? 0),
+            piecesCount: Number((prof as any).pieces_count ?? display.piecesCount ?? 0),
           };
         }
       } catch {
@@ -481,15 +645,74 @@ const Profile = () => {
       }
 
       // Prepara os campos de edição com os valores atuais
-      setForm({
-        nickname: display.name || "",
-        username: display.username || "",
-      });
+      if (isOwnProfile) {
+        setForm({
+          nickname: display.name || "",
+          username: display.username || "",
+        });
+      }
 
       setUser(display);
     };
     load();
-  }, [authUser, getProfile, isOwnProfile, viewedUserId]);
+  }, [authUser, getProfile, isOwnProfile, viewedUsername, effectiveViewedUserId]);
+
+  const togglePieceVisibility = async (itemId: string, nextIsPublic: boolean) => {
+    if (!authUser?.id || !isOwnProfile) return;
+
+    setTogglingPieceIds((prev) => ({ ...prev, [itemId]: true }));
+    const previousDraft = drafts.find((d) => d.id === itemId) ?? null;
+    setDrafts((prev) =>
+      prev.map((d) =>
+        d.id === itemId
+          ? { ...d, isPublic: nextIsPublic, data: { ...d.data, isPublic: nextIsPublic } }
+          : d
+      )
+    );
+
+    try {
+      let error: any = null;
+
+      const columnUpdate = await supabase
+        .from("project_drafts")
+        .update({ is_public: nextIsPublic })
+        .eq("id", itemId);
+      error = columnUpdate.error;
+
+      // Fallback para bancos sem a coluna is_public: salva dentro do JSON data.
+      if (error?.code === "PGRST204" || String(error?.message || "").includes("is_public")) {
+        const fallbackData = {
+          ...(previousDraft?.data ?? {}),
+          isPublic: nextIsPublic,
+        } satisfies DraftData;
+
+        const fallbackUpdate = await supabase
+          .from("project_drafts")
+          .update({ data: fallbackData })
+          .eq("id", itemId);
+        error = fallbackUpdate.error;
+      }
+
+      if (error) throw error;
+    } catch (err) {
+      console.error("Erro ao atualizar visibilidade da peça:", err);
+      if (previousDraft) {
+        setDrafts((prev) =>
+          prev.map((d) =>
+            d.id === itemId
+              ? {
+                ...d,
+                isPublic: previousDraft.isPublic,
+                data: { ...d.data, isPublic: previousDraft.data?.isPublic ?? previousDraft.isPublic },
+              }
+              : d
+          )
+        );
+      }
+    } finally {
+      setTogglingPieceIds((prev) => ({ ...prev, [itemId]: false }));
+    }
+  };
 
   const toggleGalleryVisibility = async (itemId: string, nextIsPublic: boolean) => {
     if (!authUser?.id || !isOwnProfile) return;
@@ -918,9 +1141,17 @@ const Profile = () => {
               <div className="flex items-center gap-3">
 
                 <div className="text-center">
-                  <div className="text-2xl font-bold text-purple-600">{isOwnProfile ? creations.length : galleryItems.length}</div>
+                  <div className="text-2xl font-bold text-purple-600">
+                    {isOwnProfile ? creations.length : (user.designsCount ?? galleryItems.length)}
+                  </div>
                   <div className="text-xs text-gray-500">{isOwnProfile ? "Criações" : "Designs públicos"}</div>
                 </div>
+                {!isOwnProfile && (
+                  <div className="text-center">
+                    <div className="text-2xl font-bold text-purple-600">{user.piecesCount ?? 0}</div>
+                    <div className="text-xs text-gray-500">Peças públicas</div>
+                  </div>
+                )}
               </div>
             </div>
           </CardHeader>
@@ -928,17 +1159,16 @@ const Profile = () => {
 
         {/* ===== Seções abaixo do banner (RESTauradas) ===== */}
         <Tabs defaultValue={isOwnProfile ? "creations" : "elements"} className="w-full">
-          <TabsList className={`grid w-full max-w-md mx-auto ${isOwnProfile ? "grid-cols-2" : "grid-cols-1"}`}>
-            {isOwnProfile && <TabsTrigger value="creations">Minhas Peças</TabsTrigger>}
+          <TabsList className="grid w-full max-w-md mx-auto grid-cols-2">
+            <TabsTrigger value="creations">{isOwnProfile ? "Minhas Peças" : "Peças"}</TabsTrigger>
             <TabsTrigger value="elements">Designs</TabsTrigger>
           </TabsList>
 
           {/* Minhas Peças */}
-          {isOwnProfile && (
-            <TabsContent value="creations" className="mt-6">
+          <TabsContent value="creations" className="mt-6">
             <div className="flex items-center justify-between mb-4">
-              <h2 className="text-xl font-semibold">Minhas Peças</h2>
-              <div className="flex gap-2">
+              <h2 className="text-xl font-semibold">{isOwnProfile ? "Minhas Peças" : "Peças públicas"}</h2>
+              {isOwnProfile && <div className="flex gap-2">
                 <Button
                   variant={piecesFilter === "todas" ? "default" : "outline"}
                   size="sm"
@@ -960,7 +1190,7 @@ const Profile = () => {
                 >
                   Rascunhos
                 </Button>
-              </div>
+              </div>}
             </div>
 
             {draftsLoading ? (
@@ -987,7 +1217,7 @@ const Profile = () => {
               </div>
             ) : creations.length === 0 ? (
               <div className="rounded-none border border-border bg-background px-4 py-8 text-sm text-muted-foreground text-center font-bold uppercase tracking-widest">
-                Nenhum rascunho salvo ainda.
+                {isOwnProfile ? "Nenhum rascunho salvo ainda." : "Nenhuma peça pública encontrada."}
               </div>
             ) : (
               <div className="grid grid-cols-2 md:grid-cols-3 lg:grid-cols-4 gap-4">
@@ -1017,6 +1247,8 @@ const Profile = () => {
                             />
                           </div>
                           <div className="flex gap-1.5">
+                            {isOwnProfile ? (
+                              <>
                             <Button
                               variant="outline"
                               size="sm"
@@ -1034,6 +1266,32 @@ const Profile = () => {
                             >
                               Produzir
                             </Button>
+                            <Button
+                              variant="outline"
+                              size="icon"
+                              className="flex-none rounded-none"
+                              onClick={() => void togglePieceVisibility(item.id, !item.isPublic)}
+                              disabled={Boolean(togglingPieceIds[item.id])}
+                              title={item.isPublic ? "Público" : "Não público"}
+                              aria-label={item.isPublic ? "Definir como não público" : "Definir como público"}
+                            >
+                              {togglingPieceIds[item.id] ? (
+                                <Loader2 className="h-4 w-4 animate-spin" />
+                              ) : (
+                                <span className={`relative inline-flex transition-transform duration-500 ${item.isPublic ? "rotate-180" : "rotate-0"}`}>
+                                  <Earth className="h-4 w-4" />
+                                  {!item.isPublic && (
+                                    <span className="pointer-events-none absolute left-1/2 top-1/2 h-5 w-[2px] -translate-x-1/2 -translate-y-1/2 rotate-45 rounded-full bg-current" />
+                                  )}
+                                </span>
+                              )}
+                            </Button>
+                              </>
+                            ) : (
+                              <div className="w-full text-center text-xs text-muted-foreground font-bold uppercase tracking-widest py-2 border border-border rounded-none">
+                                Peça pública
+                              </div>
+                            )}
                           </div>
                         </CardContent>
                       </Card>
@@ -1080,6 +1338,8 @@ const Profile = () => {
                             )}
                           </div>
                           <div className="flex gap-1.5">
+                            {isOwnProfile ? (
+                              <>
                             <Button
                               variant="outline"
                               size="sm"
@@ -1097,6 +1357,32 @@ const Profile = () => {
                             >
                               Produzir
                             </Button>
+                            <Button
+                              variant="outline"
+                              size="icon"
+                              className="flex-none rounded-none"
+                              onClick={() => void togglePieceVisibility(item.id, !item.isPublic)}
+                              disabled={Boolean(togglingPieceIds[item.id])}
+                              title={item.isPublic ? "Público" : "Não público"}
+                              aria-label={item.isPublic ? "Definir como não público" : "Definir como público"}
+                            >
+                              {togglingPieceIds[item.id] ? (
+                                <Loader2 className="h-4 w-4 animate-spin" />
+                              ) : (
+                                <span className={`relative inline-flex transition-transform duration-500 ${item.isPublic ? "rotate-180" : "rotate-0"}`}>
+                                  <Earth className="h-4 w-4" />
+                                  {!item.isPublic && (
+                                    <span className="pointer-events-none absolute left-1/2 top-1/2 h-5 w-[2px] -translate-x-1/2 -translate-y-1/2 rotate-45 rounded-full bg-current" />
+                                  )}
+                                </span>
+                              )}
+                            </Button>
+                              </>
+                            ) : (
+                              <div className="w-full text-center text-xs text-muted-foreground font-bold uppercase tracking-widest py-2 border border-border rounded-none">
+                                Peça pública
+                              </div>
+                            )}
                           </div>
                         </CardContent>
                       </Card>
@@ -1106,7 +1392,6 @@ const Profile = () => {
               </div>
             )}
             </TabsContent>
-          )}
 
           {/* Designs */}
           <TabsContent value="elements" className="mt-6">

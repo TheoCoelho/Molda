@@ -43,11 +43,17 @@ alter table public.gallery_visibility enable row level security;
 drop policy if exists "owners can read own gallery visibility" on public.gallery_visibility;
 drop policy if exists "owners can insert own gallery visibility" on public.gallery_visibility;
 drop policy if exists "owners can update own gallery visibility" on public.gallery_visibility;
+drop policy if exists "public can read public gallery visibility" on public.gallery_visibility;
 
 create policy "owners can read own gallery visibility"
 on public.gallery_visibility
 for select
 using (auth.uid() = user_id);
+
+create policy "public can read public gallery visibility"
+on public.gallery_visibility
+for select
+using (is_public = true);
 
 create policy "owners can insert own gallery visibility"
 on public.gallery_visibility
@@ -59,3 +65,20 @@ on public.gallery_visibility
 for update
 using (auth.uid() = user_id)
 with check (auth.uid() = user_id);
+
+-- ============================================================
+-- Storage: permite que usuários autenticados e anon gerem
+-- signed URLs (e baixem diretamente) para arquivos de design
+-- que foram marcados como públicos pelos seus donos.
+-- ============================================================
+drop policy if exists "read public design files" on storage.objects;
+create policy "read public design files"
+on storage.objects for select
+using (
+  bucket_id = 'user-uploads'
+  and exists (
+    select 1 from public.gallery_visibility gv
+    where gv.storage_path = name
+      and gv.is_public = true
+  )
+);
