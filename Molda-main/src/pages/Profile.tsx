@@ -10,7 +10,8 @@ import { Badge } from "@/components/ui/badge";
 import { Avatar, AvatarFallback, AvatarImage } from "@/components/ui/avatar";
 import { Dialog, DialogContent, DialogHeader, DialogTitle, DialogFooter } from "@/components/ui/dialog";
 import { Input } from "@/components/ui/input";
-import { Earth, Loader2, MoreVertical, Pencil } from "lucide-react";
+import { Earth, Loader2, MoreVertical, Pencil, Trash2 } from "lucide-react";
+import { toast } from "sonner";
 import { useAuth } from "@/contexts/AuthContext";
 import { supabase } from "@/integrations/supabase/client";
 import { AVATAR_BUCKET } from "@/lib/constants/storage";
@@ -156,6 +157,7 @@ const Profile = () => {
   const [editNameInput, setEditNameInput] = useState("");
   const [editValueInput, setEditValueInput] = useState("0,00");
   const [savingDesignEdit, setSavingDesignEdit] = useState(false);
+  const [deletingDesign, setDeletingDesign] = useState(false);
   const [replacingDesign, setReplacingDesign] = useState(false);
   const replaceDesignInputRef = useRef<HTMLInputElement | null>(null);
 
@@ -746,6 +748,36 @@ const Profile = () => {
     setEditPanelOpen(false);
     setEditNameInput("");
     setEditValueInput("0,00");
+  };
+
+  const deleteDesign = async () => {
+    if (!selectedDesign || !authUser?.id || !isOwnProfile) return;
+
+    setDeletingDesign(true);
+    try {
+      const { error: storageError } = await supabase.storage
+        .from(STORAGE_BUCKET)
+        .remove([selectedDesign.id]);
+
+      if (storageError) throw storageError;
+
+      const { error: dbError } = await supabase
+        .from("gallery_visibility")
+        .delete()
+        .eq("storage_path", selectedDesign.id)
+        .eq("user_id", authUser.id);
+
+      if (dbError && dbError.code !== "42P01") throw dbError;
+
+      setGalleryItems((prev) => prev.filter((item) => item.id !== selectedDesign.id));
+      closeSelectedDesign();
+      toast.success("Design excluído com sucesso");
+    } catch (err: any) {
+      console.error("Erro ao excluir design:", err);
+      setGalleryError(err?.message || "Não foi possível excluir o design.");
+    } finally {
+      setDeletingDesign(false);
+    }
   };
 
   const updateDesignLocal = (itemId: string, partial: Partial<GalleryItem>) => {
@@ -1489,7 +1521,21 @@ const Profile = () => {
           {selectedDesign && (
             <div className="relative">
               {isOwnProfile && (
-                <div className="absolute right-0 top-0 z-10">
+                <div className="absolute right-0 top-0 z-10 flex gap-1">
+                  <Button
+                    variant="ghost"
+                    size="icon"
+                    aria-label="Excluir design"
+                    onClick={deleteDesign}
+                    disabled={deletingDesign}
+                    className="text-red-500 hover:text-red-700 hover:bg-red-50"
+                  >
+                    {deletingDesign ? (
+                      <Loader2 className="h-4 w-4 animate-spin" />
+                    ) : (
+                      <Trash2 className="h-4 w-4" />
+                    )}
+                  </Button>
                   <Button variant="ghost" size="icon" aria-label="Editar design" onClick={openEditPanel}>
                     <MoreVertical className="h-4 w-4" />
                   </Button>

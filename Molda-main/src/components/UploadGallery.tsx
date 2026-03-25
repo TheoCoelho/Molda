@@ -15,7 +15,7 @@ import {
   DialogClose,
 } from "../components/ui/dialog";
 
-import { Earth, FileImage, Loader2 } from "lucide-react";
+import { Earth, FileImage, Loader2, Trash2 } from "lucide-react";
 import { toast } from "sonner";
 
 
@@ -95,6 +95,41 @@ export default function UploadGallery({ onImageInsert }: Props) {
     if (error) throw error;
   };
 
+  const deleteImage = async (itemId: string, e: React.MouseEvent) => {
+    e.stopPropagation();
+    if (!supabase || !user) return;
+
+    setDeletingItemId(itemId);
+    try {
+      // Deleta o arquivo do Storage
+      const { error: deleteStorageError } = await supabase.storage
+        .from(STORAGE_BUCKET)
+        .remove([itemId]);
+
+      if (deleteStorageError) throw deleteStorageError;
+
+      // Deleta a entrada de visibilidade do banco de dados
+      const { error: deleteDbError } = await supabase
+        .from("gallery_visibility")
+        .delete()
+        .eq("storage_path", itemId)
+        .eq("user_id", user.id);
+
+      if (deleteDbError && deleteDbError.code !== "42P01") {
+        throw deleteDbError;
+      }
+
+      // Remove da galeria local
+      setGallery((prev) => prev.filter((item) => item.id !== itemId));
+      toast.success("Imagem excluída com sucesso");
+    } catch (err: any) {
+      console.error("[deleteImage]", err);
+      toast.error(err?.message || "Falha ao excluir imagem");
+    } finally {
+      setDeletingItemId(null);
+    }
+  };
+
   const [brightness, setBrightness] = useState(100);
   const [contrast, setContrast] = useState(100);
   const [saturation, setSaturation] = useState(100);
@@ -126,6 +161,7 @@ export default function UploadGallery({ onImageInsert }: Props) {
   // ===== Galeria
   const [gallery, setGallery] = useState<GalleryItem[]>([]);
   const [loadingGallery, setLoadingGallery] = useState(false);
+  const [deletingItemId, setDeletingItemId] = useState<string | null>(null);
 
   const openFilePicker = () => fileInputRef.current?.click();
 
@@ -329,13 +365,12 @@ export default function UploadGallery({ onImageInsert }: Props) {
       setSelectedFile(null);
       setIsPublicUpload(false);
       resetFilters();
-} catch (err: any) {
-  console.error("[handleConfirm]", err);
-  toast.error(err?.message || "Falha ao enviar imagem.");
-} finally {
-  setIsSaving(false);
-}
-
+    } catch (err: any) {
+      console.error("[handleConfirm]", err);
+      toast.error(err?.message || "Falha ao enviar imagem.");
+    } finally {
+      setIsSaving(false);
+    }
   };
 
   const handleCloseDialog = () => {
@@ -412,7 +447,7 @@ export default function UploadGallery({ onImageInsert }: Props) {
           gallery.map((item) => (
             <div
               key={item.id}
-              className="relative aspect-square overflow-hidden rounded-md border bg-white cursor-pointer"
+              className="group relative aspect-square overflow-hidden rounded-md border bg-white cursor-pointer hover:shadow-md transition-shadow"
               draggable
               onClick={() => onImageInsert?.(item.previewUrl)}
               onDragStart={(e) => {
@@ -425,6 +460,23 @@ export default function UploadGallery({ onImageInsert }: Props) {
                 className="w-full h-full object-cover"
                 loading="lazy"
               />
+              {/* Botão de exclusão - aparece ao passar o mouse */}
+              <div className="absolute inset-0 bg-black/40 opacity-0 group-hover:opacity-100 transition-opacity duration-200 flex items-center justify-center">
+                <Button
+                  size="icon"
+                  variant="destructive"
+                  className="rounded-full shadow-lg"
+                  onClick={(e) => deleteImage(item.id, e)}
+                  disabled={deletingItemId === item.id}
+                  title="Excluir esta imagem"
+                >
+                  {deletingItemId === item.id ? (
+                    <Loader2 className="w-4 h-4 animate-spin" />
+                  ) : (
+                    <Trash2 className="w-4 h-4" />
+                  )}
+                </Button>
+              </div>
             </div>
           ))
         )}
