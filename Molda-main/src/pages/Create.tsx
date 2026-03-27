@@ -52,6 +52,9 @@ type CatalogSubtype = {
   name: string;
   description?: string | null;
   card_image_path?: string | null;
+  print_area_width_cm?: number | null;
+  print_area_height_cm?: number | null;
+  min_decal_area_cm2?: number | null;
   sort_order?: number | null;
   is_active?: boolean | null;
 };
@@ -143,12 +146,12 @@ const Create = () => {
     const prev = prevViewModeRef.current;
     if (prev !== viewMode) {
       setViewTransitionDirection(viewMode === "drafts" ? "left" : "right");
-
+      
       // Reset 3D viewer quando sair de rascunhos
       if (prev === "drafts" && viewMode === "create") {
         setRender3DViewer(false);
       }
-
+      
       // Delay para renderizar o 3D após a transição
       if (viewMode === "drafts") {
         const timer3D = window.setTimeout(() => {
@@ -194,11 +197,35 @@ const Create = () => {
       }
 
       try {
-        const [partsRes, typesRes, subtypesRes] = await Promise.all([
+        const [partsRes, typesRes] = await Promise.all([
           supabase.from("parts").select("id, slug, name, description, sort_order, is_active").order("sort_order", { ascending: true }),
           supabase.from("product_types").select("id, part_id, name, description, card_image_path, sort_order, is_active").order("sort_order", { ascending: true }),
-          supabase.from("product_subtypes").select("id, type_id, name, description, card_image_path, sort_order, is_active").order("sort_order", { ascending: true }),
         ]);
+
+        const subtypeBaseSelect = "id, type_id, name, description, card_image_path, sort_order, is_active";
+        const subtypeExtendedSelect = `${subtypeBaseSelect}, print_area_width_cm, print_area_height_cm, min_decal_area_cm2`;
+
+        let subtypesRes = await supabase
+          .from("product_subtypes")
+          .select(subtypeExtendedSelect)
+          .order("sort_order", { ascending: true });
+
+        if (subtypesRes.error) {
+          const message = `${subtypesRes.error.message || ""} ${subtypesRes.error.details || ""}`.toLowerCase();
+          const hasMissingNewColumns =
+            message.includes("print_area_width_cm") ||
+            message.includes("print_area_height_cm") ||
+            message.includes("min_decal_area_cm2") ||
+            (message.includes("column") && message.includes("does not exist"));
+
+          if (hasMissingNewColumns) {
+            console.warn("[Create] Fallback para consulta legada de subtipos: colunas de restricao de estampa nao encontradas.");
+            subtypesRes = await supabase
+              .from("product_subtypes")
+              .select(subtypeBaseSelect)
+              .order("sort_order", { ascending: true });
+          }
+        }
 
         if (partsRes.error) throw partsRes.error;
         if (typesRes.error) throw typesRes.error;
@@ -408,13 +435,13 @@ const Create = () => {
         // clone to avoid decal-engine mutating the stored object
         transform: placements[tab.id]
           ? {
-            position: placements[tab.id].position ? { ...placements[tab.id].position } : null,
-            normal: placements[tab.id].normal ? { ...placements[tab.id].normal } : null,
-            width: placements[tab.id].width,
-            height: placements[tab.id].height,
-            depth: placements[tab.id].depth,
-            angle: placements[tab.id].angle,
-          }
+              position: placements[tab.id].position ? { ...placements[tab.id].position } : null,
+              normal: placements[tab.id].normal ? { ...placements[tab.id].normal } : null,
+              width: placements[tab.id].width,
+              height: placements[tab.id].height,
+              depth: placements[tab.id].depth,
+              angle: placements[tab.id].angle,
+            }
           : null,
       }));
   }, [selectedDraft]);
@@ -641,7 +668,7 @@ const Create = () => {
     [catalogParts]
   );
 
-
+  
 
   const typeOptions = useMemo(() => {
     if (!selectedPart) return [];
@@ -691,6 +718,16 @@ const Create = () => {
   }, [searchMatch]);
 
   const requiresSubtype = selectedType ? (specificModels[selectedType]?.length ?? 0) > 0 : false;
+  const selectedSubtypeConfig = useMemo(() => {
+    if (!selectedType || !selectedSubtype) return null;
+    const typeMatch = catalogTypes.find((item) => item.name === selectedType);
+    if (!typeMatch) return null;
+    return (
+      catalogSubtypes.find(
+        (item) => item.type_id === typeMatch.id && item.name === selectedSubtype
+      ) ?? null
+    );
+  }, [catalogSubtypes, catalogTypes, selectedSubtype, selectedType]);
   const canContinue =
     !!selectedPart && !!selectedType && (requiresSubtype ? !!selectedSubtype : true);
 
@@ -836,7 +873,7 @@ const Create = () => {
     if (!canContinue) return;
     try {
       localStorage.removeItem("currentProject");
-    } catch { }
+    } catch {}
     const params = new URLSearchParams();
     if (selectedPart) params.set("part", selectedPart);
     if (selectedType) params.set("type", selectedType);
@@ -853,29 +890,18 @@ const Create = () => {
   };
 
   return (
-    <div className="min-h-screen bg-background flex flex-col">
+    <div className="min-h-screen">
       <Header />
 
-      <main className="mx-auto w-full max-w-7xl px-4 sm:px-6 lg:px-8 py-2 md:py-4 flex-1 flex flex-col">
-        <div className="flex flex-col flex-1">
+      <main className="mx-auto w-full max-w-6xl px-4 sm:px-6 lg:px-10 xl:px-16 2xl:px-24 py-10">
+        <div className="flex flex-col">
           <Tabs
             value={viewMode}
             onValueChange={(value: string) => setViewMode(value as ViewMode)}
-            className="flex flex-col flex-1 mt-2 md:mt-4"
+            className="mt-6"
           >
-            <div className="flex flex-col gap-4 md:flex-row md:items-end md:justify-between">
+            <div className="flex flex-col gap-4 md:flex-row md:items-center md:justify-between">
               <div className="w-full md:max-w-xl">
-                {viewMode === "create" ? (
-                  <div className="wizard-step__title mb-2 text-left">
-                    {currentStep === 1 && "Escolha a parte do corpo"}
-                    {currentStep === 2 && "Escolha o tipo de peca"}
-                    {currentStep === 3 && "Escolha a especificacao"}
-                  </div>
-                ) : viewMode === "drafts" ? (
-                  <div className="wizard-step__title mb-2 text-left">
-                    Escolha seu rascunho
-                  </div>
-                ) : null}
                 <Input
                   value={searchQuery}
                   onChange={(event) => setSearchQuery(event.target.value)}
@@ -883,18 +909,20 @@ const Create = () => {
                   aria-label="Pesquisar modelos"
                 />
               </div>
-              <TabsList className="w-fit md:ml-auto border border-border bg-background shadow-none rounded-none p-1">
+              <TabsList className="w-fit md:ml-auto glass-strong">
                 <TabsTrigger
                   value="create"
-                  className={`transition-all duration-300 origin-center transform-gpu data-[state=active]:bg-foreground data-[state=active]:text-background rounded-none ${viewTransitionDirection === "right" && viewMode === "create" ? "slide-in-right" : ""
-                    }`}
+                  className={`transition-all duration-300 origin-center transform-gpu data-[state=active]:shadow-lg ${
+                    viewTransitionDirection === "right" && viewMode === "create" ? "slide-in-right" : ""
+                  }`}
                 >
                   Criar
                 </TabsTrigger>
                 <TabsTrigger
                   value="drafts"
-                  className={`transition-all duration-300 origin-center transform-gpu data-[state=active]:bg-foreground data-[state=active]:text-background rounded-none ${viewTransitionDirection === "left" && viewMode === "drafts" ? "slide-in-left" : ""
-                    }`}
+                  className={`transition-all duration-300 origin-center transform-gpu data-[state=active]:shadow-lg ${
+                    viewTransitionDirection === "left" && viewMode === "drafts" ? "slide-in-left" : ""
+                  }`}
                 >
                   Rascunhos
                 </TabsTrigger>
@@ -903,27 +931,28 @@ const Create = () => {
 
             <TabsContent
               value="create"
-              className={`flex-1 flex flex-col pt-2 md:pt-6 ${viewTransitionDirection === "right" && viewMode === "create" ? "slide-in-right" : ""
-                }`}
+              className={`mt-6 ${
+                viewTransitionDirection === "right" && viewMode === "create" ? "slide-in-right" : ""
+              }`}
             >
               {searchActive && searchMatch.mode === "empty" && (
-                <div className="wizard-empty border border-border bg-background rounded-none p-6 text-center text-muted-foreground uppercase text-sm tracking-widest">
+                <div className="wizard-empty glass">
                   Nenhum modelo encontrado para "{searchQuery}".
                 </div>
               )}
 
               {catalogLoading && (
-                <div className="mt-4 border border-border bg-background px-4 py-3 text-xs text-muted-foreground tracking-widest uppercase">
+                <div className="mt-4 rounded-xl border border-dashed px-4 py-3 text-xs text-muted-foreground">
                   Carregando catalogo dinamico...
                 </div>
               )}
               {catalogError && (
-                <div className="mt-4 border border-destructive/40 bg-destructive/10 px-4 py-3 text-xs text-destructive tracking-widest uppercase">
+                <div className="mt-4 rounded-xl border border-destructive/40 bg-destructive/10 px-4 py-3 text-xs text-destructive">
                   {catalogError}
                 </div>
               )}
 
-              <div key={`step-${currentStep}`} className="wizard-step flex-1 flex flex-col justify-center">
+              <div key={`step-${currentStep}`} className="wizard-step mt-8">
                 {currentStep === 1 && (
                   <div>
                     {showMannequin && (
@@ -936,10 +965,11 @@ const Create = () => {
                         />
                       </div>
                     )}
+                    <div className="wizard-step__title">Escolha a parte do corpo</div>
                     {bodyPartOptions.length <= 3
                       ? renderStaticCards(bodyPartOptions, selectedPart, (id) =>
-                        handleSelectPart(id)
-                      )
+                          handleSelectPart(id)
+                        )
                       : (
                         <LinearInfiniteCarousel
                           className="wizard-carousel"
@@ -955,6 +985,7 @@ const Create = () => {
 
                 {currentStep === 2 && (
                   <div>
+                    <div className="wizard-step__title">Escolha o tipo de peca</div>
                     {typeCarouselItems.length <= 3
                       ? renderStaticCards(typeCarouselItems, selectedType, (id) => handleSelectType(id))
                       : (
@@ -969,7 +1000,7 @@ const Create = () => {
                         />
                       )}
                     {!selectedPart && (
-                      <div className="wizard-empty border border-border bg-background rounded-none p-6 text-center text-muted-foreground uppercase text-sm tracking-widest mt-6">
+                      <div className="wizard-empty glass">
                         Selecione uma parte do corpo antes de escolher o tipo de peca.
                       </div>
                     )}
@@ -978,12 +1009,13 @@ const Create = () => {
 
                 {currentStep === 3 && (
                   <div>
+                    <div className="wizard-step__title">Escolha a especificacao</div>
                     {searchActive && searchMatch.mode === "subtype"
                       ? renderStaticCards(
-                        searchSubtypeCardItems,
-                        selectedSubtype,
-                        (id) => handleSelectSubtype(id)
-                      )
+                          searchSubtypeCardItems,
+                          selectedSubtype,
+                          (id) => handleSelectSubtype(id)
+                        )
                       : subtypeCarouselItems.length <= 3
                         ? renderStaticCards(subtypeCarouselItems, selectedSubtype, (id) => handleSelectSubtype(id))
                         : (
@@ -997,16 +1029,28 @@ const Create = () => {
                             cardGapPx={CARD_GAP}
                           />
                         )}
+
+                    {selectedSubtypeConfig && (
+                      <div className="mt-4 rounded-xl border border-amber-300/50 bg-amber-50/70 px-4 py-3 text-xs text-amber-900">
+                        <p className="font-semibold">Referencia de estampa da peca</p>
+                        <p className="mt-1">
+                          Area util: {selectedSubtypeConfig.print_area_width_cm ?? "-"} x {selectedSubtypeConfig.print_area_height_cm ?? "-"} cm
+                        </p>
+                        <p>
+                          Area minima recomendada: {selectedSubtypeConfig.min_decal_area_cm2 ?? 5} cm²
+                        </p>
+                      </div>
+                    )}
                   </div>
                 )}
               </div>
 
-              <div className="mt-auto pt-4 flex flex-wrap items-center gap-3">
-                <Button variant="outline" className="px-6 rounded-none tracking-widest uppercase text-xs h-10" onClick={handleStepBack}>
+              <div className="mt-12 flex flex-wrap items-center gap-3">
+                <Button variant="outline" className="px-6" onClick={handleStepBack}>
                   Voltar
                 </Button>
                 <Button
-                  className="px-6 rounded-none tracking-widest uppercase text-xs h-10"
+                  className="px-6"
                   disabled={
                     (currentStep === 1 && !selectedPart) ||
                     (currentStep === 2 && !selectedType) ||
@@ -1021,24 +1065,24 @@ const Create = () => {
 
             <TabsContent
               value="drafts"
-              className={`flex-1 flex flex-col pt-2 md:pt-6 ${viewTransitionDirection === "left" && viewMode === "drafts" ? "slide-in-left" : ""
-                }`}
+              className={`mt-6 ${
+                viewTransitionDirection === "left" && viewMode === "drafts" ? "slide-in-left" : ""
+              }`}
             >
-              <div className="flex flex-col lg:flex-row gap-0 flex-1 items-stretch min-h-[650px] pb-8">
-                <div className="w-full lg:w-[450px] shrink-0 flex flex-col">
-                  <div className="space-y-3 h-[400px] lg:h-[700px] overflow-y-auto scrollbar-soft">
+              <div className="grid gap-6 lg:grid-cols-[minmax(260px,320px)_1fr] lg:items-start">
+                <div className="space-y-3 max-h-[calc(100vh-280px)] overflow-y-auto pr-2 scrollbar-soft">
                   {draftsLoading ? (
                     <div className="space-y-3">
-                      <div className="h-14 bg-muted/30 animate-pulse border border-border" />
-                      <div className="h-14 bg-muted/30 animate-pulse border border-border" />
-                      <div className="h-14 bg-muted/30 animate-pulse border border-border" />
+                      <div className="h-14 rounded-xl bg-muted/60 animate-pulse" />
+                      <div className="h-14 rounded-xl bg-muted/60 animate-pulse" />
+                      <div className="h-14 rounded-xl bg-muted/60 animate-pulse" />
                     </div>
                   ) : draftsError ? (
-                    <div className="border border-destructive/40 bg-destructive/10 px-4 py-3 text-sm text-destructive">
+                    <div className="rounded-xl border border-destructive/40 bg-destructive/10 px-4 py-3 text-sm text-destructive">
                       {draftsError}
                     </div>
                   ) : drafts.length === 0 ? (
-                    <div className="border border-dashed border-border px-4 py-6 text-sm text-muted-foreground text-center tracking-widest uppercase">
+                    <div className="rounded-xl border border-dashed px-4 py-6 text-sm text-muted-foreground">
                       Nenhum rascunho salvo ainda. Volte para a aba Criar para iniciar um novo projeto.
                     </div>
                   ) : (
@@ -1063,9 +1107,9 @@ const Create = () => {
                                 }
                               }}
                               className={cn(
-                                "w-full border px-4 py-3 text-left transition rounded-none",
-                                "hover:border-primary/60 hover:bg-muted/50",
-                                isActive ? "border-primary bg-muted/50" : "border-border bg-background"
+                                "w-full rounded-xl border px-4 py-3 text-left transition",
+                                "hover:border-primary/60 hover:bg-primary/5",
+                                isActive ? "border-primary bg-primary/10" : "border-border bg-background"
                               )}
                             >
                               <div className="flex items-center justify-between gap-3">
@@ -1084,9 +1128,9 @@ const Create = () => {
                                     onMakePermanent={() => handleMakePermanent(draft)}
                                   />
                                 ) : (
-                                  <span className="inline-flex h-6 items-center gap-2 border px-3 text-[11px] uppercase tracking-wide text-muted-foreground rounded-none">
+                                  <span className="inline-flex h-6 items-center gap-2 rounded-full border px-3 text-[11px] uppercase tracking-wide text-muted-foreground">
                                     <span
-                                      className="h-3 w-3 rounded-none border border-border"
+                                      className="h-3 w-3 rounded-full border"
                                       style={{ backgroundColor: draft.data.baseColor || "#ffffff" }}
                                     />
                                     {sizeLabel}
@@ -1096,7 +1140,6 @@ const Create = () => {
                                   type="button"
                                   size="sm"
                                   variant={isActive ? "default" : "outline"}
-                                  className="rounded-none tracking-widest uppercase text-[10px]"
                                   onClick={(event: ReactMouseEvent<HTMLButtonElement>) => {
                                     event.stopPropagation();
                                     handleLoadDraft(draft);
@@ -1111,10 +1154,9 @@ const Create = () => {
                       })}
                     </ul>
                   )}
-                  </div>
                 </div>
 
-                <div className="w-full flex-1 shrink-0 relative flex items-center justify-center border shadow-none bg-background min-h-[400px] lg:min-h-[700px]">
+                <div className="glass relative flex items-center justify-center rounded-2xl border shadow-sm h-[calc(100vh-280px)] min-h-[500px]">
                   {!render3DViewer ? (
                     <div className="flex flex-col items-center gap-3">
                       <div className="h-10 w-10 animate-spin rounded-full border-4 border-muted border-t-primary" />
@@ -1142,7 +1184,7 @@ const Create = () => {
                   )}
 
                   {selectedDraft && !selectedDraftDecals.length && (
-                    <div className="pointer-events-none absolute bottom-4 left-1/2 -translate-x-1/2 border border-border bg-background px-3 py-1 text-[11px] uppercase tracking-widest text-muted-foreground">
+                    <div className="pointer-events-none absolute bottom-4 left-1/2 -translate-x-1/2 rounded-full bg-background/70 px-3 py-1 text-[11px] text-muted-foreground shadow">
                       Nenhum decal visível neste rascunho.
                     </div>
                   )}
@@ -1229,7 +1271,7 @@ function Mannequin3D({
           <OrbitControls enablePan={false} enableZoom={false} enableRotate={false} />
         </Canvas>
 
-        <div className="pointer-events-none absolute inset-0 border border-primary/20 overflow-hidden">
+        <div className="pointer-events-none absolute inset-0 rounded-lg border border-indigo-400/40 overflow-hidden">
           <div className="flex h-full flex-col">
             <div
               className={overlaySectionClass("head", true)}
@@ -1333,8 +1375,8 @@ function SegmentedMannequin({ selected, hovered, onHover, onSelect }: SegmentedM
       uTorsoStart: { value: thresholds.torsoStart },
       uSelected: { value: new THREE.Vector3(0, 0, 0) },
       uHovered: { value: new THREE.Vector3(0, 0, 0) },
-      uSelectedColor: { value: new THREE.Color(DEFAULT_GIZMO_THEME.primary) },
-      uHoverColor: { value: new THREE.Color(DEFAULT_GIZMO_THEME.secondary) },
+  uSelectedColor: { value: new THREE.Color(DEFAULT_GIZMO_THEME.primary) },
+  uHoverColor: { value: new THREE.Color(DEFAULT_GIZMO_THEME.secondary) },
     };
   }
 
@@ -1347,8 +1389,8 @@ function SegmentedMannequin({ selected, hovered, onHover, onSelect }: SegmentedM
       if (!material || typeof (material as any).clone !== "function") return material;
       const clonedMaterial = (material as THREE.MeshStandardMaterial).clone();
       clonedMaterial.onBeforeCompile = (shader) => {
-        shader.uniforms.uHeadStart = uniforms.uHeadStart;
-        shader.uniforms.uTorsoStart = uniforms.uTorsoStart;
+  shader.uniforms.uHeadStart = uniforms.uHeadStart;
+  shader.uniforms.uTorsoStart = uniforms.uTorsoStart;
         shader.uniforms.uSelected = uniforms.uSelected;
         shader.uniforms.uHovered = uniforms.uHovered;
         shader.uniforms.uSelectedColor = uniforms.uSelectedColor;

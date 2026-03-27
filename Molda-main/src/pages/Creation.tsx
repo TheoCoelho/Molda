@@ -70,6 +70,17 @@ type SaveDraftOptions = {
   markPermanent?: boolean;
 };
 
+type SubtypePrintConstraints = {
+  id: string;
+  print_area_width_cm?: number | null;
+  print_area_height_cm?: number | null;
+  min_decal_area_cm2?: number | null;
+  neck_zone_y_min?: number | null;
+  underarm_zone_y_min?: number | null;
+  underarm_zone_y_max?: number | null;
+  underarm_zone_abs_x_min?: number | null;
+};
+
 const TRANSPARENT_PNG =
   "data:image/png;base64,iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mP8/x8AAukB9p7i/ZkAAAAASUVORK5CYII=";
 
@@ -81,6 +92,13 @@ const nearlyEqual = (a?: number | null, b?: number | null) => {
 };
 
 const DRAFT_EPHEMERAL_TTL_MS = 5 * 60 * 1000;
+
+const VIABILITY_WARNING_LABELS: Record<string, string> = {
+  min_area_violation: "Decal abaixo da area minima recomendada para a peca.",
+  neck_zone_risk: "Decal proximo da gola (area de risco de producao).",
+  underarm_zone_risk: "Decal abaixo da manga/lateral (area de risco de producao).",
+  relief_overlap_risk: "Decal em regiao de relevo alto/sobreposicao.",
+};
 
 const slugify = (s: string) =>
   s
@@ -167,6 +185,8 @@ const Creation = () => {
   const [fabric, setFabric] = useState("Algodão");
   const [fixedSubtypeFabric, setFixedSubtypeFabric] = useState<string | null>(null);
   const [isSubtypeFabricLocked, setIsSubtypeFabricLocked] = useState(false);
+  const [subtypePrintConstraints, setSubtypePrintConstraints] = useState<SubtypePrintConstraints | null>(null);
+  const [decalViabilityAlerts, setDecalViabilityAlerts] = useState<Record<string, string[]>>({});
   const [notes, setNotes] = useState("");
 
   const [canvasTabs, setCanvasTabs] = useState<CanvasTab[]>([
@@ -191,6 +211,7 @@ const Creation = () => {
     const resolveSubtypeFabric = async () => {
       setFixedSubtypeFabric(null);
       setIsSubtypeFabricLocked(false);
+      setSubtypePrintConstraints(null);
 
       if (!subtype) return;
 
@@ -207,14 +228,14 @@ const Creation = () => {
 
         let subtypeQuery = supabase
           .from("product_subtypes")
-          .select("id")
+          .select("id, print_area_width_cm, print_area_height_cm, min_decal_area_cm2, neck_zone_y_min, underarm_zone_y_min, underarm_zone_y_max, underarm_zone_abs_x_min")
           .ilike("name", subtype)
           .limit(1);
 
         if (typeId) {
           subtypeQuery = supabase
             .from("product_subtypes")
-            .select("id")
+            .select("id, print_area_width_cm, print_area_height_cm, min_decal_area_cm2, neck_zone_y_min, underarm_zone_y_min, underarm_zone_y_max, underarm_zone_abs_x_min")
             .eq("type_id", typeId)
             .ilike("name", subtype)
             .limit(1);
@@ -225,6 +246,20 @@ const Creation = () => {
 
         const subtypeId = subtypeRows?.[0]?.id;
         if (!subtypeId) return;
+
+        const subtypeMeta = subtypeRows?.[0] as SubtypePrintConstraints | undefined;
+        if (subtypeMeta) {
+          setSubtypePrintConstraints({
+            id: subtypeMeta.id,
+            print_area_width_cm: subtypeMeta.print_area_width_cm ?? null,
+            print_area_height_cm: subtypeMeta.print_area_height_cm ?? null,
+            min_decal_area_cm2: subtypeMeta.min_decal_area_cm2 ?? 5,
+            neck_zone_y_min: subtypeMeta.neck_zone_y_min ?? 0.82,
+            underarm_zone_y_min: subtypeMeta.underarm_zone_y_min ?? 0.45,
+            underarm_zone_y_max: subtypeMeta.underarm_zone_y_max ?? 0.72,
+            underarm_zone_abs_x_min: subtypeMeta.underarm_zone_abs_x_min ?? 0.55,
+          });
+        }
 
         const { data: relRows, error: relErr } = await supabase
           .from("subtype_materials")
@@ -725,6 +760,17 @@ const Creation = () => {
         transform: tabDecalPlacements[tab.id] ?? null,
       }));
   }, [canvasTabs, tabDecalPreviews, tabVisibility, tabDecalPlacements]);
+
+  const viabilityAlertItems = useMemo(() => {
+    return Object.entries(decalViabilityAlerts).map(([id, messages]) => {
+      const tab = canvasTabs.find((item) => item.id === id);
+      return {
+        id,
+        label: tab?.name ?? id,
+        messages,
+      };
+    });
+  }, [canvasTabs, decalViabilityAlerts]);
 
   // Referência estável para os parâmetros do projeto atual
   const currentProjectRef = useRef<{ part: string | null, type: string | null, subtype: string | null }>({
@@ -1561,6 +1607,42 @@ const Creation = () => {
 
   const handleDecalStateChange = useCallback(
     (snapshots: DecalStateSnapshot[]) => {
+      const nextAlerts: Record<string, string[]> = {};
+      const minArea = subtypePrintConstraints?.min_decal_area_cm2 ?? 5;
+      const neckYMin = subtypePrintConstraints?.neck_zone_y_min ?? 0.82;
+      const underarmYMin = subtypePrintConstraints?.underarm_zone_y_min ?? 0.45;
+      const underarmYMax = subtypePrintConstraints?.underarm_zone_y_max ?? 0.72;
+      const underarmAbsXMin = subtypePrintConstraints?.underarm_zone_abs_x_min ?? 0.55;
+
+      snapshots.forEach((snapshot) => {
+        const warnings = new Set<string>(snapshot.viability?.warnings ?? []);
+
+        const approxAreaCm2 = snapshot.viability?.approxAreaCm2;
+        if (typeof approxAreaCm2 === "number" && approxAreaCm2 > 0 && approxAreaCm2 < minArea) {
+          warnings.add("min_area_violation");
+        }
+
+        const np = snapshot.viability?.normalizedPosition;
+        if (np && typeof np.x === "number" && typeof np.y === "number") {
+          if (np.y >= neckYMin) {
+            warnings.add("neck_zone_risk");
+          }
+
+          const centerX = Math.abs((np.x - 0.5) * 2);
+          if (centerX >= underarmAbsXMin && np.y >= underarmYMin && np.y <= underarmYMax) {
+            warnings.add("underarm_zone_risk");
+          }
+        }
+
+        if (warnings.size > 0) {
+          nextAlerts[snapshot.id] = Array.from(warnings).map(
+            (code) => VIABILITY_WARNING_LABELS[code] ?? code
+          );
+        }
+      });
+
+      setDecalViabilityAlerts(nextAlerts);
+
       let placementsChanged = false;
       setTabDecalPlacements((prev) => {
         const snapshotIds = new Set(snapshots.map((s) => s.id));
@@ -1594,7 +1676,7 @@ const Creation = () => {
         scheduleDraftSave();
       }
     },
-    [scheduleDraftSave]
+    [scheduleDraftSave, subtypePrintConstraints]
   );
 
   useEffect(() => {
@@ -2006,6 +2088,25 @@ const Creation = () => {
                     externalDecals={decalsFor3D}
                     onDecalsChange={handleDecalStateChange}
                   />
+                  {subtypePrintConstraints && (
+                    <div className="absolute top-3 left-3 max-w-xs rounded border border-amber-300/70 bg-amber-50/85 px-2 py-1 text-[11px] text-amber-900">
+                      Area util: {subtypePrintConstraints.print_area_width_cm ?? "-"} x {subtypePrintConstraints.print_area_height_cm ?? "-"} cm
+                      <br />
+                      Minimo: {subtypePrintConstraints.min_decal_area_cm2 ?? 5} cm²
+                    </div>
+                  )}
+                  {viabilityAlertItems.length > 0 && (
+                    <div className="absolute top-3 right-3 z-10 max-w-sm space-y-2">
+                      {viabilityAlertItems.map((item) => (
+                        <div key={item.id} className="rounded border border-red-300 bg-red-50/95 px-3 py-2 text-xs text-red-900">
+                          <p className="font-semibold">{item.label}</p>
+                          {item.messages.map((message, index) => (
+                            <p key={`${item.id}-${index}`}>- {message}</p>
+                          ))}
+                        </div>
+                      ))}
+                    </div>
+                  )}
                   <div className="absolute bottom-3 left-3 text-xs text-gray-700 glass px-2 py-1 rounded">
                     Arraste para rotacionar · Scroll para zoom
                   </div>

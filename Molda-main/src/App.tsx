@@ -15,8 +15,10 @@ import Profile from "./pages/Profile";
 import Login from "./pages/Login";
 import Register from "./pages/Register";
 import Admin from "./pages/Admin";
+import FactoryDashboard from "./pages/FactoryDashboard";
 import TransitionsPlayground from "./pages/TransitionsPlayground";
 import RequireAdmin from "@/components/RequireAdmin";
+import RequireRole from "@/components/RequireRole";
 // import ShaderBackground from "@/components/ShaderBackground"; // temporariamente desabilitado
 // ⬇️ Barra de progresso no topo
 import TopProgressBar from "@/components/TopProgressBar";
@@ -60,6 +62,14 @@ const App = () => {
                 <Route path="/login" element={<Login />} />
                 <Route path="/register" element={<Register />} />
                 <Route path="/transitions-test" element={<TransitionsPlayground />} />
+                <Route
+                  path="/factory"
+                  element={
+                    <RequireRole allowedRoles={["factory", "admin"]}>
+                      <FactoryDashboard />
+                    </RequireRole>
+                  }
+                />
                 <Route
                   path="/admin"
                   element={
