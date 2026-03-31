@@ -462,6 +462,10 @@ function loadFabricRuntime(): Promise<any> {
   return (window as any).__fabricLoadingPromise;
 }
 
+// Cross-canvas clipboard shared by all Editor2D instances on the page.
+// Storing it at module level allows Ctrl+C on one canvas tab and Ctrl+V on another.
+let _globalFabricClipboard: any = null;
+
 const Editor2D = forwardRef<Editor2DHandle, Props>(function Editor2D(
   {
     isActive = true,
@@ -939,9 +943,38 @@ const Editor2D = forwardRef<Editor2DHandle, Props>(function Editor2D(
         }
       }
 
-      // Delete behavior:
-      // - If on select/text tools: delete current selection
-      // - If any other tool is active: cancel tool usage and return to select
+      // ── Cross-canvas Ctrl+C / Ctrl+V / Ctrl+D ──────────────────────────
+      const isCtrlOrMeta = evt.ctrlKey || evt.metaKey;
+
+      // Ctrl+C — copy active selection to global clipboard
+      if (isCtrlOrMeta && evt.key.toLowerCase() === "c") {
+        const activeObj = c.getActiveObject?.();
+        if (activeObj) {
+          evt.preventDefault();
+          try { copySelection(); } catch { }
+        }
+        return;
+      }
+
+      // Ctrl+V — paste from global clipboard into the active canvas
+      if (isCtrlOrMeta && evt.key.toLowerCase() === "v") {
+        evt.preventDefault();
+        try { pasteSelection(); } catch { }
+        return;
+      }
+
+      // Ctrl+D — duplicate active selection
+      if (isCtrlOrMeta && evt.key.toLowerCase() === "d") {
+        const activeObj = c.getActiveObject?.();
+        if (activeObj) {
+          evt.preventDefault();
+          try { duplicateSelection(); } catch { }
+        }
+        return;
+      }
+      // ────────────────────────────────────────────────────────────────────
+
+      // Delete behavior: if on select/text tools delete selection; else cancel tool and return to select.
       if (evt.key === "Delete" || evt.key === "Backspace") {
         const activeTool = toolRef.current;
 
@@ -9761,7 +9794,7 @@ const Editor2D = forwardRef<Editor2DHandle, Props>(function Editor2D(
     if (!hasSelection) {
       return {
         hasSelection: false,
-        hasClipboard: !!clipboardRef.current,
+        hasClipboard: !!(clipboardRef.current || _globalFabricClipboard),
         isFullyLocked: false,
         canBringForward: false,
         canSendBackward: false,
@@ -9815,7 +9848,7 @@ const Editor2D = forwardRef<Editor2DHandle, Props>(function Editor2D(
 
     return {
       hasSelection: true,
-      hasClipboard: !!clipboardRef.current,
+      hasClipboard: !!(clipboardRef.current || _globalFabricClipboard),
       isFullyLocked,
       canBringForward,
       canSendBackward,
@@ -10289,14 +10322,19 @@ const Editor2D = forwardRef<Editor2DHandle, Props>(function Editor2D(
 
     activeObject.clone((cloned: any) => {
       clipboardRef.current = cloned;
+      // Also write to module-level global so other canvas tabs can paste it.
+      _globalFabricClipboard = cloned;
     });
   };
 
   const pasteSelection = () => {
     const c = canvasRef.current;
-    if (!c || !clipboardRef.current) return;
+    // Fall back to module-level global clipboard when this canvas has nothing local.
+    // This enables cross-canvas paste (copy on tab A, paste on tab B).
+    const source = clipboardRef.current ?? _globalFabricClipboard;
+    if (!c || !source) return;
 
-    clipboardRef.current.clone((cloned: any) => {
+    source.clone((cloned: any) => {
       c.discardActiveObject();
       cloned.set({
         left: cloned.left + 10,
@@ -10312,8 +10350,12 @@ const Editor2D = forwardRef<Editor2DHandle, Props>(function Editor2D(
       } else {
         c.add(cloned);
       }
-      clipboardRef.current.top += 10;
-      clipboardRef.current.left += 10;
+      // Offset source so repeated pastes cascade instead of stacking exactly.
+      source.top += 10;
+      source.left += 10;
+      // Sync local clipboard with the (possibly global) source so subsequent
+      // pastes in this canvas use the already-offset reference.
+      clipboardRef.current = source;
       c.setActiveObject(cloned);
       c.requestRenderAll();
       historyRef.current?.push("paste");
