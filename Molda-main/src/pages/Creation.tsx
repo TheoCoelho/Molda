@@ -394,6 +394,7 @@ const Creation = () => {
   const lastEditorTabRef = useRef<string | null>(null);
   // Mantém refs estáveis para evitar loops com callback ref inline
   const prevTabRef = useRef<string>(activeCanvasTab);
+  const prevSavedTabRef = useRef<string>(activeCanvasTab);
 
   useEffect(() => {
     const el = twoDViewportRef.current;
@@ -464,8 +465,10 @@ const Creation = () => {
           setSelectionKind(kind);
           if (kind === "none") {
             setSelectionInfo(null);
+            setCanSaveSelectedImage(false);
           } else {
             setSelectionInfo(inst.getSelectionInfo?.() ?? null);
+            setCanSaveSelectedImage(canSaveSelectedImageFromEditor(inst, kind));
           }
         });
         selectionListenerGuard.current.add(inst);
@@ -1037,6 +1040,7 @@ const Creation = () => {
 
   const [selectionKind, setSelectionKind] = useState<SelectionKind>("none");
   const [selectionInfo, setSelectionInfo] = useState<SelectionInfo | null>(null);
+  const [canSaveSelectedImage, setCanSaveSelectedImage] = useState(false);
   const prevSelectionKindRef = useRef<SelectionKind>("none");
   const [cropModeActive, setCropModeActive] = useState(false);
   const [colorCutModeActive, setColorCutModeActive] = useState(false);
@@ -1092,15 +1096,27 @@ const Creation = () => {
   const colorCutListenerGuard = useRef<WeakSet<Editor2DHandle>>(new WeakSet());
   const effectsListenerGuard = useRef<WeakSet<Editor2DHandle>>(new WeakSet());
 
+  const canSaveSelectedImageFromEditor = useCallback(
+    (inst: Editor2DHandle | null | undefined, kind?: SelectionKind) => {
+      if (!inst) return false;
+      const resolvedKind = kind ?? (inst.getSelectionKind?.() || "none");
+      if (resolvedKind !== "image") return false;
+      return !!inst.hasSelectedImageVisualChanges?.();
+    },
+    []
+  );
+
   const updateSelectionInfo = useCallback(() => {
     const inst = editorRefs.current[activeCanvasTab];
     if (!inst) {
       setSelectionInfo(null);
+      setCanSaveSelectedImage(false);
       return;
     }
     const info = inst.getSelectionInfo?.();
     setSelectionInfo(info ?? null);
-  }, [activeCanvasTab]);
+    setCanSaveSelectedImage(canSaveSelectedImageFromEditor(inst));
+  }, [activeCanvasTab, canSaveSelectedImageFromEditor]);
 
   const runWithActiveEditor = useCallback(
     async (fn: (editor: Editor2DHandle) => unknown | Promise<unknown>) => {
@@ -1146,11 +1162,13 @@ const Creation = () => {
       if (!info || !info.hasSelection) {
         event.preventDefault();
         setSelectionInfo(null);
+        setCanSaveSelectedImage(false);
         return;
       }
       setSelectionInfo(info);
+      setCanSaveSelectedImage(canSaveSelectedImageFromEditor(inst));
     },
-    [activeCanvasTab]
+    [activeCanvasTab, canSaveSelectedImageFromEditor]
   );
 
   const saveSelectedImage = useCallback(async () => {
@@ -1164,11 +1182,23 @@ const Creation = () => {
         inst.refresh?.();
       } catch { }
 
+      const hasVisualChanges = !!inst.hasSelectedImageVisualChanges?.();
+      if (!hasVisualChanges) {
+        toast.error("Nenhuma alteracao visual para salvar.");
+        return;
+      }
+
       const dataUrl = inst.exportSelectionPNG?.();
       if (!dataUrl) {
         toast.error("Selecione uma imagem para salvar.");
         return;
       }
+
+      const selectedMeta = inst.getSelectedImageGalleryMeta?.() || null;
+      const selectedGroupId =
+        typeof selectedMeta?.groupId === "string" && selectedMeta.groupId.length
+          ? selectedMeta.groupId
+          : null;
 
       // 1) Download local (PNG)
       try {
@@ -1186,8 +1216,14 @@ const Creation = () => {
 
       try {
         const blob = await (await fetch(dataUrl)).blob();
-        const base = slugify(projectName || "imagem") || "imagem";
-        const filename = `${tsPrefix()}-${base}.png`;
+        const rawBaseName =
+          (typeof selectedMeta?.originalName === "string" && selectedMeta.originalName.length
+            ? selectedMeta.originalName
+            : projectName || "imagem").replace(/\.[a-zA-Z0-9]+$/, "");
+        const base = slugify(rawBaseName) || "imagem";
+        const filename = selectedGroupId
+          ? `${tsPrefix()}-${base}__g-${selectedGroupId}__v.png`
+          : `${tsPrefix()}-${base}.png`;
         const path = `${user.id}/images/${filename}`;
 
         const { error: uploadErr } = await supabase.storage
@@ -1225,12 +1261,18 @@ const Creation = () => {
                 sortKey: filename.slice(0, 17),
                 userId: user.id,
                 isPublic: false,
+                groupId: selectedGroupId || undefined,
+                isVariant: !!selectedGroupId,
               },
             })
           );
         } catch { }
 
-        toast.success("Imagem salva na galeria e baixada em PNG.");
+        toast.success(
+          selectedGroupId
+            ? "Imagem salva na galeria como variacao da original."
+            : "Imagem salva na galeria e baixada em PNG."
+        );
       } catch (err: any) {
         console.error("[saveSelectedImage]", err);
         toast.error(err?.message || "Falha ao salvar na galeria.");
@@ -1244,6 +1286,7 @@ const Creation = () => {
       setCanRedo(false);
       setSelectionKind("none");
       setSelectionInfo(null);
+      setCanSaveSelectedImage(false);
       setCropModeActive(false);
       setColorCutModeActive(false);
       return;
@@ -1274,7 +1317,7 @@ const Creation = () => {
   const pendingScheduledTabRef = useRef<string | null>(null);
   const skipSnapshotReloadRef = useRef<Set<string>>(new Set());
   const saveActiveTabSnapshot = useCallback(async (tabId?: string): Promise<Record<string, string>> => {
-    const id = tabId || prevTabRef.current;
+    const id = tabId || activeCanvasTab;
     if (!id) return tabSnapshotsRef.current;
     // Captura imagem para preview 3D
     void captureTabImage(id);
@@ -1297,7 +1340,7 @@ const Creation = () => {
       }
     }
     return tabSnapshotsRef.current;
-  }, [canvasTabs, editorRefs, captureTabImage]);
+  }, [activeCanvasTab, canvasTabs, editorRefs, captureTabImage]);
 
 
   const syncFontsFromEditor = useCallback(
@@ -1515,6 +1558,15 @@ const Creation = () => {
     pendingScheduledTabRef.current = null;
 
     const snapshotMap = await saveActiveTabSnapshot(options?.tabId);
+
+    // Se estiver na aba 3D (ou sem tab específica), garante preview das abas 2D visíveis.
+    if (!options?.tabId && activeCanvasTab === "3d") {
+      const visible2DTabs = canvasTabsRef.current.filter((t) => t.type === "2d" && tabVisibilityRef.current[t.id]);
+      if (visible2DTabs.length > 0) {
+        await Promise.all(visible2DTabs.map((t) => captureTabImage(t.id)));
+      }
+    }
+
     const canvasSnapshots = snapshotMap ?? tabSnapshotsRef.current;
     let draftKey = draftKeyRef.current;
     if (!draftKey) {
@@ -1568,7 +1620,7 @@ const Creation = () => {
     }
 
     return payload;
-  }, [activeCanvasTab, baseColor, fabric, notes, part, queueRemoteSave, saveActiveTabSnapshot, size, subtype, projectName, type]);
+  }, [activeCanvasTab, baseColor, captureTabImage, fabric, notes, part, queueRemoteSave, saveActiveTabSnapshot, size, subtype, projectName, type]);
 
   useEffect(() => {
     if (initialDraftSavedRef.current) return;
@@ -1680,8 +1732,8 @@ const Creation = () => {
   );
 
   useEffect(() => {
-    if (prevTabRef.current && prevTabRef.current !== activeCanvasTab) {
-      void saveActiveTabSnapshot(prevTabRef.current);
+    if (prevSavedTabRef.current && prevSavedTabRef.current !== activeCanvasTab) {
+      void saveActiveTabSnapshot(prevSavedTabRef.current);
 
       if (activeCanvasTab === "3d") {
         const visible2DTabs = canvasTabsRef.current.filter(t => t.type === "2d" && tabVisibilityRef.current[t.id]);
@@ -1690,7 +1742,7 @@ const Creation = () => {
 
       void saveDraft();
     }
-    prevTabRef.current = activeCanvasTab;
+    prevSavedTabRef.current = activeCanvasTab;
   }, [activeCanvasTab, saveActiveTabSnapshot, saveDraft, captureTabImage]);
 
   useEffect(() => {
@@ -2048,7 +2100,7 @@ const Creation = () => {
                 })()}
               </div>
               {!isDraftPermanent && (
-                <div className="flex-none ml-4 flex items-center pr-2">
+                <div className="flex-none ml-4 flex items-center gap-2 pr-2">
                   <Button
                     type="button"
                     variant="outline"
@@ -2058,7 +2110,15 @@ const Creation = () => {
                       void saveDraft({ immediateRemote: true, markPermanent: true });
                     }}
                   >
-                    Salvar rascunho
+                    Salvar
+                  </Button>
+                  <Button
+                    type="button"
+                    size="sm"
+                    className="rounded-none uppercase tracking-widest text-xs h-8 px-4"
+                    onClick={finish}
+                  >
+                    Produzir
                   </Button>
                 </div>
               )}
@@ -2173,13 +2233,21 @@ const Creation = () => {
                         onDrop={(e) => {
                           e.preventDefault();
                           const src = e.dataTransfer.getData("text/plain");
+                          const rawMeta = e.dataTransfer.getData("application/x-molda-gallery-meta");
+                          let parsedMeta: Record<string, unknown> | undefined;
+                          if (rawMeta) {
+                            try {
+                              const parsed = JSON.parse(rawMeta);
+                              if (parsed && typeof parsed === "object") parsedMeta = parsed;
+                            } catch { }
+                          }
                           const rect = squareCanvasRef.current?.getBoundingClientRect();
                           if (!rect) return;
                           const x = e.clientX - rect.left;
                           const y = e.clientY - rect.top;
                           if (x < 0 || y < 0 || x > rect.width || y > rect.height) return;
                           if (src && activeIs2D) {
-                            editorRefs.current[activeCanvasTab]?.addImage(src, { x, y });
+                            editorRefs.current[activeCanvasTab]?.addImage(src, { x, y, meta: parsedMeta });
                           }
                         }}
                       >
@@ -2217,8 +2285,10 @@ const Creation = () => {
                                           setSelectionKind(kind);
                                           if (kind === "none") {
                                             setSelectionInfo(null);
+                                            setCanSaveSelectedImage(false);
                                           } else {
                                             setSelectionInfo(inst.getSelectionInfo?.() ?? null);
+                                            setCanSaveSelectedImage(canSaveSelectedImageFromEditor(inst, kind));
                                           }
                                         }
                                       });
@@ -2448,7 +2518,7 @@ const Creation = () => {
                     </ContextMenuItem>
 
                     <ContextMenuItem
-                      disabled={!selectionInfo?.hasSelection || selectionKind !== "image"}
+                      disabled={!selectionInfo?.hasSelection || selectionKind !== "image" || !canSaveSelectedImage}
                       onSelect={() => void saveSelectedImage()}
                     >
                       Salvar
