@@ -196,6 +196,7 @@ function VariantGroupCard({
       key={groupKey}
       className="col-span-2 animate-in fade-in slide-in-from-top-1 duration-300"
       style={{ animationFillMode: 'both' }}
+      onClick={(e) => e.stopPropagation()}
     >
       {/* Label acima da borda */}
       <div className="mb-1 flex items-center justify-between px-1">
@@ -243,7 +244,7 @@ function VariantGroupCard({
             className="group/v relative aspect-square overflow-hidden rounded-lg bg-white cursor-pointer hover:shadow-md transition-shadow animate-in fade-in zoom-in-95 duration-200"
             style={{ animationDelay: `${idx * 60}ms`, animationFillMode: 'both' }}
             draggable
-            onClick={() => onInsert(item)}
+            onClick={() => { onInsert(item); onClose(); }}
             onDragStart={(e) => onDragStart(e, item)}
           >
             <img
@@ -640,7 +641,7 @@ export default function UploadGallery({ onImageInsert }: Props) {
 
   // Lista plana de células do grid: pastas compactas, variantes expandidas e itens soltos
   const renderEntries = useMemo(() => {
-    let pastExpanded = false;
+    const anyExpanded = expandedGroupIds.size > 0;
     const result: Array<
       | { key: string; type: 'folder' | 'single'; group: (typeof groupedGallery)[0]; item: GalleryItem; inactive: boolean }
       | { key: string; type: 'variant-group'; group: (typeof groupedGallery)[0]; items: GalleryItem[]; inactive: boolean }
@@ -654,11 +655,10 @@ export default function UploadGallery({ onImageInsert }: Props) {
         const original = group.items.find((x) => !x.isVariant) || group.main;
         const variants = group.items.filter((x) => x.id !== original.id);
         result.push({ key: `vg-${group.groupId}`, type: 'variant-group', group, items: [original, ...variants], inactive: false });
-        pastExpanded = true;
       } else if (isGrouped) {
-        result.push({ key: group.groupId, type: 'folder', group, item: group.main, inactive: pastExpanded });
+        result.push({ key: group.groupId, type: 'folder', group, item: group.main, inactive: anyExpanded });
       } else {
-        result.push({ key: group.main.id, type: 'single', group, item: group.main, inactive: pastExpanded });
+        result.push({ key: group.main.id, type: 'single', group, item: group.main, inactive: anyExpanded });
       }
     }
     return result;
@@ -705,7 +705,10 @@ export default function UploadGallery({ onImageInsert }: Props) {
       />
 
       {/* Galeria 2 colunas */}
-      <div className="grid grid-cols-2 gap-2">
+      <div
+        className="grid grid-cols-2 gap-2"
+        onClick={() => { if (expandedGroupIds.size > 0) setExpandedGroupIds(new Set()); }}
+      >
         {envMissing ? (
           <div className="col-span-2 text-center text-xs text-gray-500 py-2">
             Configure o Supabase para carregar a galeria.
@@ -727,48 +730,50 @@ export default function UploadGallery({ onImageInsert }: Props) {
           renderEntries.map((entry) => {
             // ── Pasta compacta (grupo fechado) ──────────────────────────────
             if (entry.type === 'folder') {
-              const stackCount = Math.min(entry.group.items.length - 1, 2);
-              const OFFSET = 7; // px por camada de profundidade
+              // Back card: primeiro item do grupo que seja diferente do main
+              const backItem = entry.group.items.find((x) => x.id !== entry.item.id);
               return (
                 <div
                   key={entry.key}
                   className={`relative cursor-pointer transition-opacity duration-300 ${
                     entry.inactive ? 'opacity-40 pointer-events-none' : ''
                   }`}
-                  style={{ paddingTop: `${stackCount * OFFSET}px` }}
                   onClick={() => toggleGroup(entry.group.groupId)}
                   title={`${entry.group.items.length} versões — clique para expandir`}
                 >
-                  {/* Cards fantasma que ficam atrás e aparecem acima */}
-                  {Array.from({ length: stackCount }).map((_, i) => {
-                    const depth = stackCount - 1 - i; // 0 = mais ao fundo
-                    return (
+                  <div className="relative">
+                    {/* Card traseiro com a segunda versão */}
+                    {backItem && (
                       <div
-                        key={i}
-                        className="absolute rounded-md border border-gray-300 bg-gray-100"
+                        className="absolute inset-0 overflow-hidden rounded-md border border-gray-200"
                         style={{
-                          top: `${depth * OFFSET}px`,
-                          left: `${depth * 3}px`,
-                          right: `${depth * 3}px`,
-                          bottom: `${depth * 2}px`,
-                          zIndex: i + 1,
+                          transform: 'translate(7px, -6px) rotate(5deg)',
+                          zIndex: 1,
+                          opacity: 0.85,
                         }}
+                      >
+                        <img
+                          src={backItem.previewUrl}
+                          alt={backItem.originalName}
+                          className="h-full w-full object-cover"
+                          loading="lazy"
+                        />
+                      </div>
+                    )}
+                    {/* Card principal (frente) — define a altura do container */}
+                    <div
+                      className="relative aspect-square overflow-hidden rounded-md border bg-white hover:shadow-md transition-shadow"
+                      style={{ zIndex: 2 }}
+                    >
+                      <img
+                        src={entry.item.previewUrl}
+                        alt={entry.item.originalName}
+                        className="h-full w-full object-cover"
+                        loading="lazy"
                       />
-                    );
-                  })}
-                  {/* Card principal com a imagem */}
-                  <div
-                    className="relative aspect-square overflow-hidden rounded-md border bg-white hover:shadow-md transition-shadow"
-                    style={{ zIndex: stackCount + 1 }}
-                  >
-                    <img
-                      src={entry.item.previewUrl}
-                      alt={entry.item.originalName}
-                      className="h-full w-full object-cover"
-                      loading="lazy"
-                    />
-                    <div className="absolute bottom-1 right-1 rounded bg-black/70 px-1.5 py-0.5 text-[10px] font-medium text-white">
-                      {entry.group.items.length} versões
+                      <div className="absolute bottom-1 right-1 rounded bg-black/70 px-1.5 py-0.5 text-[10px] font-medium text-white">
+                        {entry.group.items.length} versões
+                      </div>
                     </div>
                   </div>
                 </div>
