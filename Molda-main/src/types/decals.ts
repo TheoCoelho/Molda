@@ -28,4 +28,13 @@ export type DecalStateSnapshot = {
   height?: number;
   depth?: number;
   angle?: number;
+  viability?: {
+    approxAreaCm2?: number;
+    normalizedPosition?: {
+      x?: number;
+      y?: number;
+      z?: number;
+    } | null;
+    warnings?: string[];
+  } | null;
 };

@@ -43,6 +43,13 @@ type ProductSubtype = {
   description?: string | null;
   card_image_path?: string | null;
   model_3d_path?: string | null;
+  print_area_width_cm?: number | null;
+  print_area_height_cm?: number | null;
+  min_decal_area_cm2?: number | null;
+  neck_zone_y_min?: number | null;
+  underarm_zone_y_min?: number | null;
+  underarm_zone_y_max?: number | null;
+  underarm_zone_abs_x_min?: number | null;
   sort_order?: number | null;
   is_active: boolean;
 };
@@ -119,6 +126,12 @@ const toNumber = (value: string | number | null | undefined, fallback = 0) => {
   return Number.isFinite(num) ? (num as number) : fallback;
 };
 
+const toNullableNumber = (value: string | number | null | undefined) => {
+  if (value === null || value === undefined || value === "") return null;
+  const num = typeof value === "string" ? Number(value) : value;
+  return Number.isFinite(num) ? (num as number) : null;
+};
+
 const Admin = () => {
   const [loading, setLoading] = useState(false);
   const [parts, setParts] = useState<Part[]>([]);
@@ -157,6 +170,13 @@ const Admin = () => {
     is_active: true,
     card_image_path: "",
     model_3d_path: "",
+    print_area_width_cm: "",
+    print_area_height_cm: "",
+    min_decal_area_cm2: "5",
+    neck_zone_y_min: "0.82",
+    underarm_zone_y_min: "0.45",
+    underarm_zone_y_max: "0.72",
+    underarm_zone_abs_x_min: "0.55",
   });
   const [subtypeImageFile, setSubtypeImageFile] = useState<File | null>(null);
   const [subtypeImagePreview, setSubtypeImagePreview] = useState<string | null>(null);
@@ -394,6 +414,13 @@ const Admin = () => {
       is_active: true,
       card_image_path: "",
       model_3d_path: "",
+      print_area_width_cm: "",
+      print_area_height_cm: "",
+      min_decal_area_cm2: "5",
+      neck_zone_y_min: "0.82",
+      underarm_zone_y_min: "0.45",
+      underarm_zone_y_max: "0.72",
+      underarm_zone_abs_x_min: "0.55",
     });
     setSubtypeImageFile(null);
     setSubtypeModelFile(null);
@@ -486,6 +513,13 @@ const Admin = () => {
       is_active: subtypeForm.is_active,
       card_image_path: subtypeForm.card_image_path || null,
       model_3d_path: subtypeForm.model_3d_path || null,
+      print_area_width_cm: toNullableNumber(subtypeForm.print_area_width_cm),
+      print_area_height_cm: toNullableNumber(subtypeForm.print_area_height_cm),
+      min_decal_area_cm2: toNullableNumber(subtypeForm.min_decal_area_cm2) ?? 5,
+      neck_zone_y_min: toNullableNumber(subtypeForm.neck_zone_y_min) ?? 0.82,
+      underarm_zone_y_min: toNullableNumber(subtypeForm.underarm_zone_y_min) ?? 0.45,
+      underarm_zone_y_max: toNullableNumber(subtypeForm.underarm_zone_y_max) ?? 0.72,
+      underarm_zone_abs_x_min: toNullableNumber(subtypeForm.underarm_zone_abs_x_min) ?? 0.55,
     };
 
     if (!payload.type_id || !payload.name || !payload.slug) {
@@ -971,6 +1005,79 @@ const Admin = () => {
                   />
                 </div>
                 <div className="space-y-2">
+                  <Label>Area util de estampa (cm)</Label>
+                  <div className="grid grid-cols-2 gap-2">
+                    <Input
+                      type="number"
+                      min="1"
+                      step="0.1"
+                      value={subtypeForm.print_area_width_cm}
+                      onChange={(e) => setSubtypeForm((prev) => ({ ...prev, print_area_width_cm: e.target.value }))}
+                      placeholder="Largura"
+                    />
+                    <Input
+                      type="number"
+                      min="1"
+                      step="0.1"
+                      value={subtypeForm.print_area_height_cm}
+                      onChange={(e) => setSubtypeForm((prev) => ({ ...prev, print_area_height_cm: e.target.value }))}
+                      placeholder="Altura"
+                    />
+                  </div>
+                </div>
+                <div className="space-y-2">
+                  <Label>Area minima do decal (cm²)</Label>
+                  <Input
+                    type="number"
+                    min="1"
+                    step="0.1"
+                    value={subtypeForm.min_decal_area_cm2}
+                    onChange={(e) => setSubtypeForm((prev) => ({ ...prev, min_decal_area_cm2: e.target.value }))}
+                    placeholder="5"
+                  />
+                </div>
+                <div className="space-y-2">
+                  <Label>Zonas de alerta (normalizadas 0..1)</Label>
+                  <div className="grid grid-cols-2 gap-2">
+                    <Input
+                      type="number"
+                      min="0"
+                      max="1"
+                      step="0.01"
+                      value={subtypeForm.neck_zone_y_min}
+                      onChange={(e) => setSubtypeForm((prev) => ({ ...prev, neck_zone_y_min: e.target.value }))}
+                      placeholder="Gola y min"
+                    />
+                    <Input
+                      type="number"
+                      min="0"
+                      max="1"
+                      step="0.01"
+                      value={subtypeForm.underarm_zone_abs_x_min}
+                      onChange={(e) => setSubtypeForm((prev) => ({ ...prev, underarm_zone_abs_x_min: e.target.value }))}
+                      placeholder="Abaixo manga |x| min"
+                    />
+                    <Input
+                      type="number"
+                      min="0"
+                      max="1"
+                      step="0.01"
+                      value={subtypeForm.underarm_zone_y_min}
+                      onChange={(e) => setSubtypeForm((prev) => ({ ...prev, underarm_zone_y_min: e.target.value }))}
+                      placeholder="Abaixo manga y min"
+                    />
+                    <Input
+                      type="number"
+                      min="0"
+                      max="1"
+                      step="0.01"
+                      value={subtypeForm.underarm_zone_y_max}
+                      onChange={(e) => setSubtypeForm((prev) => ({ ...prev, underarm_zone_y_max: e.target.value }))}
+                      placeholder="Abaixo manga y max"
+                    />
+                  </div>
+                </div>
+                <div className="space-y-2">
                   <Label>Imagem do card</Label>
                   <Input type="file" accept="image/*" onChange={(e) => setSubtypeImageFile(e.target.files?.[0] || null)} />
                   {subtypeImagePreview && (
@@ -1085,6 +1192,9 @@ const Admin = () => {
                             {typeById.get(subtype.type_id)?.name || "Sem tipo"}
                           </div>
                           <div className="text-xs text-muted-foreground mt-0.5">
+                            Area util: {subtype.print_area_width_cm ?? "-"} x {subtype.print_area_height_cm ?? "-"} cm
+                          </div>
+                          <div className="text-xs text-muted-foreground mt-0.5">
                             {(() => {
                               const ids = subtypeMaterialIdsBySubtypeId.get(subtype.id) ?? [];
                               if (ids.length === 0) return "Nenhum tecido";
@@ -1108,6 +1218,13 @@ const Admin = () => {
                               is_active: subtype.is_active,
                               card_image_path: subtype.card_image_path || "",
                               model_3d_path: (subtype as any).model_3d_path || "",
+                              print_area_width_cm: String(subtype.print_area_width_cm ?? ""),
+                              print_area_height_cm: String(subtype.print_area_height_cm ?? ""),
+                              min_decal_area_cm2: String(subtype.min_decal_area_cm2 ?? 5),
+                              neck_zone_y_min: String(subtype.neck_zone_y_min ?? 0.82),
+                              underarm_zone_y_min: String(subtype.underarm_zone_y_min ?? 0.45),
+                              underarm_zone_y_max: String(subtype.underarm_zone_y_max ?? 0.72),
+                              underarm_zone_abs_x_min: String(subtype.underarm_zone_abs_x_min ?? 0.55),
                             });
                             setSelectedSubtypeMaterialIds(subtypeMaterialIdsBySubtypeId.get(subtype.id) ?? []);
                           }}

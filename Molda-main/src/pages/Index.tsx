@@ -1,6 +1,7 @@
 import { useEffect, useMemo, useState } from "react";
 import { useNavigate } from "react-router-dom";
 import Header from "../components/Header";
+import SocialFeed from "../components/SocialFeed";
 import { Input } from "../components/ui/input";
 import { Search } from "lucide-react";
 import { supabase } from "@/integrations/supabase/client";
@@ -130,13 +131,14 @@ export default function Index() {
     <main className="relative">
       <Header />
 
+      {/* Search Bar */}
       <section className="mx-auto max-w-6xl px-4 sm:px-6 lg:px-10 xl:px-16 2xl:px-24 pt-6 pb-10">
         <div className="relative w-full md:max-w-md">
           <Search className="pointer-events-none absolute left-3 top-1/2 -translate-y-1/2 h-4 w-4 text-muted-foreground" />
           <Input
             value={query}
             onChange={(event) => setQuery(event.target.value)}
-            placeholder="Pesquisar"
+            placeholder="Pesquisar usuários"
             className="pl-9 rounded-none"
             autoComplete="off"
             aria-label="Pesquisar"
@@ -173,6 +175,15 @@ export default function Index() {
             </div>
           ) : null}
         </div>
+      </section>
+
+      {/* Social Feed */}
+      <section className="mx-auto max-w-6xl px-4 sm:px-6 lg:px-10 xl:px-16 2xl:px-24 pb-16">
+        <div className="mb-8">
+          <h2 className="text-2xl font-bold mb-2">Feed Social</h2>
+          <p className="text-muted-foreground">Veja os designs e peças públicas dos criadores da comunidade</p>
+        </div>
+        <SocialFeed limit={100} />
       </section>
     </main>
   )

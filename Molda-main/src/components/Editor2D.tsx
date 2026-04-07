@@ -168,8 +168,15 @@ export type Editor2DHandle = {
   ) => void;
   addImage: (
     src: string,
-    opts?: { x?: number; y?: number; scale?: number }
+    opts?: { x?: number; y?: number; scale?: number; meta?: Record<string, unknown> }
   ) => void;
+  getSelectedImageGalleryMeta?: () => {
+    itemId?: string;
+    groupId?: string;
+    originalName?: string;
+    isVariant?: boolean;
+  } | null;
+  hasSelectedImageVisualChanges?: () => boolean;
 
   // ==== Imagem (níveis) ====
   getActiveImageAdjustments?: () => ImageAdjustments | null;
@@ -461,6 +468,10 @@ function loadFabricRuntime(): Promise<any> {
   (window as any).__fabricLoadingPromise = loadFrom(0);
   return (window as any).__fabricLoadingPromise;
 }
+
+// Cross-canvas clipboard shared by all Editor2D instances on the page.
+// Storing it at module level allows Ctrl+C on one canvas tab and Ctrl+V on another.
+let _globalFabricClipboard: any = null;
 
 const Editor2D = forwardRef<Editor2DHandle, Props>(function Editor2D(
   {
@@ -939,9 +950,38 @@ const Editor2D = forwardRef<Editor2DHandle, Props>(function Editor2D(
         }
       }
 
-      // Delete behavior:
-      // - If on select/text tools: delete current selection
-      // - If any other tool is active: cancel tool usage and return to select
+      // ── Cross-canvas Ctrl+C / Ctrl+V / Ctrl+D ──────────────────────────
+      const isCtrlOrMeta = evt.ctrlKey || evt.metaKey;
+
+      // Ctrl+C — copy active selection to global clipboard
+      if (isCtrlOrMeta && evt.key.toLowerCase() === "c") {
+        const activeObj = c.getActiveObject?.();
+        if (activeObj) {
+          evt.preventDefault();
+          try { copySelection(); } catch { }
+        }
+        return;
+      }
+
+      // Ctrl+V — paste from global clipboard into the active canvas
+      if (isCtrlOrMeta && evt.key.toLowerCase() === "v") {
+        evt.preventDefault();
+        try { pasteSelection(); } catch { }
+        return;
+      }
+
+      // Ctrl+D — duplicate active selection
+      if (isCtrlOrMeta && evt.key.toLowerCase() === "d") {
+        const activeObj = c.getActiveObject?.();
+        if (activeObj) {
+          evt.preventDefault();
+          try { duplicateSelection(); } catch { }
+        }
+        return;
+      }
+      // ────────────────────────────────────────────────────────────────────
+
+      // Delete behavior: if on select/text tools delete selection; else cancel tool and return to select.
       if (evt.key === "Delete" || evt.key === "Backspace") {
         const activeTool = toolRef.current;
 
@@ -1823,6 +1863,7 @@ const Editor2D = forwardRef<Editor2DHandle, Props>(function Editor2D(
       if (finalSrc) {
         try { (s.img as any).__moldaOriginalSrc = finalSrc; } catch { }
         try { delete (s.img as any).__moldaImageEffects; } catch { }
+        try { (s.img as any).__moldaHasBakedModification = true; } catch { }
       }
 
       if (shouldRecordHistory() && finalSrc) {
@@ -2186,6 +2227,22 @@ const Editor2D = forwardRef<Editor2DHandle, Props>(function Editor2D(
     } catch { }
 
     try {
+      if ((from as any).__moldaHasBakedModification) (to as any).__moldaHasBakedModification = true;
+    } catch { }
+
+    try {
+      const galleryItemId = (from as any).__moldaGalleryItemId;
+      if (galleryItemId) (to as any).__moldaGalleryItemId = galleryItemId;
+      const galleryGroupId = (from as any).__moldaGalleryGroupId;
+      if (galleryGroupId) (to as any).__moldaGalleryGroupId = galleryGroupId;
+      const galleryOriginalName = (from as any).__moldaGalleryOriginalName;
+      if (galleryOriginalName) (to as any).__moldaGalleryOriginalName = galleryOriginalName;
+      if ((from as any).__moldaGalleryIsVariant != null) {
+        (to as any).__moldaGalleryIsVariant = !!(from as any).__moldaGalleryIsVariant;
+      }
+    } catch { }
+
+    try {
       if (Array.isArray(from.filters)) {
         (to as any).filters = from.filters;
         try { (to as any).applyFilters?.(); } catch { }
@@ -2296,6 +2353,7 @@ const Editor2D = forwardRef<Editor2DHandle, Props>(function Editor2D(
           if (s.lastBakedSrc) {
             (s.img as any).__moldaOriginalSrc = s.lastBakedSrc;
             try { delete (s.img as any).__moldaImageEffects; } catch { }
+            try { (s.img as any).__moldaHasBakedModification = true; } catch { }
           }
         } catch { }
       } else {
@@ -5635,6 +5693,7 @@ const Editor2D = forwardRef<Editor2DHandle, Props>(function Editor2D(
     try {
       if (typeof finalSrc === "string" && finalSrc.length) (img as any).__moldaOriginalSrc = finalSrc;
     } catch { }
+    try { (img as any).__moldaHasBakedModification = true; } catch { }
 
     if (shouldRecordHistory()) {
       try { historyRef.current?.push("color-cut"); } catch { }
@@ -6469,6 +6528,10 @@ const Editor2D = forwardRef<Editor2DHandle, Props>(function Editor2D(
         "__moldaImageAdjustments",
         "__moldaImageEffects",
         "__moldaOriginalSrc",
+        "__moldaGalleryItemId",
+        "__moldaGalleryGroupId",
+        "__moldaGalleryOriginalName",
+        "__moldaGalleryIsVariant",
         "__moldaHasPattern",
         "__moldaPatternTarget",
         "__moldaPatternUrl",
@@ -6477,6 +6540,7 @@ const Editor2D = forwardRef<Editor2DHandle, Props>(function Editor2D(
         "__moldaOriginalFill",
         "__moldaOriginalStroke",
         "__moldaLassoCropMeta",
+        "__moldaHasBakedModification",
       ]);
       return JSON.stringify({ kind: "fabric", data });
     }
@@ -6624,6 +6688,73 @@ const Editor2D = forwardRef<Editor2DHandle, Props>(function Editor2D(
     }
 
     return null;
+  };
+
+  const getSelectedImageGalleryMeta = (): {
+    itemId?: string;
+    groupId?: string;
+    originalName?: string;
+    isVariant?: boolean;
+  } | null => {
+    const imgs = getSelectedImageObjects();
+    if (!imgs.length) return null;
+    const img: any = imgs[0];
+
+    const itemId = typeof img?.__moldaGalleryItemId === "string" ? img.__moldaGalleryItemId : undefined;
+    const groupId = typeof img?.__moldaGalleryGroupId === "string" ? img.__moldaGalleryGroupId : undefined;
+    const originalName =
+      typeof img?.__moldaGalleryOriginalName === "string" ? img.__moldaGalleryOriginalName : undefined;
+    const isVariant = typeof img?.__moldaGalleryIsVariant === "boolean" ? img.__moldaGalleryIsVariant : undefined;
+
+    if (!itemId && !groupId && !originalName && isVariant == null) return null;
+    return { itemId, groupId, originalName, isVariant };
+  };
+
+  const hasSelectedImageVisualChanges = (): boolean => {
+    const imgs = getSelectedImageObjects();
+    if (!imgs.length) return false;
+    const img: any = imgs[0];
+
+    const currentSrc = typeof img?._element?.src === "string" ? img._element.src : "";
+    const originalSrc =
+      typeof img?.__moldaOriginalSrc === "string"
+        ? img.__moldaOriginalSrc
+        : typeof img?._originalElement?.src === "string"
+        ? img._originalElement.src
+        : "";
+
+    const savedAdj = (img as any).__moldaImageAdjustments as Partial<ImageAdjustments> | undefined;
+    const mergedAdj: ImageAdjustments = { ...DEFAULT_IMAGE_ADJ, ...(savedAdj || {}) };
+    const adjChanged = (Object.keys(DEFAULT_IMAGE_ADJ) as Array<keyof ImageAdjustments>).some(
+      (key) => mergedAdj[key] !== DEFAULT_IMAGE_ADJ[key]
+    );
+
+    const fx = (img as any).__moldaImageEffects as ImageEffects | undefined;
+    const fxChanged = !!fx && (fx.kind !== "none" || Math.abs((fx.amount ?? 1) - 1) > 1e-6);
+
+    const srcChanged = !!originalSrc && !!currentSrc && originalSrc !== currentSrc;
+
+    // Detect Fabric native square-crop (cropX/cropY/width/height changed from natural)
+    const imgElem: HTMLImageElement | null = img?._element instanceof HTMLImageElement
+      ? img._element
+      : img?._originalElement instanceof HTMLImageElement
+      ? img._originalElement
+      : null;
+    const naturalW = imgElem?.naturalWidth ?? 0;
+    const naturalH = imgElem?.naturalHeight ?? 0;
+    const hasFabricCrop =
+      (Number(img.cropX ?? 0) > 0.5) ||
+      (Number(img.cropY ?? 0) > 0.5) ||
+      (naturalW > 0 && Number(img.width ?? 0) > 0 && Number(img.width) < naturalW - 1) ||
+      (naturalH > 0 && Number(img.height ?? 0) > 0 && Number(img.height) < naturalH - 1);
+
+    // Detect lasso crop (meta is set on the new image after commit)
+    const hasLassoCrop = !!(img as any).__moldaLassoCropMeta;
+
+    // Detect baked modifications (effect brush, color cut) — set by those operations
+    const hasBakedMod = !!(img as any).__moldaHasBakedModification;
+
+    return adjChanged || fxChanged || srcChanged || hasFabricCrop || hasLassoCrop || hasBakedMod;
   };
 
   const addText = (value: string = "Digite aqui", opts?: { x?: number; y?: number; fontFamily?: string }) => {
@@ -8708,7 +8839,7 @@ const Editor2D = forwardRef<Editor2DHandle, Props>(function Editor2D(
     }
   };
 
-  const addImage = (src: string, opts?: { x?: number; y?: number; scale?: number }) => {
+  const addImage = (src: string, opts?: { x?: number; y?: number; scale?: number; meta?: Record<string, unknown> }) => {
     const c = canvasRef.current;
     const fabric = fabricRef.current;
     if (c && fabric) {
@@ -8734,6 +8865,21 @@ const Editor2D = forwardRef<Editor2DHandle, Props>(function Editor2D(
           // guarda a origem para permitir re-aplicar filtros sem degradar (dataURL em cascata)
           try {
             (img as any).__moldaOriginalSrc = src;
+          } catch { }
+          try {
+            const meta = opts?.meta || {};
+            if (typeof meta.galleryItemId === "string" && meta.galleryItemId.length) {
+              (img as any).__moldaGalleryItemId = meta.galleryItemId;
+            }
+            if (typeof meta.galleryGroupId === "string" && meta.galleryGroupId.length) {
+              (img as any).__moldaGalleryGroupId = meta.galleryGroupId;
+            }
+            if (typeof meta.galleryOriginalName === "string" && meta.galleryOriginalName.length) {
+              (img as any).__moldaGalleryOriginalName = meta.galleryOriginalName;
+            }
+            if (typeof meta.galleryIsVariant === "boolean") {
+              (img as any).__moldaGalleryIsVariant = meta.galleryIsVariant;
+            }
           } catch { }
           c.add(img);
           c.setActiveObject(img);
@@ -9761,7 +9907,7 @@ const Editor2D = forwardRef<Editor2DHandle, Props>(function Editor2D(
     if (!hasSelection) {
       return {
         hasSelection: false,
-        hasClipboard: !!clipboardRef.current,
+        hasClipboard: !!(clipboardRef.current || _globalFabricClipboard),
         isFullyLocked: false,
         canBringForward: false,
         canSendBackward: false,
@@ -9815,7 +9961,7 @@ const Editor2D = forwardRef<Editor2DHandle, Props>(function Editor2D(
 
     return {
       hasSelection: true,
-      hasClipboard: !!clipboardRef.current,
+      hasClipboard: !!(clipboardRef.current || _globalFabricClipboard),
       isFullyLocked,
       canBringForward,
       canSendBackward,
@@ -10289,14 +10435,19 @@ const Editor2D = forwardRef<Editor2DHandle, Props>(function Editor2D(
 
     activeObject.clone((cloned: any) => {
       clipboardRef.current = cloned;
+      // Also write to module-level global so other canvas tabs can paste it.
+      _globalFabricClipboard = cloned;
     });
   };
 
   const pasteSelection = () => {
     const c = canvasRef.current;
-    if (!c || !clipboardRef.current) return;
+    // Fall back to module-level global clipboard when this canvas has nothing local.
+    // This enables cross-canvas paste (copy on tab A, paste on tab B).
+    const source = clipboardRef.current ?? _globalFabricClipboard;
+    if (!c || !source) return;
 
-    clipboardRef.current.clone((cloned: any) => {
+    source.clone((cloned: any) => {
       c.discardActiveObject();
       cloned.set({
         left: cloned.left + 10,
@@ -10312,8 +10463,12 @@ const Editor2D = forwardRef<Editor2DHandle, Props>(function Editor2D(
       } else {
         c.add(cloned);
       }
-      clipboardRef.current.top += 10;
-      clipboardRef.current.left += 10;
+      // Offset source so repeated pastes cascade instead of stacking exactly.
+      source.top += 10;
+      source.left += 10;
+      // Sync local clipboard with the (possibly global) source so subsequent
+      // pastes in this canvas use the already-offset reference.
+      clipboardRef.current = source;
       c.setActiveObject(cloned);
       c.requestRenderAll();
       historyRef.current?.push("paste");
@@ -10583,6 +10738,8 @@ const Editor2D = forwardRef<Editor2DHandle, Props>(function Editor2D(
     clear,
     exportPNG,
     exportSelectionPNG,
+    getSelectedImageGalleryMeta,
+    hasSelectedImageVisualChanges,
     selectObjectAt,
     getSelectionKind: computeSelectionKind,
     addShape,

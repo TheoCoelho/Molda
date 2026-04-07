@@ -70,6 +70,17 @@ type SaveDraftOptions = {
   markPermanent?: boolean;
 };
 
+type SubtypePrintConstraints = {
+  id: string;
+  print_area_width_cm?: number | null;
+  print_area_height_cm?: number | null;
+  min_decal_area_cm2?: number | null;
+  neck_zone_y_min?: number | null;
+  underarm_zone_y_min?: number | null;
+  underarm_zone_y_max?: number | null;
+  underarm_zone_abs_x_min?: number | null;
+};
+
 const TRANSPARENT_PNG =
   "data:image/png;base64,iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mP8/x8AAukB9p7i/ZkAAAAASUVORK5CYII=";
 
@@ -81,6 +92,13 @@ const nearlyEqual = (a?: number | null, b?: number | null) => {
 };
 
 const DRAFT_EPHEMERAL_TTL_MS = 5 * 60 * 1000;
+
+const VIABILITY_WARNING_LABELS: Record<string, string> = {
+  min_area_violation: "Decal abaixo da area minima recomendada para a peca.",
+  neck_zone_risk: "Decal proximo da gola (area de risco de producao).",
+  underarm_zone_risk: "Decal abaixo da manga/lateral (area de risco de producao).",
+  relief_overlap_risk: "Decal em regiao de relevo alto/sobreposicao.",
+};
 
 const slugify = (s: string) =>
   s
@@ -167,6 +185,8 @@ const Creation = () => {
   const [fabric, setFabric] = useState("Algodão");
   const [fixedSubtypeFabric, setFixedSubtypeFabric] = useState<string | null>(null);
   const [isSubtypeFabricLocked, setIsSubtypeFabricLocked] = useState(false);
+  const [subtypePrintConstraints, setSubtypePrintConstraints] = useState<SubtypePrintConstraints | null>(null);
+  const [decalViabilityAlerts, setDecalViabilityAlerts] = useState<Record<string, string[]>>({});
   const [notes, setNotes] = useState("");
 
   const [canvasTabs, setCanvasTabs] = useState<CanvasTab[]>([
@@ -191,6 +211,7 @@ const Creation = () => {
     const resolveSubtypeFabric = async () => {
       setFixedSubtypeFabric(null);
       setIsSubtypeFabricLocked(false);
+      setSubtypePrintConstraints(null);
 
       if (!subtype) return;
 
@@ -207,14 +228,14 @@ const Creation = () => {
 
         let subtypeQuery = supabase
           .from("product_subtypes")
-          .select("id")
+          .select("id, print_area_width_cm, print_area_height_cm, min_decal_area_cm2, neck_zone_y_min, underarm_zone_y_min, underarm_zone_y_max, underarm_zone_abs_x_min")
           .ilike("name", subtype)
           .limit(1);
 
         if (typeId) {
           subtypeQuery = supabase
             .from("product_subtypes")
-            .select("id")
+            .select("id, print_area_width_cm, print_area_height_cm, min_decal_area_cm2, neck_zone_y_min, underarm_zone_y_min, underarm_zone_y_max, underarm_zone_abs_x_min")
             .eq("type_id", typeId)
             .ilike("name", subtype)
             .limit(1);
@@ -225,6 +246,20 @@ const Creation = () => {
 
         const subtypeId = subtypeRows?.[0]?.id;
         if (!subtypeId) return;
+
+        const subtypeMeta = subtypeRows?.[0] as SubtypePrintConstraints | undefined;
+        if (subtypeMeta) {
+          setSubtypePrintConstraints({
+            id: subtypeMeta.id,
+            print_area_width_cm: subtypeMeta.print_area_width_cm ?? null,
+            print_area_height_cm: subtypeMeta.print_area_height_cm ?? null,
+            min_decal_area_cm2: subtypeMeta.min_decal_area_cm2 ?? 5,
+            neck_zone_y_min: subtypeMeta.neck_zone_y_min ?? 0.82,
+            underarm_zone_y_min: subtypeMeta.underarm_zone_y_min ?? 0.45,
+            underarm_zone_y_max: subtypeMeta.underarm_zone_y_max ?? 0.72,
+            underarm_zone_abs_x_min: subtypeMeta.underarm_zone_abs_x_min ?? 0.55,
+          });
+        }
 
         const { data: relRows, error: relErr } = await supabase
           .from("subtype_materials")
@@ -359,6 +394,7 @@ const Creation = () => {
   const lastEditorTabRef = useRef<string | null>(null);
   // Mantém refs estáveis para evitar loops com callback ref inline
   const prevTabRef = useRef<string>(activeCanvasTab);
+  const prevSavedTabRef = useRef<string>(activeCanvasTab);
 
   useEffect(() => {
     const el = twoDViewportRef.current;
@@ -429,8 +465,10 @@ const Creation = () => {
           setSelectionKind(kind);
           if (kind === "none") {
             setSelectionInfo(null);
+            setCanSaveSelectedImage(false);
           } else {
             setSelectionInfo(inst.getSelectionInfo?.() ?? null);
+            setCanSaveSelectedImage(canSaveSelectedImageFromEditor(inst, kind));
           }
         });
         selectionListenerGuard.current.add(inst);
@@ -726,6 +764,17 @@ const Creation = () => {
       }));
   }, [canvasTabs, tabDecalPreviews, tabVisibility, tabDecalPlacements]);
 
+  const viabilityAlertItems = useMemo(() => {
+    return Object.entries(decalViabilityAlerts).map(([id, messages]) => {
+      const tab = canvasTabs.find((item) => item.id === id);
+      return {
+        id,
+        label: tab?.name ?? id,
+        messages,
+      };
+    });
+  }, [canvasTabs, decalViabilityAlerts]);
+
   // Referência estável para os parâmetros do projeto atual
   const currentProjectRef = useRef<{ part: string | null, type: string | null, subtype: string | null }>({
     part: null, type: null, subtype: null
@@ -991,6 +1040,7 @@ const Creation = () => {
 
   const [selectionKind, setSelectionKind] = useState<SelectionKind>("none");
   const [selectionInfo, setSelectionInfo] = useState<SelectionInfo | null>(null);
+  const [canSaveSelectedImage, setCanSaveSelectedImage] = useState(false);
   const prevSelectionKindRef = useRef<SelectionKind>("none");
   const [cropModeActive, setCropModeActive] = useState(false);
   const [colorCutModeActive, setColorCutModeActive] = useState(false);
@@ -1046,15 +1096,27 @@ const Creation = () => {
   const colorCutListenerGuard = useRef<WeakSet<Editor2DHandle>>(new WeakSet());
   const effectsListenerGuard = useRef<WeakSet<Editor2DHandle>>(new WeakSet());
 
+  const canSaveSelectedImageFromEditor = useCallback(
+    (inst: Editor2DHandle | null | undefined, kind?: SelectionKind) => {
+      if (!inst) return false;
+      const resolvedKind = kind ?? (inst.getSelectionKind?.() || "none");
+      if (resolvedKind !== "image") return false;
+      return !!inst.hasSelectedImageVisualChanges?.();
+    },
+    []
+  );
+
   const updateSelectionInfo = useCallback(() => {
     const inst = editorRefs.current[activeCanvasTab];
     if (!inst) {
       setSelectionInfo(null);
+      setCanSaveSelectedImage(false);
       return;
     }
     const info = inst.getSelectionInfo?.();
     setSelectionInfo(info ?? null);
-  }, [activeCanvasTab]);
+    setCanSaveSelectedImage(canSaveSelectedImageFromEditor(inst));
+  }, [activeCanvasTab, canSaveSelectedImageFromEditor]);
 
   const runWithActiveEditor = useCallback(
     async (fn: (editor: Editor2DHandle) => unknown | Promise<unknown>) => {
@@ -1100,11 +1162,13 @@ const Creation = () => {
       if (!info || !info.hasSelection) {
         event.preventDefault();
         setSelectionInfo(null);
+        setCanSaveSelectedImage(false);
         return;
       }
       setSelectionInfo(info);
+      setCanSaveSelectedImage(canSaveSelectedImageFromEditor(inst));
     },
-    [activeCanvasTab]
+    [activeCanvasTab, canSaveSelectedImageFromEditor]
   );
 
   const saveSelectedImage = useCallback(async () => {
@@ -1118,11 +1182,23 @@ const Creation = () => {
         inst.refresh?.();
       } catch { }
 
+      const hasVisualChanges = !!inst.hasSelectedImageVisualChanges?.();
+      if (!hasVisualChanges) {
+        toast.error("Nenhuma alteracao visual para salvar.");
+        return;
+      }
+
       const dataUrl = inst.exportSelectionPNG?.();
       if (!dataUrl) {
         toast.error("Selecione uma imagem para salvar.");
         return;
       }
+
+      const selectedMeta = inst.getSelectedImageGalleryMeta?.() || null;
+      const selectedGroupId =
+        typeof selectedMeta?.groupId === "string" && selectedMeta.groupId.length
+          ? selectedMeta.groupId
+          : null;
 
       // 1) Download local (PNG)
       try {
@@ -1140,8 +1216,14 @@ const Creation = () => {
 
       try {
         const blob = await (await fetch(dataUrl)).blob();
-        const base = slugify(projectName || "imagem") || "imagem";
-        const filename = `${tsPrefix()}-${base}.png`;
+        const rawBaseName =
+          (typeof selectedMeta?.originalName === "string" && selectedMeta.originalName.length
+            ? selectedMeta.originalName
+            : projectName || "imagem").replace(/\.[a-zA-Z0-9]+$/, "");
+        const base = slugify(rawBaseName) || "imagem";
+        const filename = selectedGroupId
+          ? `${tsPrefix()}-${base}__g-${selectedGroupId}__v.png`
+          : `${tsPrefix()}-${base}.png`;
         const path = `${user.id}/images/${filename}`;
 
         const { error: uploadErr } = await supabase.storage
@@ -1179,12 +1261,18 @@ const Creation = () => {
                 sortKey: filename.slice(0, 17),
                 userId: user.id,
                 isPublic: false,
+                groupId: selectedGroupId || undefined,
+                isVariant: !!selectedGroupId,
               },
             })
           );
         } catch { }
 
-        toast.success("Imagem salva na galeria e baixada em PNG.");
+        toast.success(
+          selectedGroupId
+            ? "Imagem salva na galeria como variacao da original."
+            : "Imagem salva na galeria e baixada em PNG."
+        );
       } catch (err: any) {
         console.error("[saveSelectedImage]", err);
         toast.error(err?.message || "Falha ao salvar na galeria.");
@@ -1198,6 +1286,7 @@ const Creation = () => {
       setCanRedo(false);
       setSelectionKind("none");
       setSelectionInfo(null);
+      setCanSaveSelectedImage(false);
       setCropModeActive(false);
       setColorCutModeActive(false);
       return;
@@ -1228,7 +1317,7 @@ const Creation = () => {
   const pendingScheduledTabRef = useRef<string | null>(null);
   const skipSnapshotReloadRef = useRef<Set<string>>(new Set());
   const saveActiveTabSnapshot = useCallback(async (tabId?: string): Promise<Record<string, string>> => {
-    const id = tabId || prevTabRef.current;
+    const id = tabId || activeCanvasTab;
     if (!id) return tabSnapshotsRef.current;
     // Captura imagem para preview 3D
     void captureTabImage(id);
@@ -1251,7 +1340,7 @@ const Creation = () => {
       }
     }
     return tabSnapshotsRef.current;
-  }, [canvasTabs, editorRefs, captureTabImage]);
+  }, [activeCanvasTab, canvasTabs, editorRefs, captureTabImage]);
 
 
   const syncFontsFromEditor = useCallback(
@@ -1469,6 +1558,15 @@ const Creation = () => {
     pendingScheduledTabRef.current = null;
 
     const snapshotMap = await saveActiveTabSnapshot(options?.tabId);
+
+    // Se estiver na aba 3D (ou sem tab específica), garante preview das abas 2D visíveis.
+    if (!options?.tabId && activeCanvasTab === "3d") {
+      const visible2DTabs = canvasTabsRef.current.filter((t) => t.type === "2d" && tabVisibilityRef.current[t.id]);
+      if (visible2DTabs.length > 0) {
+        await Promise.all(visible2DTabs.map((t) => captureTabImage(t.id)));
+      }
+    }
+
     const canvasSnapshots = snapshotMap ?? tabSnapshotsRef.current;
     let draftKey = draftKeyRef.current;
     if (!draftKey) {
@@ -1522,7 +1620,7 @@ const Creation = () => {
     }
 
     return payload;
-  }, [activeCanvasTab, baseColor, fabric, notes, part, queueRemoteSave, saveActiveTabSnapshot, size, subtype, projectName, type]);
+  }, [activeCanvasTab, baseColor, captureTabImage, fabric, notes, part, queueRemoteSave, saveActiveTabSnapshot, size, subtype, projectName, type]);
 
   useEffect(() => {
     if (initialDraftSavedRef.current) return;
@@ -1561,6 +1659,42 @@ const Creation = () => {
 
   const handleDecalStateChange = useCallback(
     (snapshots: DecalStateSnapshot[]) => {
+      const nextAlerts: Record<string, string[]> = {};
+      const minArea = subtypePrintConstraints?.min_decal_area_cm2 ?? 5;
+      const neckYMin = subtypePrintConstraints?.neck_zone_y_min ?? 0.82;
+      const underarmYMin = subtypePrintConstraints?.underarm_zone_y_min ?? 0.45;
+      const underarmYMax = subtypePrintConstraints?.underarm_zone_y_max ?? 0.72;
+      const underarmAbsXMin = subtypePrintConstraints?.underarm_zone_abs_x_min ?? 0.55;
+
+      snapshots.forEach((snapshot) => {
+        const warnings = new Set<string>(snapshot.viability?.warnings ?? []);
+
+        const approxAreaCm2 = snapshot.viability?.approxAreaCm2;
+        if (typeof approxAreaCm2 === "number" && approxAreaCm2 > 0 && approxAreaCm2 < minArea) {
+          warnings.add("min_area_violation");
+        }
+
+        const np = snapshot.viability?.normalizedPosition;
+        if (np && typeof np.x === "number" && typeof np.y === "number") {
+          if (np.y >= neckYMin) {
+            warnings.add("neck_zone_risk");
+          }
+
+          const centerX = Math.abs((np.x - 0.5) * 2);
+          if (centerX >= underarmAbsXMin && np.y >= underarmYMin && np.y <= underarmYMax) {
+            warnings.add("underarm_zone_risk");
+          }
+        }
+
+        if (warnings.size > 0) {
+          nextAlerts[snapshot.id] = Array.from(warnings).map(
+            (code) => VIABILITY_WARNING_LABELS[code] ?? code
+          );
+        }
+      });
+
+      setDecalViabilityAlerts(nextAlerts);
+
       let placementsChanged = false;
       setTabDecalPlacements((prev) => {
         const snapshotIds = new Set(snapshots.map((s) => s.id));
@@ -1594,12 +1728,12 @@ const Creation = () => {
         scheduleDraftSave();
       }
     },
-    [scheduleDraftSave]
+    [scheduleDraftSave, subtypePrintConstraints]
   );
 
   useEffect(() => {
-    if (prevTabRef.current && prevTabRef.current !== activeCanvasTab) {
-      void saveActiveTabSnapshot(prevTabRef.current);
+    if (prevSavedTabRef.current && prevSavedTabRef.current !== activeCanvasTab) {
+      void saveActiveTabSnapshot(prevSavedTabRef.current);
 
       if (activeCanvasTab === "3d") {
         const visible2DTabs = canvasTabsRef.current.filter(t => t.type === "2d" && tabVisibilityRef.current[t.id]);
@@ -1608,7 +1742,7 @@ const Creation = () => {
 
       void saveDraft();
     }
-    prevTabRef.current = activeCanvasTab;
+    prevSavedTabRef.current = activeCanvasTab;
   }, [activeCanvasTab, saveActiveTabSnapshot, saveDraft, captureTabImage]);
 
   useEffect(() => {
@@ -1966,7 +2100,7 @@ const Creation = () => {
                 })()}
               </div>
               {!isDraftPermanent && (
-                <div className="flex-none ml-4 flex items-center pr-2">
+                <div className="flex-none ml-4 flex items-center gap-2 pr-2">
                   <Button
                     type="button"
                     variant="outline"
@@ -1976,7 +2110,15 @@ const Creation = () => {
                       void saveDraft({ immediateRemote: true, markPermanent: true });
                     }}
                   >
-                    Salvar rascunho
+                    Salvar
+                  </Button>
+                  <Button
+                    type="button"
+                    size="sm"
+                    className="rounded-none uppercase tracking-widest text-xs h-8 px-4"
+                    onClick={finish}
+                  >
+                    Produzir
                   </Button>
                 </div>
               )}
@@ -2006,6 +2148,25 @@ const Creation = () => {
                     externalDecals={decalsFor3D}
                     onDecalsChange={handleDecalStateChange}
                   />
+                  {subtypePrintConstraints && (
+                    <div className="absolute top-3 left-3 max-w-xs rounded border border-amber-300/70 bg-amber-50/85 px-2 py-1 text-[11px] text-amber-900">
+                      Area util: {subtypePrintConstraints.print_area_width_cm ?? "-"} x {subtypePrintConstraints.print_area_height_cm ?? "-"} cm
+                      <br />
+                      Minimo: {subtypePrintConstraints.min_decal_area_cm2 ?? 5} cm²
+                    </div>
+                  )}
+                  {viabilityAlertItems.length > 0 && (
+                    <div className="absolute top-3 right-3 z-10 max-w-sm space-y-2">
+                      {viabilityAlertItems.map((item) => (
+                        <div key={item.id} className="rounded border border-red-300 bg-red-50/95 px-3 py-2 text-xs text-red-900">
+                          <p className="font-semibold">{item.label}</p>
+                          {item.messages.map((message, index) => (
+                            <p key={`${item.id}-${index}`}>- {message}</p>
+                          ))}
+                        </div>
+                      ))}
+                    </div>
+                  )}
                   <div className="absolute bottom-3 left-3 text-xs text-gray-700 glass px-2 py-1 rounded">
                     Arraste para rotacionar · Scroll para zoom
                   </div>
@@ -2072,13 +2233,21 @@ const Creation = () => {
                         onDrop={(e) => {
                           e.preventDefault();
                           const src = e.dataTransfer.getData("text/plain");
+                          const rawMeta = e.dataTransfer.getData("application/x-molda-gallery-meta");
+                          let parsedMeta: Record<string, unknown> | undefined;
+                          if (rawMeta) {
+                            try {
+                              const parsed = JSON.parse(rawMeta);
+                              if (parsed && typeof parsed === "object") parsedMeta = parsed;
+                            } catch { }
+                          }
                           const rect = squareCanvasRef.current?.getBoundingClientRect();
                           if (!rect) return;
                           const x = e.clientX - rect.left;
                           const y = e.clientY - rect.top;
                           if (x < 0 || y < 0 || x > rect.width || y > rect.height) return;
                           if (src && activeIs2D) {
-                            editorRefs.current[activeCanvasTab]?.addImage(src, { x, y });
+                            editorRefs.current[activeCanvasTab]?.addImage(src, { x, y, meta: parsedMeta });
                           }
                         }}
                       >
@@ -2116,8 +2285,10 @@ const Creation = () => {
                                           setSelectionKind(kind);
                                           if (kind === "none") {
                                             setSelectionInfo(null);
+                                            setCanSaveSelectedImage(false);
                                           } else {
                                             setSelectionInfo(inst.getSelectionInfo?.() ?? null);
+                                            setCanSaveSelectedImage(canSaveSelectedImageFromEditor(inst, kind));
                                           }
                                         }
                                       });
@@ -2347,7 +2518,7 @@ const Creation = () => {
                     </ContextMenuItem>
 
                     <ContextMenuItem
-                      disabled={!selectionInfo?.hasSelection || selectionKind !== "image"}
+                      disabled={!selectionInfo?.hasSelection || selectionKind !== "image" || !canSaveSelectedImage}
                       onSelect={() => void saveSelectedImage()}
                     >
                       Salvar

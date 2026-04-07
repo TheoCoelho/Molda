@@ -9,8 +9,19 @@ import { Tabs, TabsContent, TabsList, TabsTrigger } from "@/components/ui/tabs";
 import { Badge } from "@/components/ui/badge";
 import { Avatar, AvatarFallback, AvatarImage } from "@/components/ui/avatar";
 import { Dialog, DialogContent, DialogHeader, DialogTitle, DialogFooter } from "@/components/ui/dialog";
+import {
+  AlertDialog,
+  AlertDialogAction,
+  AlertDialogCancel,
+  AlertDialogContent,
+  AlertDialogDescription,
+  AlertDialogFooter,
+  AlertDialogHeader,
+  AlertDialogTitle,
+} from "@/components/ui/alert-dialog";
 import { Input } from "@/components/ui/input";
-import { Earth, Loader2, MoreVertical, Pencil } from "lucide-react";
+import { Earth, Loader2, MoreVertical, Pencil, Trash2 } from "lucide-react";
+import { toast } from "sonner";
 import { useAuth } from "@/contexts/AuthContext";
 import { supabase } from "@/integrations/supabase/client";
 import { AVATAR_BUCKET } from "@/lib/constants/storage";
@@ -86,7 +97,8 @@ type GalleryItem = {
 };
 
 type SocialProfileRow = {
-  id: string;
+  id?: string | null;
+  user_id?: string | null;
   username: string | null;
   nickname: string | null;
   avatar_path: string | null;
@@ -100,6 +112,14 @@ function normalizeUsername(value: string | null | undefined) {
 
 function isLikelyUuid(value: string) {
   return /^[0-9a-f]{8}-[0-9a-f]{4}-[1-5][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i.test(value);
+}
+
+function getSocialProfileId(row: SocialProfileRow | null | undefined) {
+  return String(row?.id ?? row?.user_id ?? "").trim();
+}
+
+function readSignedUrl(entry: any): string {
+  return String(entry?.signedUrl ?? entry?.signedURL ?? "").trim();
 }
 
 const Profile = () => {
@@ -126,7 +146,7 @@ const Profile = () => {
     createdAt: "Janeiro 2024",
   });
 
-  const effectiveViewedUserId = user.id || viewedUserId;
+  const effectiveViewedUserId = viewedUserId || user.id || "";
 
   const isOwnProfile = Boolean(authUser?.id && effectiveViewedUserId && authUser.id === effectiveViewedUserId);
 
@@ -156,7 +176,10 @@ const Profile = () => {
   const [editNameInput, setEditNameInput] = useState("");
   const [editValueInput, setEditValueInput] = useState("0,00");
   const [savingDesignEdit, setSavingDesignEdit] = useState(false);
+  const [deletingDesign, setDeletingDesign] = useState(false);
   const [replacingDesign, setReplacingDesign] = useState(false);
+  const [deleteAllContentOpen, setDeleteAllContentOpen] = useState(false);
+  const [deletingAllContent, setDeletingAllContent] = useState(false);
   const replaceDesignInputRef = useRef<HTMLInputElement | null>(null);
 
   const [piecesFilter, setPiecesFilter] = useState<"todas" | "finalizadas" | "rascunhos">("todas");
@@ -475,7 +498,9 @@ const Profile = () => {
             })
           );
         } else {
-          const publicRows = (visibilityRows || []).filter((row: any) => Boolean(row.is_public));
+          const publicRows = (visibilityRows || []).filter((row: any) =>
+            row?.is_public == null ? true : Boolean(row.is_public)
+          );
           const paths = publicRows.map((row: any) => String(row.storage_path || "")).filter(Boolean);
 
           // Gera signed URLs em lote — funcionam mesmo em buckets privados
@@ -486,7 +511,8 @@ const Profile = () => {
               .createSignedUrls(paths, 60 * 60 * 24 * 7);
             if (signedData) {
               for (const entry of signedData) {
-                if (entry.signedUrl) signedMap[entry.path] = entry.signedUrl;
+                const signed = readSignedUrl(entry);
+                if (signed) signedMap[entry.path] = signed;
               }
             }
           }
@@ -617,7 +643,7 @@ const Profile = () => {
               search_term: null,
               limit_count: 200,
             });
-            const byId = ((rows ?? []) as SocialProfileRow[]).find((row) => row.id === effectiveViewedUserId);
+            const byId = ((rows ?? []) as SocialProfileRow[]).find((row) => getSocialProfileId(row) === effectiveViewedUserId);
             if (byId) prof = byId;
           }
         }
@@ -631,7 +657,7 @@ const Profile = () => {
 
           display = {
             ...display,
-            id: prof.id || display.id,
+            id: getSocialProfileId(prof) || display.id,
             name: (prof.nickname ?? (prof as any).full_name ?? display.name),
             username: prof.username || display.username,
             email: isOwnProfile ? ((prof as any).email ?? display.email) : undefined,
@@ -746,6 +772,97 @@ const Profile = () => {
     setEditPanelOpen(false);
     setEditNameInput("");
     setEditValueInput("0,00");
+  };
+
+  const deleteAllProfileContent = async () => {
+    if (!authUser?.id || !isOwnProfile || deletingAllContent) return;
+
+    const pieceCount = drafts.length;
+    const designCount = galleryItems.length;
+    if (pieceCount === 0 && designCount === 0) {
+      setDeleteAllContentOpen(false);
+      return;
+    }
+
+    setDeletingAllContent(true);
+    try {
+      const designPaths = galleryItems.map((item) => item.id).filter(Boolean);
+
+      const { error: draftsError } = await supabase
+        .from("project_drafts")
+        .delete()
+        .eq("user_id", authUser.id);
+
+      if (draftsError) throw draftsError;
+
+      const storageErrors: string[] = [];
+      for (let index = 0; index < designPaths.length; index += 100) {
+        const chunk = designPaths.slice(index, index + 100);
+        if (chunk.length === 0) continue;
+        const { error: storageError } = await supabase.storage.from(STORAGE_BUCKET).remove(chunk);
+        if (storageError) {
+          storageErrors.push(storageError.message || "Falha ao remover arquivos do storage.");
+        }
+      }
+
+      const { error: visibilityError } = await supabase
+        .from("gallery_visibility")
+        .delete()
+        .eq("user_id", authUser.id);
+
+      if (visibilityError && visibilityError.code !== "42P01") throw visibilityError;
+
+      setDrafts([]);
+      setGalleryItems([]);
+      setDraftsError(null);
+      setGalleryError(null);
+      setTogglingPieceIds({});
+      setTogglingGalleryIds({});
+      closeSelectedDesign();
+      setUser((prev) => ({ ...prev, designsCount: 0, piecesCount: 0 }));
+      setDeleteAllContentOpen(false);
+
+      if (storageErrors.length > 0) {
+        toast.warning("As peças e designs foram removidos do perfil, mas alguns arquivos antigos não puderam ser apagados do storage.");
+      } else {
+        toast.success("Todas as peças e designs foram excluídos com sucesso.");
+      }
+    } catch (err: any) {
+      console.error("Erro ao excluir todo o conteúdo do perfil:", err);
+      toast.error(err?.message || "Não foi possível excluir todas as peças e designs.");
+    } finally {
+      setDeletingAllContent(false);
+    }
+  };
+
+  const deleteDesign = async () => {
+    if (!selectedDesign || !authUser?.id || !isOwnProfile) return;
+
+    setDeletingDesign(true);
+    try {
+      const { error: storageError } = await supabase.storage
+        .from(STORAGE_BUCKET)
+        .remove([selectedDesign.id]);
+
+      if (storageError) throw storageError;
+
+      const { error: dbError } = await supabase
+        .from("gallery_visibility")
+        .delete()
+        .eq("storage_path", selectedDesign.id)
+        .eq("user_id", authUser.id);
+
+      if (dbError && dbError.code !== "42P01") throw dbError;
+
+      setGalleryItems((prev) => prev.filter((item) => item.id !== selectedDesign.id));
+      closeSelectedDesign();
+      toast.success("Design excluído com sucesso");
+    } catch (err: any) {
+      console.error("Erro ao excluir design:", err);
+      setGalleryError(err?.message || "Não foi possível excluir o design.");
+    } finally {
+      setDeletingDesign(false);
+    }
   };
 
   const updateDesignLocal = (itemId: string, partial: Partial<GalleryItem>) => {
@@ -1168,7 +1285,7 @@ const Profile = () => {
           <TabsContent value="creations" className="mt-6">
             <div className="flex items-center justify-between mb-4">
               <h2 className="text-xl font-semibold">{isOwnProfile ? "Minhas Peças" : "Peças públicas"}</h2>
-              {isOwnProfile && <div className="flex gap-2">
+              {isOwnProfile && <div className="flex flex-wrap justify-end gap-2">
                 <Button
                   variant={piecesFilter === "todas" ? "default" : "outline"}
                   size="sm"
@@ -1189,6 +1306,15 @@ const Profile = () => {
                   onClick={() => setPiecesFilter("rascunhos")}
                 >
                   Rascunhos
+                </Button>
+                <Button
+                  variant="destructive"
+                  size="sm"
+                  onClick={() => setDeleteAllContentOpen(true)}
+                  disabled={deletingAllContent || (drafts.length === 0 && galleryItems.length === 0)}
+                >
+                  {deletingAllContent ? <Loader2 className="mr-2 h-4 w-4 animate-spin" /> : <Trash2 className="mr-2 h-4 w-4" />}
+                  Excluir tudo
                 </Button>
               </div>}
             </div>
@@ -1221,174 +1347,77 @@ const Profile = () => {
               </div>
             ) : (
               <div className="grid grid-cols-2 md:grid-cols-3 lg:grid-cols-4 gap-4">
-                {(() => {
-                  // Lógica de windowing: só renderiza 8 cards centrais
-                  const total = creations.length;
-                  if (total <= 8) {
-                    return creations.map((item) => (
-                      <Card key={item.id} className="border border-border bg-background shadow-none transition-none hover:border-foreground rounded-none filter-none">
-                        <CardHeader className="p-3 pb-2 border-b border-border">
-                          <div className="flex items-center justify-between gap-1">
-                            <CardTitle className="text-sm font-bold uppercase tracking-widest truncate">{item.title}</CardTitle>
-                            {getStatusBadge(item.status)}
-                          </div>
-                          <p className="text-xs text-gray-500 font-bold uppercase tracking-widest">
-                            {item.date ? `Criado em ${item.date}` : ""}
-                          </p>
-                        </CardHeader>
-                        <CardContent className="p-3 pt-3">
-                          <div className="aspect-[3/4] w-full overflow-hidden rounded-none border border-border bg-background mb-3">
-                            <Canvas3DViewer
-                              baseColor={item.baseColor || "#ffffff"}
-                              externalDecals={item.externalDecals || []}
-                              interactive={false}
-                              selectionOverride={item.selection}
-                              className="h-full w-full"
-                            />
-                          </div>
-                          <div className="flex gap-1.5">
-                            {isOwnProfile ? (
-                              <>
-                            <Button
-                              variant="outline"
-                              size="sm"
-                              className="w-full text-xs rounded-none uppercase tracking-widest font-bold"
-                              onClick={() => item.draft && handleEditDraft(item.draft)}
-                              disabled={!item.draft}
-                            >
-                              Editar
-                            </Button>
-                            <Button
-                              size="sm"
-                              className="w-full text-xs rounded-none uppercase tracking-widest font-bold bg-foreground text-background"
-                              onClick={() => item.draft && handleProduceDraft(item.draft)}
-                              disabled={!item.draft}
-                            >
-                              Produzir
-                            </Button>
-                            <Button
-                              variant="outline"
-                              size="icon"
-                              className="flex-none rounded-none"
-                              onClick={() => void togglePieceVisibility(item.id, !item.isPublic)}
-                              disabled={Boolean(togglingPieceIds[item.id])}
-                              title={item.isPublic ? "Público" : "Não público"}
-                              aria-label={item.isPublic ? "Definir como não público" : "Definir como público"}
-                            >
-                              {togglingPieceIds[item.id] ? (
-                                <Loader2 className="h-4 w-4 animate-spin" />
-                              ) : (
-                                <span className={`relative inline-flex transition-transform duration-500 ${item.isPublic ? "rotate-180" : "rotate-0"}`}>
-                                  <Earth className="h-4 w-4" />
-                                  {!item.isPublic && (
-                                    <span className="pointer-events-none absolute left-1/2 top-1/2 h-5 w-[2px] -translate-x-1/2 -translate-y-1/2 rotate-45 rounded-full bg-current" />
-                                  )}
-                                </span>
+                {creations.map((item) => (
+                  <Card key={item.id} className="border border-border bg-background shadow-none transition-none hover:border-foreground rounded-none filter-none">
+                    <CardHeader className="p-3 pb-2 border-b border-border">
+                      <div className="flex items-center justify-between gap-1">
+                        <CardTitle className="text-sm font-bold uppercase tracking-widest truncate">{item.title}</CardTitle>
+                        {getStatusBadge(item.status)}
+                      </div>
+                      <p className="text-xs text-gray-500 font-bold uppercase tracking-widest">
+                        {item.date ? `Criado em ${item.date}` : ""}
+                      </p>
+                    </CardHeader>
+                    <CardContent className="p-3 pt-3">
+                      <div className="aspect-[3/4] w-full overflow-hidden rounded-none border border-border bg-background mb-3">
+                        <Canvas3DViewer
+                          baseColor={item.baseColor || "#ffffff"}
+                          externalDecals={item.externalDecals || []}
+                          interactive={false}
+                          selectionOverride={item.selection}
+                          className="h-full w-full"
+                        />
+                      </div>
+                      <div className="flex gap-1.5">
+                        {isOwnProfile ? (
+                          <>
+                        <Button
+                          variant="outline"
+                          size="sm"
+                          className="w-full text-xs rounded-none uppercase tracking-widest font-bold"
+                          onClick={() => item.draft && handleEditDraft(item.draft)}
+                          disabled={!item.draft}
+                        >
+                          Editar
+                        </Button>
+                        <Button
+                          size="sm"
+                          className="w-full text-xs rounded-none uppercase tracking-widest font-bold bg-foreground text-background"
+                          onClick={() => item.draft && handleProduceDraft(item.draft)}
+                          disabled={!item.draft}
+                        >
+                          Produzir
+                        </Button>
+                        <Button
+                          variant="outline"
+                          size="icon"
+                          className="flex-none rounded-none"
+                          onClick={() => void togglePieceVisibility(item.id, !item.isPublic)}
+                          disabled={Boolean(togglingPieceIds[item.id])}
+                          title={item.isPublic ? "Público" : "Não público"}
+                          aria-label={item.isPublic ? "Definir como não público" : "Definir como público"}
+                        >
+                          {togglingPieceIds[item.id] ? (
+                            <Loader2 className="h-4 w-4 animate-spin" />
+                          ) : (
+                            <span className={`relative inline-flex transition-transform duration-500 ${item.isPublic ? "rotate-180" : "rotate-0"}`}>
+                              <Earth className="h-4 w-4" />
+                              {!item.isPublic && (
+                                <span className="pointer-events-none absolute left-1/2 top-1/2 h-5 w-[2px] -translate-x-1/2 -translate-y-1/2 rotate-45 rounded-full bg-current" />
                               )}
-                            </Button>
-                              </>
-                            ) : (
-                              <div className="w-full text-center text-xs text-muted-foreground font-bold uppercase tracking-widest py-2 border border-border rounded-none">
-                                Peça pública
-                              </div>
-                            )}
+                            </span>
+                          )}
+                        </Button>
+                          </>
+                        ) : (
+                          <div className="w-full text-center text-xs text-muted-foreground font-bold uppercase tracking-widest py-2 border border-border rounded-none">
+                            Peça pública
                           </div>
-                        </CardContent>
-                      </Card>
-                    ));
-                  }
-                  // Se houver mais de 8, só renderiza os 8 centrais
-                  // Calcula o centro da viewport (pode ser ajustado para scroll real)
-                  const [start, end] = (() => {
-                    // Para simplificação, centraliza na metade da lista
-                    const center = Math.floor(total / 2);
-                    let s = center - 4;
-                    let e = center + 4;
-                    if (s < 0) { s = 0; e = 8; }
-                    if (e > total) { e = total; s = total - 8; }
-                    return [s, e];
-                  })();
-                  return creations.map((item, idx) => {
-                    const isActive = idx >= start && idx < end;
-                    return (
-                      <Card key={item.id} className="border border-border bg-background shadow-none transition-none hover:border-foreground rounded-none filter-none">
-                        <CardHeader className="p-3 pb-2 border-b border-border">
-                          <div className="flex items-center justify-between gap-1">
-                            <CardTitle className="text-sm font-bold uppercase tracking-widest truncate">{item.title}</CardTitle>
-                            {getStatusBadge(item.status)}
-                          </div>
-                          <p className="text-xs text-gray-500 font-bold uppercase tracking-widest">
-                            {item.date ? `Criado em ${item.date}` : ""}
-                          </p>
-                        </CardHeader>
-                        <CardContent className="p-3 pt-3">
-                          <div className="aspect-[3/4] w-full overflow-hidden rounded-none border border-border bg-background mb-3">
-                            {isActive ? (
-                              <Canvas3DViewer
-                                baseColor={item.baseColor || "#ffffff"}
-                                externalDecals={item.externalDecals || []}
-                                interactive={false}
-                                selectionOverride={item.selection}
-                                className="h-full w-full"
-                              />
-                            ) : (
-                              <div className="h-full w-full bg-muted flex items-center justify-center text-xs text-muted-foreground select-none uppercase tracking-widest font-bold">
-                                Pré-visualização 3D
-                              </div>
-                            )}
-                          </div>
-                          <div className="flex gap-1.5">
-                            {isOwnProfile ? (
-                              <>
-                            <Button
-                              variant="outline"
-                              size="sm"
-                              className="w-full text-xs rounded-none uppercase tracking-widest font-bold"
-                              onClick={() => item.draft && handleEditDraft(item.draft)}
-                              disabled={!item.draft}
-                            >
-                              Editar
-                            </Button>
-                            <Button
-                              size="sm"
-                              className="w-full text-xs rounded-none uppercase tracking-widest font-bold bg-foreground text-background"
-                              onClick={() => item.draft && handleProduceDraft(item.draft)}
-                              disabled={!item.draft}
-                            >
-                              Produzir
-                            </Button>
-                            <Button
-                              variant="outline"
-                              size="icon"
-                              className="flex-none rounded-none"
-                              onClick={() => void togglePieceVisibility(item.id, !item.isPublic)}
-                              disabled={Boolean(togglingPieceIds[item.id])}
-                              title={item.isPublic ? "Público" : "Não público"}
-                              aria-label={item.isPublic ? "Definir como não público" : "Definir como público"}
-                            >
-                              {togglingPieceIds[item.id] ? (
-                                <Loader2 className="h-4 w-4 animate-spin" />
-                              ) : (
-                                <span className={`relative inline-flex transition-transform duration-500 ${item.isPublic ? "rotate-180" : "rotate-0"}`}>
-                                  <Earth className="h-4 w-4" />
-                                  {!item.isPublic && (
-                                    <span className="pointer-events-none absolute left-1/2 top-1/2 h-5 w-[2px] -translate-x-1/2 -translate-y-1/2 rotate-45 rounded-full bg-current" />
-                                  )}
-                                </span>
-                              )}
-                            </Button>
-                              </>
-                            ) : (
-                              <div className="w-full text-center text-xs text-muted-foreground font-bold uppercase tracking-widest py-2 border border-border rounded-none">
-                                Peça pública
-                              </div>
-                            )}
-                          </div>
-                        </CardContent>
-                      </Card>
-                    );
-                  });
-                })()}
+                        )}
+                      </div>
+                    </CardContent>
+                  </Card>
+                ))}
               </div>
             )}
             </TabsContent>
@@ -1489,7 +1518,21 @@ const Profile = () => {
           {selectedDesign && (
             <div className="relative">
               {isOwnProfile && (
-                <div className="absolute right-0 top-0 z-10">
+                <div className="absolute right-0 top-0 z-10 flex gap-1">
+                  <Button
+                    variant="ghost"
+                    size="icon"
+                    aria-label="Excluir design"
+                    onClick={deleteDesign}
+                    disabled={deletingDesign}
+                    className="text-red-500 hover:text-red-700 hover:bg-red-50"
+                  >
+                    {deletingDesign ? (
+                      <Loader2 className="h-4 w-4 animate-spin" />
+                    ) : (
+                      <Trash2 className="h-4 w-4" />
+                    )}
+                  </Button>
                   <Button variant="ghost" size="icon" aria-label="Editar design" onClick={openEditPanel}>
                     <MoreVertical className="h-4 w-4" />
                   </Button>
@@ -1609,6 +1652,31 @@ const Profile = () => {
           </DialogFooter>
         </DialogContent>
       </Dialog>
+
+      <AlertDialog open={deleteAllContentOpen} onOpenChange={setDeleteAllContentOpen}>
+        <AlertDialogContent>
+          <AlertDialogHeader>
+            <AlertDialogTitle>Excluir todas as peças e designs?</AlertDialogTitle>
+            <AlertDialogDescription>
+              Essa ação remove permanentemente todas as peças salvas em seu perfil e todos os designs da galeria.
+              O conteúdo também deixa de aparecer no feed e em outros perfis imediatamente.
+            </AlertDialogDescription>
+          </AlertDialogHeader>
+          <AlertDialogFooter>
+            <AlertDialogCancel disabled={deletingAllContent}>Cancelar</AlertDialogCancel>
+            <AlertDialogAction
+              onClick={(event) => {
+                event.preventDefault();
+                void deleteAllProfileContent();
+              }}
+              disabled={deletingAllContent}
+              className="bg-destructive text-destructive-foreground hover:bg-destructive/90"
+            >
+              {deletingAllContent ? "Excluindo..." : "Excluir tudo"}
+            </AlertDialogAction>
+          </AlertDialogFooter>
+        </AlertDialogContent>
+      </AlertDialog>
 
       {/* Dialog de upload (inalterado) */}
       {isOwnProfile && (
