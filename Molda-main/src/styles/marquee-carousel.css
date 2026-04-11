@@ -121,7 +121,13 @@
 }
 
 .wizard-carousel {
-  width: min(100%, calc((var(--item-size, 120px) * 3) + (var(--gap, 12px) * 2)));
+  width: min(
+    100%,
+    calc(
+      (var(--item-size, 120px) * var(--visible-items, 3)) +
+      (var(--gap, 12px) * (var(--visible-items, 3) - 1))
+    )
+  );
   margin-inline: auto;
 }
 

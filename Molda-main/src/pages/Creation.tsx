@@ -2408,7 +2408,7 @@ const Creation = () => {
                                         ? editorRefs.current[activeCanvasTab]?.cancelEffectLasso?.()
                                         : editorRefs.current[activeCanvasTab]?.cancelEffectBrush?.()))
                                 }
-                                title="Cancelar (Esc ou Delete)"
+                                title="Cancelar (Esc)"
                               >
                                 <X className="w-4 h-4" />
                               </Button>

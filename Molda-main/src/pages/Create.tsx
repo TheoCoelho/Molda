@@ -1016,19 +1016,17 @@ const Create = () => {
                           selectedSubtype,
                           (id) => handleSelectSubtype(id)
                         )
-                      : subtypeCarouselItems.length <= 3
-                        ? renderStaticCards(subtypeCarouselItems, selectedSubtype, (id) => handleSelectSubtype(id))
-                        : (
-                          <LinearInfiniteCarousel
-                            className="wizard-carousel"
-                            items={subtypeCarouselItems}
-                            selectedId={selectedSubtype}
-                            onSelect={(id: string) => handleSelectSubtype(id)}
-                            autoCenterSelected={searchActive}
-                            cardSize={CARD_SIZE}
-                            cardGapPx={CARD_GAP}
-                          />
-                        )}
+                      : (
+                        <LinearInfiniteCarousel
+                          className="wizard-carousel"
+                          items={subtypeCarouselItems}
+                          selectedId={selectedSubtype}
+                          onSelect={(id: string) => handleSelectSubtype(id)}
+                          autoCenterSelected={searchActive}
+                          cardSize={CARD_SIZE}
+                          cardGapPx={CARD_GAP}
+                        />
+                      )}
 
                     {selectedSubtypeConfig && (
                       <div className="mt-4 rounded-xl border border-amber-300/50 bg-amber-50/70 px-4 py-3 text-xs text-amber-900">

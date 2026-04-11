@@ -3,6 +3,8 @@ import { Card, CardContent, CardHeader } from "@/components/ui/card";
 import { Avatar, AvatarFallback, AvatarImage } from "@/components/ui/avatar";
 import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
+import Canvas3DViewer from "@/components/Canvas3DViewer";
+import type { ExternalDecalData } from "@/types/decals";
 import { Heart, MessageCircle, Share2, Eye } from "lucide-react";
 import { useState } from "react";
 
@@ -19,6 +21,14 @@ export type SocialPostData = {
   username: string;
   nickname: string;
   userAvatar?: string;
+
+  pieceBaseColor?: string;
+  pieceSelection?: {
+    part?: string | null;
+    type?: string | null;
+    subtype?: string | null;
+  };
+  pieceExternalDecals?: ExternalDecalData[];
 };
 
 interface SocialPostProps {
@@ -83,11 +93,21 @@ export default function SocialPost({ post, isLiked = false, onLike }: SocialPost
           onMouseEnter={() => setIsHovered(true)}
           onMouseLeave={() => setIsHovered(false)}
         >
-          <img
-            src={post.previewUrl}
-            alt={post.title}
-            className="w-full h-full object-cover hover:scale-105 transition-transform"
-          />
+          {post.type === "piece" ? (
+            <Canvas3DViewer
+              className="w-full h-full"
+              baseColor={post.pieceBaseColor || "#ffffff"}
+              selectionOverride={post.pieceSelection}
+              externalDecals={post.pieceExternalDecals || []}
+              interactive={false}
+            />
+          ) : (
+            <img
+              src={post.previewUrl}
+              alt={post.title}
+              className="w-full h-full object-cover hover:scale-105 transition-transform"
+            />
+          )}
 
           {/* Overlay com detalhes ao hover */}
           {isHovered && (

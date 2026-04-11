@@ -522,6 +522,32 @@ const Admin = () => {
       underarm_zone_abs_x_min: toNullableNumber(subtypeForm.underarm_zone_abs_x_min) ?? 0.55,
     };
 
+    const legacyPayload: Record<string, any> = {
+      type_id: payload.type_id,
+      name: payload.name,
+      slug: payload.slug,
+      description: payload.description,
+      sort_order: payload.sort_order,
+      is_active: payload.is_active,
+      card_image_path: payload.card_image_path,
+      model_3d_path: payload.model_3d_path,
+    };
+
+    const isMissingSubtypeConstraintColumn = (error: any) => {
+      const message = String(error?.message || "");
+      return (
+        error?.code === "42703" ||
+        error?.code === "PGRST204" ||
+        message.includes("min_decal_area_cm2") ||
+        message.includes("print_area_width_cm") ||
+        message.includes("print_area_height_cm") ||
+        message.includes("neck_zone_y_min") ||
+        message.includes("underarm_zone_y_min") ||
+        message.includes("underarm_zone_y_max") ||
+        message.includes("underarm_zone_abs_x_min")
+      );
+    };
+
     if (!payload.type_id || !payload.name || !payload.slug) {
       toast.error("Tipo, nome e slug sao obrigatorios.");
       return;
@@ -553,14 +579,35 @@ const Admin = () => {
       }
 
       if (subtypeForm.id) {
-        const { error } = await supabase
+        let { error } = await supabase
           .from("product_subtypes")
           .update(payload)
           .eq("id", subtypeForm.id);
+
+        if (isMissingSubtypeConstraintColumn(error)) {
+          const fallback = await supabase
+            .from("product_subtypes")
+            .update(legacyPayload)
+            .eq("id", subtypeForm.id);
+          error = fallback.error;
+          if (!error) {
+            toast.warning("Subtipo salvo sem as colunas de restricoes de impressao. Execute o SQL subtype_print_constraints.sql no Supabase para habilitar todos os campos.");
+          }
+        }
+
         if (error) throw error;
         toast.success("Subtipo atualizado.");
       } else {
-        const { error } = await supabase.from("product_subtypes").insert(payload);
+        let { error } = await supabase.from("product_subtypes").insert(payload);
+
+        if (isMissingSubtypeConstraintColumn(error)) {
+          const fallback = await supabase.from("product_subtypes").insert(legacyPayload);
+          error = fallback.error;
+          if (!error) {
+            toast.warning("Subtipo salvo sem as colunas de restricoes de impressao. Execute o SQL subtype_print_constraints.sql no Supabase para habilitar todos os campos.");
+          }
+        }
+
         if (error) throw error;
         toast.success("Subtipo criado.");
       }

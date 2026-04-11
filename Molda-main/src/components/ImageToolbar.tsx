@@ -31,9 +31,14 @@ type Props = {
    * "inline" deixa o pai controlar posicionamento.
    */
   position?: "top" | "bottom" | "inline";
+  /**
+   * No modo inline, define se os painéis devem sobrepor (overlay)
+   * ou empurrar o layout para baixo (push).
+   */
+  inlinePanelMode?: "overlay" | "push";
 };
 
-type CropTool = "default" | "square" | "lasso" | "magic" | "color";
+type CropTool = "default" | "square" | "lasso" | "color" | "magic";
 type EffectCategoryId = "color" | "deform" | "censor" | "overlay";
 
 function IconBtn({
@@ -54,27 +59,73 @@ function IconBtn({
   );
 }
 
-export default function ImageToolbar({ visible, editor, position = "bottom" }: Props) {
+export default function ImageToolbar({
+  visible,
+  editor,
+  position = "bottom",
+  inlinePanelMode = "overlay",
+}: Props) {
   if (!visible) return null;
 
-  const levelsAreaRef = useRef<HTMLDivElement>(null);
-  const [levelsOpen, setLevelsOpen] = useState(false);
-  const [levelsPinned, setLevelsPinned] = useState(false);
-  const levelsCloseTimerRef = useRef<number | null>(null);
+  const inlinePushPanels = position === "inline" && inlinePanelMode === "push";
 
-  const cancelLevelsClose = () => {
-    if (levelsCloseTimerRef.current) {
-      window.clearTimeout(levelsCloseTimerRef.current);
-      levelsCloseTimerRef.current = null;
+  const toolbarRef = useRef<HTMLDivElement>(null);
+
+  type PanelId = "levels" | "crop" | "effects";
+  const [activePanel, setActivePanel] = useState<PanelId | null>(null);
+  // displayedPanel segura o conteúdo montado durante a animação de fechamento
+  const [displayedPanel, setDisplayedPanel] = useState<PanelId | null>(null);
+  const [inlinePanelVisible, setInlinePanelVisible] = useState(false);
+  const panelUnmountTimerRef = useRef<number | null>(null);
+
+  const levelsOpen = activePanel === "levels";
+  const cropOpen = activePanel === "crop";
+  const effectsOpen = activePanel === "effects";
+
+  const panelCloseTimerRef = useRef<number | null>(null);
+  const cancelPanelClose = () => {
+    if (panelCloseTimerRef.current) {
+      window.clearTimeout(panelCloseTimerRef.current);
+      panelCloseTimerRef.current = null;
     }
   };
-  const scheduleLevelsClose = (delayMs = 180) => {
-    cancelLevelsClose();
-    levelsCloseTimerRef.current = window.setTimeout(() => {
-      levelsCloseTimerRef.current = null;
-      if (!levelsPinned) setLevelsOpen(false);
-    }, delayMs);
+  const schedulePanelClose = (delayMs = 400) => {
+    cancelPanelClose();
+    panelCloseTimerRef.current = window.setTimeout(
+      () => openPanel(null),
+      delayMs
+    );
   };
+
+  const openPanel = (id: PanelId | null) => {
+    cancelPanelClose();
+    if (panelUnmountTimerRef.current) {
+      window.clearTimeout(panelUnmountTimerRef.current);
+      panelUnmountTimerRef.current = null;
+    }
+    setActivePanel(id);
+    if (id) {
+      setDisplayedPanel(id);
+      setInlinePanelVisible(true);
+    } else {
+      setInlinePanelVisible(false);
+      panelUnmountTimerRef.current = window.setTimeout(() => {
+        setDisplayedPanel(null);
+        panelUnmountTimerRef.current = null;
+      }, 350);
+    }
+  };
+
+  const togglePanel = (id: PanelId) =>
+    openPanel(activePanel === id ? null : id);
+
+  // Aliases para handlers de hover existentes (overlay mode)
+  const cancelLevelsClose = cancelPanelClose;
+  const scheduleLevelsClose = (ms = 520) => schedulePanelClose(ms);
+  const cancelEffectsClose = cancelPanelClose;
+  const scheduleEffectsClose = (ms = 520) => schedulePanelClose(ms);
+  const cancelCropClose = cancelPanelClose;
+  const scheduleCropClose = (ms = 400) => schedulePanelClose(ms);
 
   const LEVELS_CLOSE_DELAY_MS = 520;
   const LEVELS_EDGE_FADE_PX = 56;
@@ -125,10 +176,7 @@ export default function ImageToolbar({ visible, editor, position = "bottom" }: P
   const [tint, setTint] = useState(0);
 
   // === Estado de Efeitos ===
-  const effectsAreaRef = useRef<HTMLDivElement>(null);
   const effectsScrollRef = useRef<HTMLDivElement>(null);
-  const [effectsOpen, setEffectsOpen] = useState(false);
-  const [effectsPinned, setEffectsPinned] = useState(false);
   const [effectKind, setEffectKind] = useState<ImageEffectKind>("none");
   const [effectCategory, setEffectCategory] = useState<EffectCategoryId>("color");
   const [effectAmount, setEffectAmount] = useState(100); // 0-100 (será convertido para 0-1)
@@ -136,21 +184,6 @@ export default function ImageToolbar({ visible, editor, position = "bottom" }: P
   const [effectBrushSize, setEffectBrushSize] = useState(40);
   const [canScrollEffectsLeft, setCanScrollEffectsLeft] = useState(false);
   const [canScrollEffectsRight, setCanScrollEffectsRight] = useState(false);
-  const effectsCloseTimerRef = useRef<number | null>(null);
-
-  const cancelEffectsClose = () => {
-    if (effectsCloseTimerRef.current) {
-      window.clearTimeout(effectsCloseTimerRef.current);
-      effectsCloseTimerRef.current = null;
-    }
-  };
-  const scheduleEffectsClose = (delayMs = 180) => {
-    cancelEffectsClose();
-    effectsCloseTimerRef.current = window.setTimeout(() => {
-      effectsCloseTimerRef.current = null;
-      if (!effectsPinned) setEffectsOpen(false);
-    }, delayMs);
-  };
 
   const updateEffectsScrollState = () => {
     const el = effectsScrollRef.current;
@@ -303,29 +336,6 @@ export default function ImageToolbar({ visible, editor, position = "bottom" }: P
     window.addEventListener("resize", onResize);
     return () => window.removeEventListener("resize", onResize);
   }, [effectsOpen]);
-
-  // Fecha ao clicar fora quando pinned
-  useEffect(() => {
-    if (!effectsPinned) return;
-    const onPointerDown = (ev: PointerEvent) => {
-      const target = ev.target as Node | null;
-      if (!target) return;
-      if (effectsAreaRef.current && effectsAreaRef.current.contains(target)) return;
-      setEffectsPinned(false);
-      setEffectsOpen(false);
-    };
-    const onKeyDown = (ev: KeyboardEvent) => {
-      if (ev.key !== "Escape") return;
-      setEffectsPinned(false);
-      setEffectsOpen(false);
-    };
-    window.addEventListener("pointerdown", onPointerDown);
-    window.addEventListener("keydown", onKeyDown);
-    return () => {
-      window.removeEventListener("pointerdown", onPointerDown);
-      window.removeEventListener("keydown", onKeyDown);
-    };
-  }, [effectsPinned]);
 
   const [activeSliderTip, setActiveSliderTip] = useState<
     | null
@@ -546,19 +556,17 @@ export default function ImageToolbar({ visible, editor, position = "bottom" }: P
     applyPendingRef.current = null;
   }, [visible, levelsOpen]);
 
+  // Unified outside-click / Escape handler for all panels
   useEffect(() => {
-    if (!levelsPinned) return;
+    if (!activePanel) return;
     const onPointerDown = (ev: PointerEvent) => {
       const target = ev.target as Node | null;
       if (!target) return;
-      if (levelsAreaRef.current && levelsAreaRef.current.contains(target)) return;
-      setLevelsPinned(false);
-      setLevelsOpen(false);
+      if (toolbarRef.current && toolbarRef.current.contains(target)) return;
+      openPanel(null);
     };
     const onKeyDown = (ev: KeyboardEvent) => {
-      if (ev.key !== "Escape") return;
-      setLevelsPinned(false);
-      setLevelsOpen(false);
+      if (ev.key === "Escape") openPanel(null);
     };
     window.addEventListener("pointerdown", onPointerDown);
     window.addEventListener("keydown", onKeyDown);
@@ -566,14 +574,11 @@ export default function ImageToolbar({ visible, editor, position = "bottom" }: P
       window.removeEventListener("pointerdown", onPointerDown);
       window.removeEventListener("keydown", onKeyDown);
     };
-  }, [levelsPinned]);
-
-  const cropAreaRef = useRef<HTMLDivElement>(null);
-  const [cropOpen, setCropOpen] = useState(false);
-  const [cropPinned, setCropPinned] = useState(false);
-  const cropCloseTimerRef = useRef<number | null>(null);
+  // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [activePanel]);
 
   const [cropTool, setCropTool] = useState<CropTool>("default");
+  const [bgRemoveLoading, setBgRemoveLoading] = useState(false);
 
   const cropToolMeta: Record<
     CropTool,
@@ -582,14 +587,13 @@ export default function ImageToolbar({ visible, editor, position = "bottom" }: P
     default: { label: "Corte", Icon: Scissors },
     square: { label: "Corte quadrado", Icon: Crop },
     lasso: { label: "Laço", Icon: Lasso },
-    magic: { label: "Varinha mágica", Icon: Wand2 },
     color: { label: "Por cor", Icon: Pipette },
+    magic: { label: "Remover fundo", Icon: Wand2 },
   };
 
   const selectCropTool = (next: CropTool) => {
     setCropTool(next);
-    setCropPinned(false);
-    setCropOpen(false);
+    openPanel(null);
 
     // Corte: entra em modo de preview no Fabric.
     if (next === "square") {
@@ -616,90 +620,53 @@ export default function ImageToolbar({ visible, editor, position = "bottom" }: P
       } catch {}
       return;
     }
-  };
 
-  const cancelCropClose = () => {
-    if (cropCloseTimerRef.current) {
-      window.clearTimeout(cropCloseTimerRef.current);
-      cropCloseTimerRef.current = null;
+    if (next === "magic") {
+      setCropTool("default");
+      setBgRemoveLoading(true);
+      Promise.resolve(editor?.current?.removeBackground?.())
+        .catch(() => {})
+        .finally(() => setBgRemoveLoading(false));
+      return;
     }
   };
 
-  const scheduleCropClose = (delayMs = 180) => {
-    cancelCropClose();
-    cropCloseTimerRef.current = window.setTimeout(() => {
-      cropCloseTimerRef.current = null;
-      if (!cropPinned) setCropOpen(false);
-    }, delayMs);
-  };
-
   useEffect(() => {
-    if (!cropPinned) return;
-
-    const onPointerDown = (ev: PointerEvent) => {
-      const target = ev.target as Node | null;
-      if (!target) return;
-      if (cropAreaRef.current && cropAreaRef.current.contains(target)) return;
-      setCropPinned(false);
-      setCropOpen(false);
-    };
-
-    const onKeyDown = (ev: KeyboardEvent) => {
-      if (ev.key !== "Escape") return;
-      setCropPinned(false);
-      setCropOpen(false);
-    };
-
-    window.addEventListener("pointerdown", onPointerDown);
-    window.addEventListener("keydown", onKeyDown);
     return () => {
-      window.removeEventListener("pointerdown", onPointerDown);
-      window.removeEventListener("keydown", onKeyDown);
+      cancelPanelClose();
+      if (panelUnmountTimerRef.current) window.clearTimeout(panelUnmountTimerRef.current);
     };
-  }, [cropPinned]);
-
-  useEffect(() => {
-    return () => cancelCropClose();
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, []);
 
   const toolbar = (
     <div
-      className="relative flex items-center gap-2 p-2"
+      ref={toolbarRef}
+      className={[
+        "relative flex items-center gap-2 p-2",
+        inlinePushPanels ? "w-full flex-wrap justify-center" : "",
+      ].join(" ")}
       role="toolbar"
       aria-label="Ferramentas de imagem"
     >
-      <div ref={levelsAreaRef} className="contents">
+      <div className="contents">
         <button
           type="button"
           title="Níveis"
           aria-label="Níveis"
           className="h-9 w-9 grid place-items-center rounded-xl border border-black/5 dark:border-white/10 bg-white/80 dark:bg-neutral-900/70 hover:bg-white hover:shadow transition"
-          onMouseEnter={() => {
-            cancelLevelsClose();
-            if (!levelsPinned) setLevelsOpen(true);
-          }}
-          onMouseLeave={() => {
-            if (!levelsPinned) scheduleLevelsClose(LEVELS_CLOSE_DELAY_MS);
-          }}
-          onClick={() => {
-            setLevelsPinned(true);
-            setLevelsOpen(true);
-          }}
+          onMouseEnter={!inlinePushPanels ? () => { cancelPanelClose(); setActivePanel("levels"); } : undefined}
+          onMouseLeave={!inlinePushPanels ? () => schedulePanelClose(LEVELS_CLOSE_DELAY_MS) : undefined}
+          onClick={() => togglePanel("levels")}
         >
           <SlidersHorizontal className="h-4 w-4" />
         </button>
 
-        {levelsOpen && (
+        {!inlinePushPanels && levelsOpen && (
           <div
             className="absolute bottom-full mb-2 left-1/2 -translate-x-1/2 z-30"
-            onMouseEnter={() => {
-              cancelLevelsClose();
-              if (!levelsPinned) setLevelsOpen(true);
-            }}
-            onMouseLeave={() => {
-              if (!levelsPinned) scheduleLevelsClose(LEVELS_CLOSE_DELAY_MS);
-            }}
+            onMouseEnter={cancelPanelClose}
+            onMouseLeave={() => schedulePanelClose(LEVELS_CLOSE_DELAY_MS)}
           >
             <div className="w-[760px] max-w-[95vw]">
               <div className="relative">
@@ -1099,7 +1066,6 @@ export default function ImageToolbar({ visible, editor, position = "bottom" }: P
       </div>
 
       <div
-        ref={cropAreaRef}
         className="contents"
       >
         <button
@@ -1107,17 +1073,9 @@ export default function ImageToolbar({ visible, editor, position = "bottom" }: P
           title={cropToolMeta[cropTool].label}
           aria-label={cropToolMeta[cropTool].label}
           className="h-9 w-9 grid place-items-center rounded-xl border border-black/5 dark:border-white/10 bg-white/80 dark:bg-neutral-900/70 hover:bg-white hover:shadow transition"
-          onMouseEnter={() => {
-            cancelCropClose();
-            if (!cropPinned) setCropOpen(true);
-          }}
-          onMouseLeave={() => {
-            if (!cropPinned) scheduleCropClose();
-          }}
-          onClick={() => {
-            setCropPinned(true);
-            setCropOpen(true);
-          }}
+          onMouseEnter={!inlinePushPanels ? () => { cancelPanelClose(); setActivePanel("crop"); } : undefined}
+          onMouseLeave={!inlinePushPanels ? () => schedulePanelClose() : undefined}
+          onClick={() => togglePanel("crop")}
         >
           <span className="grid place-items-center">
             {/** key força re-mount e anima quando trocar */}
@@ -1133,16 +1091,11 @@ export default function ImageToolbar({ visible, editor, position = "bottom" }: P
           </span>
         </button>
 
-        {cropOpen && (
+        {!inlinePushPanels && cropOpen && (
           <div
             className="absolute bottom-full mb-2 left-1/2 -translate-x-1/2 z-30"
-            onMouseEnter={() => {
-              cancelCropClose();
-              if (!cropPinned) setCropOpen(true);
-            }}
-            onMouseLeave={() => {
-              if (!cropPinned) scheduleCropClose();
-            }}
+            onMouseEnter={cancelPanelClose}
+            onMouseLeave={() => schedulePanelClose()}
           >
             <div className="rounded-2xl border border-black/10 dark:border-white/10 bg-white/80 dark:bg-neutral-900/70 p-2 shadow-sm">
               <div className="flex items-center gap-2">
@@ -1168,22 +1121,30 @@ export default function ImageToolbar({ visible, editor, position = "bottom" }: P
 
                 <button
                   type="button"
-                  title="Varinha mágica"
-                  aria-label="Varinha mágica"
-                  className="h-9 w-9 grid place-items-center rounded-xl border border-black/5 dark:border-white/10 bg-white/80 dark:bg-neutral-900/70 hover:bg-white hover:shadow transition"
-                  onClick={() => selectCropTool("magic")}
-                >
-                  <Wand2 className="h-4 w-4" />
-                </button>
-
-                <button
-                  type="button"
                   title="Por cor"
                   aria-label="Por cor"
                   className="h-9 w-9 grid place-items-center rounded-xl border border-black/5 dark:border-white/10 bg-white/80 dark:bg-neutral-900/70 hover:bg-white hover:shadow transition"
                   onClick={() => selectCropTool("color")}
                 >
                   <Pipette className="h-4 w-4" />
+                </button>
+
+                <button
+                  type="button"
+                  title="Remover fundo (IA)"
+                  aria-label="Remover fundo"
+                  disabled={bgRemoveLoading}
+                  className="h-9 w-9 grid place-items-center rounded-xl border border-black/5 dark:border-white/10 bg-white/80 dark:bg-neutral-900/70 hover:bg-white hover:shadow transition disabled:opacity-50 disabled:cursor-wait"
+                  onClick={() => selectCropTool("magic")}
+                >
+                  {bgRemoveLoading ? (
+                    <svg className="h-4 w-4 animate-spin" viewBox="0 0 24 24" fill="none">
+                      <circle className="opacity-25" cx="12" cy="12" r="10" stroke="currentColor" strokeWidth="4" />
+                      <path className="opacity-75" fill="currentColor" d="M4 12a8 8 0 018-8v8z" />
+                    </svg>
+                  ) : (
+                    <Wand2 className="h-4 w-4" />
+                  )}
                 </button>
               </div>
             </div>
@@ -1193,13 +1154,9 @@ export default function ImageToolbar({ visible, editor, position = "bottom" }: P
 
       {/* Botão Efeitos com menu horizontal */}
       <div
-        ref={effectsAreaRef}
-        className="relative"
-        onMouseEnter={() => {
-          cancelEffectsClose();
-          setEffectsOpen(true);
-        }}
-        onMouseLeave={() => scheduleEffectsClose(520)}
+        className={!inlinePushPanels ? "relative" : "contents"}
+        onMouseEnter={!inlinePushPanels ? () => { cancelPanelClose(); setActivePanel("effects"); } : undefined}
+        onMouseLeave={!inlinePushPanels ? () => schedulePanelClose(520) : undefined}
       >
         <button
           type="button"
@@ -1210,19 +1167,16 @@ export default function ImageToolbar({ visible, editor, position = "bottom" }: P
               ? "border-violet-400 bg-violet-50 dark:bg-violet-900/30 shadow"
               : "border-black/5 dark:border-white/10 bg-white/80 dark:bg-neutral-900/70 hover:bg-white hover:shadow"
           }`}
-          onClick={() => {
-            setEffectsOpen((v) => !v);
-            setEffectsPinned((p) => !p);
-          }}
+          onClick={() => togglePanel("effects")}
         >
           <Sparkles className="h-4 w-4" />
         </button>
 
-        {effectsOpen && (
+        {!inlinePushPanels && effectsOpen && (
           <div
             className="absolute bottom-full left-1/2 -translate-x-1/2 mb-2 z-50"
-            onMouseEnter={cancelEffectsClose}
-            onMouseLeave={() => scheduleEffectsClose(520)}
+            onMouseEnter={cancelPanelClose}
+            onMouseLeave={() => schedulePanelClose(520)}
           >
             <div className="bg-white/95 dark:bg-neutral-900/95 backdrop-blur-md rounded-xl shadow-xl border border-black/10 dark:border-white/10 p-3">
               {/* Header com título e toggle bucket/brush/lasso */}
@@ -1449,6 +1403,250 @@ export default function ImageToolbar({ visible, editor, position = "bottom" }: P
       <IconBtn title="Deformação">
         <Waves className="h-4 w-4" />
       </IconBtn>
+
+      {/* Área animada para painéis em modo inline — expande abaixo dos botões */}
+      {inlinePushPanels && (
+        <div
+          className="basis-full overflow-hidden"
+          style={{
+            maxHeight: inlinePanelVisible ? "700px" : "0px",
+            opacity: inlinePanelVisible ? 1 : 0,
+            transition:
+              "max-height 320ms cubic-bezier(0.4,0,0.2,1), opacity 200ms ease",
+            pointerEvents: inlinePanelVisible ? "auto" : "none",
+          }}
+        >
+          <div className="pb-3">
+            {displayedPanel === "levels" && (
+              <div className="mt-3 flex justify-center">
+                <div className="w-[760px] max-w-[95vw]">
+                  <div className="relative">
+                    <div
+                      ref={levelsScrollRef}
+                      style={{
+                        WebkitMaskImage: getLevelsMask(),
+                        maskImage: getLevelsMask(),
+                        WebkitMaskRepeat: "no-repeat",
+                        maskRepeat: "no-repeat",
+                        WebkitMaskSize: "100% 100%",
+                        maskSize: "100% 100%",
+                      }}
+                      className={[
+                        "flex items-stretch gap-3 overflow-x-auto pb-2",
+                        "[scrollbar-width:thin] [scrollbar-color:rgba(0,0,0,0.25)_transparent] dark:[scrollbar-color:rgba(255,255,255,0.20)_transparent]",
+                        "[&::-webkit-scrollbar]:h-2",
+                        "[&::-webkit-scrollbar-track]:bg-transparent",
+                        "[&::-webkit-scrollbar-thumb]:rounded-full",
+                        "[&::-webkit-scrollbar-thumb]:bg-black/20",
+                        "dark:[&::-webkit-scrollbar-thumb]:bg-white/20",
+                      ].join(" ")}
+                      onScroll={updateLevelsScrollState}
+                    >
+                    {/* Luz / Tons */}
+                    <div className="shrink-0 w-[180px] rounded-xl border border-black/10 dark:border-white/10 bg-white/70 dark:bg-neutral-900/70 px-3 py-2">
+                      <div className="flex flex-col items-center gap-2">
+                        <Sun className="h-7 w-7" />
+                        <div className="text-xs opacity-80">Brilho</div>
+                        <div className="w-full relative">
+                          <Tip show={activeSliderTip === "brightness"} leftPercent={tipLeftPercent(brightness, 0, 200)} text={`${brightness}%`} />
+                          <Slider value={[brightness]} min={0} max={200} step={1} onValueChange={(v) => setBrightness(v[0] ?? 100)} onPointerDownCapture={(ev) => { const t = ev.target as HTMLElement | null; if (t?.getAttribute("role") === "slider") setActiveSliderTip("brightness"); }} />
+                        </div>
+                      </div>
+                    </div>
+                    <div className="shrink-0 w-[180px] rounded-xl border border-black/10 dark:border-white/10 bg-white/70 dark:bg-neutral-900/70 px-3 py-2">
+                      <div className="flex flex-col items-center gap-2">
+                        <Contrast className="h-7 w-7" />
+                        <div className="text-xs opacity-80">Contraste</div>
+                        <div className="w-full relative">
+                          <Tip show={activeSliderTip === "contrast"} leftPercent={tipLeftPercent(contrast, 0, 200)} text={`${contrast}%`} />
+                          <Slider value={[contrast]} min={0} max={200} step={1} onValueChange={(v) => setContrast(v[0] ?? 100)} onPointerDownCapture={(ev) => { const t = ev.target as HTMLElement | null; if (t?.getAttribute("role") === "slider") setActiveSliderTip("contrast"); }} />
+                        </div>
+                      </div>
+                    </div>
+                    <div className="shrink-0 w-[180px] rounded-xl border border-black/10 dark:border-white/10 bg-white/70 dark:bg-neutral-900/70 px-3 py-2">
+                      <div className="flex flex-col items-center gap-2">
+                        <Sun className="h-7 w-7" />
+                        <div className="text-xs opacity-80">Altas-luzes</div>
+                        <div className="w-full relative">
+                          <Tip show={activeSliderTip === "highlights"} leftPercent={tipLeftPercent(highlights, -100, 100)} text={`${highlights > 0 ? "+" : ""}${highlights}`} />
+                          <Slider value={[highlights]} min={-100} max={100} step={1} onValueChange={(v) => setHighlights(v[0] ?? 0)} onPointerDownCapture={(ev) => { const t = ev.target as HTMLElement | null; if (t?.getAttribute("role") === "slider") setActiveSliderTip("highlights"); }} />
+                        </div>
+                      </div>
+                    </div>
+                    <div className="shrink-0 w-[180px] rounded-xl border border-black/10 dark:border-white/10 bg-white/70 dark:bg-neutral-900/70 px-3 py-2">
+                      <div className="flex flex-col items-center gap-2">
+                        <CircleDot className="h-7 w-7" />
+                        <div className="text-xs opacity-80">Sombras</div>
+                        <div className="w-full relative">
+                          <Tip show={activeSliderTip === "shadows"} leftPercent={tipLeftPercent(shadows, -100, 100)} text={`${shadows > 0 ? "+" : ""}${shadows}`} />
+                          <Slider value={[shadows]} min={-100} max={100} step={1} onValueChange={(v) => setShadows(v[0] ?? 0)} onPointerDownCapture={(ev) => { const t = ev.target as HTMLElement | null; if (t?.getAttribute("role") === "slider") setActiveSliderTip("shadows"); }} />
+                        </div>
+                      </div>
+                    </div>
+                    <div className="shrink-0 w-[180px] rounded-xl border border-black/10 dark:border-white/10 bg-white/70 dark:bg-neutral-900/70 px-3 py-2">
+                      <div className="flex flex-col items-center gap-2">
+                        <CircleDot className="h-7 w-7" />
+                        <div className="text-xs opacity-80">Ponto preto</div>
+                        <div className="w-full relative">
+                          <Tip show={activeSliderTip === "blackPoint"} leftPercent={tipLeftPercent(blackPoint, -100, 100)} text={`${blackPoint > 0 ? "+" : ""}${blackPoint}`} />
+                          <Slider value={[blackPoint]} min={-100} max={100} step={1} onValueChange={(v) => setBlackPoint(v[0] ?? 0)} onPointerDownCapture={(ev) => { const t = ev.target as HTMLElement | null; if (t?.getAttribute("role") === "slider") setActiveSliderTip("blackPoint"); }} />
+                        </div>
+                      </div>
+                    </div>
+                    <div className="shrink-0 w-[180px] rounded-xl border border-black/10 dark:border-white/10 bg-white/70 dark:bg-neutral-900/70 px-3 py-2">
+                      <div className="flex flex-col items-center gap-2">
+                        <Droplets className="h-7 w-7" />
+                        <div className="text-xs opacity-80">Saturação</div>
+                        <div className="w-full relative">
+                          <Tip show={activeSliderTip === "saturation"} leftPercent={tipLeftPercent(saturation, 0, 200)} text={`${saturation}%`} />
+                          <Slider value={[saturation]} min={0} max={200} step={1} onValueChange={(v) => setSaturation(v[0] ?? 100)} onPointerDownCapture={(ev) => { const t = ev.target as HTMLElement | null; if (t?.getAttribute("role") === "slider") setActiveSliderTip("saturation"); }} />
+                        </div>
+                      </div>
+                    </div>
+                    <div className="shrink-0 w-[180px] rounded-xl border border-black/10 dark:border-white/10 bg-white/70 dark:bg-neutral-900/70 px-3 py-2">
+                      <div className="flex flex-col items-center gap-2">
+                        <Palette className="h-7 w-7" />
+                        <div className="text-xs opacity-80">Calidez</div>
+                        <div className="w-full relative">
+                          <Tip show={activeSliderTip === "warmth"} leftPercent={tipLeftPercent(warmth, -100, 100)} text={`${warmth > 0 ? "+" : ""}${warmth}`} />
+                          <Slider value={[warmth]} min={-100} max={100} step={1} onValueChange={(v) => setWarmth(v[0] ?? 0)} onPointerDownCapture={(ev) => { const t = ev.target as HTMLElement | null; if (t?.getAttribute("role") === "slider") setActiveSliderTip("warmth"); }} />
+                        </div>
+                      </div>
+                    </div>
+                    <div className="shrink-0 w-[180px] rounded-xl border border-black/10 dark:border-white/10 bg-white/70 dark:bg-neutral-900/70 px-3 py-2">
+                      <div className="flex flex-col items-center gap-2">
+                        <Palette className="h-7 w-7" />
+                        <div className="text-xs opacity-80">Tonalidade</div>
+                        <div className="w-full relative">
+                          <Tip show={activeSliderTip === "tint"} leftPercent={tipLeftPercent(tint, -100, 100)} text={`${tint > 0 ? "+" : ""}${tint}`} />
+                          <Slider value={[tint]} min={-100} max={100} step={1} onValueChange={(v) => setTint(v[0] ?? 0)} onPointerDownCapture={(ev) => { const t = ev.target as HTMLElement | null; if (t?.getAttribute("role") === "slider") setActiveSliderTip("tint"); }} />
+                        </div>
+                      </div>
+                    </div>
+                    <div className="shrink-0 w-[180px] rounded-xl border border-black/10 dark:border-white/10 bg-white/70 dark:bg-neutral-900/70 px-3 py-2">
+                      <div className="flex flex-col items-center gap-2">
+                        <Wand2 className="h-7 w-7" />
+                        <div className="text-xs opacity-80">Matiz</div>
+                        <div className="w-full relative">
+                          <Tip show={activeSliderTip === "hue"} leftPercent={tipLeftPercent(hue, 0, 360)} text={`${hue}°`} />
+                          <Slider value={[hue]} min={0} max={360} step={1} onValueChange={(v) => setHue(v[0] ?? 0)} onPointerDownCapture={(ev) => { const t = ev.target as HTMLElement | null; if (t?.getAttribute("role") === "slider") setActiveSliderTip("hue"); }} />
+                        </div>
+                      </div>
+                    </div>
+                    <div className="shrink-0 w-[180px] rounded-xl border border-black/10 dark:border-white/10 bg-white/70 dark:bg-neutral-900/70 px-3 py-2">
+                      <div className="flex flex-col items-center gap-2">
+                        <Contrast className="h-7 w-7" />
+                        <div className="text-xs opacity-80">Definição</div>
+                        <div className="w-full relative">
+                          <Tip show={activeSliderTip === "definition"} leftPercent={tipLeftPercent(definition, -100, 100)} text={`${definition > 0 ? "+" : ""}${definition}`} />
+                          <Slider value={[definition]} min={-100} max={100} step={1} onValueChange={(v) => setDefinition(v[0] ?? 0)} onPointerDownCapture={(ev) => { const t = ev.target as HTMLElement | null; if (t?.getAttribute("role") === "slider") setActiveSliderTip("definition"); }} />
+                        </div>
+                      </div>
+                    </div>
+                    <div className="shrink-0 w-[180px] rounded-xl border border-black/10 dark:border-white/10 bg-white/70 dark:bg-neutral-900/70 px-3 py-2">
+                      <div className="flex flex-col items-center gap-2">
+                        <Sparkles className="h-7 w-7" />
+                        <div className="text-xs opacity-80">Nitidez</div>
+                        <div className="w-full relative">
+                          <Tip show={activeSliderTip === "sharpness"} leftPercent={tipLeftPercent(sharpness, 0, 100)} text={`${sharpness}`} />
+                          <Slider value={[sharpness]} min={0} max={100} step={1} onValueChange={(v) => setSharpness(v[0] ?? 0)} onPointerDownCapture={(ev) => { const t = ev.target as HTMLElement | null; if (t?.getAttribute("role") === "slider") setActiveSliderTip("sharpness"); }} />
+                        </div>
+                      </div>
+                    </div>
+                    <div className="shrink-0 w-[180px] rounded-xl border border-black/10 dark:border-white/10 bg-white/70 dark:bg-neutral-900/70 px-3 py-2">
+                      <div className="flex flex-col items-center gap-2">
+                        <CircleDot className="h-7 w-7" />
+                        <div className="text-xs opacity-80">Cinza</div>
+                        <div className="w-full relative">
+                          <Tip show={activeSliderTip === "grayscale"} leftPercent={tipLeftPercent(grayscale, 0, 100)} text={`${grayscale}%`} />
+                          <Slider value={[grayscale]} min={0} max={100} step={1} onValueChange={(v) => setGrayscale(v[0] ?? 0)} onPointerDownCapture={(ev) => { const t = ev.target as HTMLElement | null; if (t?.getAttribute("role") === "slider") setActiveSliderTip("grayscale"); }} />
+                        </div>
+                      </div>
+                    </div>
+                    <div className="shrink-0 w-[180px] rounded-xl border border-black/10 dark:border-white/10 bg-white/70 dark:bg-neutral-900/70 px-3 py-2">
+                      <div className="flex flex-col items-center gap-2">
+                        <Palette className="h-7 w-7" />
+                        <div className="text-xs opacity-80">Sépia</div>
+                        <div className="w-full relative">
+                          <Tip show={activeSliderTip === "sepia"} leftPercent={tipLeftPercent(sepia, 0, 100)} text={`${sepia}%`} />
+                          <Slider value={[sepia]} min={0} max={100} step={1} onValueChange={(v) => setSepia(v[0] ?? 0)} onPointerDownCapture={(ev) => { const t = ev.target as HTMLElement | null; if (t?.getAttribute("role") === "slider") setActiveSliderTip("sepia"); }} />
+                        </div>
+                      </div>
+                    </div>
+                    </div>
+                    {/* Setas flutuantes */}
+                    <button type="button" aria-label="Rolar para a esquerda" className={["absolute left-1 top-1/2 -translate-y-1/2 z-10","h-8 w-8 grid place-items-center rounded-full border border-black/10 dark:border-white/10","bg-background/80 backdrop-blur supports-[backdrop-filter]:bg-background/70","shadow-sm transition",canScrollLeft ? "opacity-100" : "opacity-0 pointer-events-none"].join(" ")} onClick={() => { const el = levelsScrollRef.current; if (!el) return; el.scrollBy({ left: -260, behavior: "smooth" }); }}><ChevronLeft className="h-4 w-4" /></button>
+                    <button type="button" aria-label="Rolar para a direita" className={["absolute right-1 top-1/2 -translate-y-1/2 z-10","h-8 w-8 grid place-items-center rounded-full border border-black/10 dark:border-white/10","bg-background/80 backdrop-blur supports-[backdrop-filter]:bg-background/70","shadow-sm transition",canScrollRight ? "opacity-100" : "opacity-0 pointer-events-none"].join(" ")} onClick={() => { const el = levelsScrollRef.current; if (!el) return; el.scrollBy({ left: 260, behavior: "smooth" }); }}><ChevronRight className="h-4 w-4" /></button>
+                  </div>
+                </div>
+              </div>
+            )}
+
+            {displayedPanel === "crop" && (
+              <div className="mt-3 flex justify-center">
+                <div className="rounded-2xl border border-black/10 dark:border-white/10 bg-white/80 dark:bg-neutral-900/70 p-2 shadow-sm">
+                  <div className="flex items-center gap-2">
+                    <button type="button" title="Corte quadrado" aria-label="Corte quadrado" className="h-9 w-9 grid place-items-center rounded-xl border border-black/5 dark:border-white/10 bg-white/80 dark:bg-neutral-900/70 hover:bg-white hover:shadow transition" onClick={() => selectCropTool("square")}><Crop className="h-4 w-4" /></button>
+                    <button type="button" title="Laço" aria-label="Laço" className="h-9 w-9 grid place-items-center rounded-xl border border-black/5 dark:border-white/10 bg-white/80 dark:bg-neutral-900/70 hover:bg-white hover:shadow transition" onClick={() => selectCropTool("lasso")}><Lasso className="h-4 w-4" /></button>
+                    <button type="button" title="Por cor" aria-label="Por cor" className="h-9 w-9 grid place-items-center rounded-xl border border-black/5 dark:border-white/10 bg-white/80 dark:bg-neutral-900/70 hover:bg-white hover:shadow transition" onClick={() => selectCropTool("color")}><Pipette className="h-4 w-4" /></button>
+                    <button type="button" title="Remover fundo (IA)" aria-label="Remover fundo" disabled={bgRemoveLoading} className="h-9 w-9 grid place-items-center rounded-xl border border-black/5 dark:border-white/10 bg-white/80 dark:bg-neutral-900/70 hover:bg-white hover:shadow transition disabled:opacity-50 disabled:cursor-wait" onClick={() => selectCropTool("magic")}>{bgRemoveLoading ? (<svg className="h-4 w-4 animate-spin" viewBox="0 0 24 24" fill="none"><circle className="opacity-25" cx="12" cy="12" r="10" stroke="currentColor" strokeWidth="4" /><path className="opacity-75" fill="currentColor" d="M4 12a8 8 0 018-8v8z" /></svg>) : (<Wand2 className="h-4 w-4" />)}</button>
+                  </div>
+                </div>
+              </div>
+            )}
+
+            {displayedPanel === "effects" && (
+              <div className="mt-3 flex justify-center">
+                <div className="bg-white/95 dark:bg-neutral-900/95 backdrop-blur-md rounded-xl shadow-xl border border-black/10 dark:border-white/10 p-3">
+                  <div className="flex items-center justify-between mb-2 px-1">
+                    <div className="text-xs font-medium text-muted-foreground">Efeitos</div>
+                    <div className="flex items-center gap-1 bg-black/5 dark:bg-white/5 rounded-lg p-0.5">
+                      <button type="button" title="Balde (aplicar em toda imagem)" className={`h-7 w-7 grid place-items-center rounded-md transition ${effectMode === "bucket" ? "bg-white dark:bg-neutral-800 shadow-sm" : "hover:bg-white/50 dark:hover:bg-white/10"}`} onClick={() => { setEffectMode("bucket"); editor?.current?.cancelEffectBrush?.(); editor?.current?.cancelEffectLasso?.(); if (effectKind !== "none") applyEffect(effectKind, effectAmount); }}><PaintBucket className="h-3.5 w-3.5" /></button>
+                      <button type="button" title="Pincel (aplicar por área)" className={`h-7 w-7 grid place-items-center rounded-md transition ${effectMode === "brush" ? "bg-white dark:bg-neutral-800 shadow-sm" : "hover:bg-white/50 dark:hover:bg-white/10"}`} onClick={() => { setEffectMode("brush"); editor?.current?.cancelEffectLasso?.(); }}><Paintbrush className="h-3.5 w-3.5" /></button>
+                      <button type="button" title="Laço (aplicar por área)" className={`h-7 w-7 grid place-items-center rounded-md transition ${effectMode === "lasso" ? "bg-white dark:bg-neutral-800 shadow-sm" : "hover:bg-white/50 dark:hover:bg-white/10"}`} onClick={() => { setEffectMode("lasso"); editor?.current?.cancelEffectBrush?.(); }}><Lasso className="h-3.5 w-3.5" /></button>
+                    </div>
+                  </div>
+                  <div className="mt-2 px-1 flex flex-wrap gap-1">
+                    {EFFECT_LIBRARY.map((cat) => (
+                      <button key={cat.id} type="button" className={`px-3 h-7 rounded-full text-xs border transition ${effectCategory === cat.id ? "border-violet-400 bg-violet-50 dark:bg-violet-900/30 text-violet-700 dark:text-violet-200" : "border-black/10 dark:border-white/10 bg-white/70 dark:bg-neutral-900/70 hover:bg-white dark:hover:bg-neutral-800"}`} onClick={() => { setEffectCategory(cat.id); const hasCurrent = cat.presets.some((p) => p.kind === effectKind) || effectKind === "none"; if (!hasCurrent && cat.presets.length > 0) { handleEffectKindChange(cat.presets[0].kind); } requestAnimationFrame(updateEffectsScrollState); }}>{cat.label}</button>
+                    ))}
+                  </div>
+                  <div className="relative">
+                    {canScrollEffectsLeft && (<button type="button" className="absolute left-0 top-1/2 -translate-y-1/2 z-10 h-8 w-8 grid place-items-center rounded-full bg-white/90 dark:bg-neutral-800/90 shadow border border-black/10 dark:border-white/10" onClick={() => { const el = effectsScrollRef.current; if (el) { el.scrollBy({ left: -160, behavior: "smooth" }); setTimeout(updateEffectsScrollState, 200); } }}><ChevronLeft className="h-4 w-4" /></button>)}
+                    {canScrollEffectsRight && (<button type="button" className="absolute right-0 top-1/2 -translate-y-1/2 z-10 h-8 w-8 grid place-items-center rounded-full bg-white/90 dark:bg-neutral-800/90 shadow border border-black/10 dark:border-white/10" onClick={() => { const el = effectsScrollRef.current; if (el) { el.scrollBy({ left: 160, behavior: "smooth" }); setTimeout(updateEffectsScrollState, 200); } }}><ChevronRight className="h-4 w-4" /></button>)}
+                    <div ref={effectsScrollRef} className="flex gap-2 overflow-x-auto scrollbar-hide px-1 py-1" style={{ maskImage: getEffectsMask(), WebkitMaskImage: getEffectsMask(), maxWidth: "min(600px, 80vw)" }} onScroll={updateEffectsScrollState} onLoad={() => requestAnimationFrame(updateEffectsScrollState)}>
+                      {visibleEffectPresets.map((preset) => (
+                        <button key={preset.kind} type="button" title={preset.label} className={`shrink-0 flex flex-col items-center justify-center gap-1 w-[72px] py-2 rounded-xl border transition ${effectKind === preset.kind ? "border-violet-400 bg-violet-50 dark:bg-violet-900/30 ring-1 ring-violet-400" : "border-black/10 dark:border-white/10 bg-white/70 dark:bg-neutral-900/70 hover:bg-white dark:hover:bg-neutral-800"}`} onClick={() => handleEffectKindChange(preset.kind)}>
+                          <span className="text-xl">{preset.icon}</span>
+                          <span className="text-[10px] text-muted-foreground">{preset.label}</span>
+                        </button>
+                      ))}
+                    </div>
+                  </div>
+                  {effectKind !== "none" && (
+                    <div className="mt-3 px-1">
+                      <div className="flex items-center gap-3">
+                        <div className="flex items-center gap-2 shrink-0"><Sparkles className="h-4 w-4 opacity-60" /><span className="text-xs text-muted-foreground">Intensidade</span></div>
+                        <div className="flex-1 relative"><Tip show={activeSliderTip === "effectAmount"} leftPercent={effectAmount} text={`${effectAmount}%`} /><Slider min={0} max={100} step={1} value={[effectAmount]} onValueChange={([val]) => handleEffectAmountChange(val)} onPointerDownCapture={() => setActiveSliderTip("effectAmount")} className="w-full" /></div>
+                        <span className="text-xs text-muted-foreground w-8 text-right">{effectAmount}%</span>
+                      </div>
+                    </div>
+                  )}
+                  {effectMode === "brush" && (
+                    <div className="mt-3 px-1">
+                      <div className="flex items-center gap-3">
+                        <div className="flex items-center gap-2 shrink-0"><Paintbrush className="h-4 w-4 opacity-60" /><span className="text-xs text-muted-foreground">Tamanho</span></div>
+                        <div className="flex-1 relative"><Tip show={activeSliderTip === "effectBrushSize"} leftPercent={tipLeftPercent(effectBrushSize, 5, 200)} text={`${effectBrushSize}px`} /><Slider min={5} max={200} step={1} value={[effectBrushSize]} onValueChange={([val]) => setEffectBrushSize(val)} onPointerDownCapture={() => setActiveSliderTip("effectBrushSize")} className="w-full" /></div>
+                        <span className="text-xs text-muted-foreground w-10 text-right">{effectBrushSize}px</span>
+                      </div>
+                    </div>
+                  )}
+                </div>
+              </div>
+            )}
+          </div>
+        </div>
+      )}
     </div>
   );
 

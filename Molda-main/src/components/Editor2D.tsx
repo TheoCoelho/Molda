@@ -232,6 +232,9 @@ export type Editor2DHandle = {
   isColorCutActive?: () => boolean;
   onColorCutModeChange?: (cb: (active: boolean) => void) => void;
 
+  // ==== Remoção de fundo por IA ====
+  removeBackground?: () => Promise<void>;
+
   toJSON: () => string;
   loadFromJSON: (json: string) => Promise<void>;
   deleteSelection: () => void;
@@ -10803,6 +10806,94 @@ const Editor2D = forwardRef<Editor2DHandle, Props>(function Editor2D(
     isColorCutActive,
     onColorCutModeChange: (cb) => {
       colorCutModeListenersRef.current.add(cb);
+    },
+    removeBackground: async () => {
+      const c: any = canvasRef.current;
+      if (!c) return;
+
+      const imgs = getSelectedImageObjects();
+      if (imgs.length !== 1) {
+        console.warn("[removeBackground] Selecione exatamente 1 imagem.");
+        return;
+      }
+      const img = imgs[0];
+
+      try {
+        // Lazy load: só baixa o módulo quando o usuário usar a ferramenta
+        const { removeBackground: imglyRemoveBg } = await import("@imgly/background-removal");
+
+        // Pega o elemento HTML já carregado pelo Fabric — evita fetch/CORS
+        const el: HTMLImageElement | null =
+          img._originalElement || img._element || null;
+
+        let blob: Blob | null = null;
+
+        if (el) {
+          // Abordagem 1: desenha o elemento no canvas offscreen → blob PNG
+          // Funciona com data URLs, object URLs e qualquer origem carregada com crossOrigin
+          const w = el.naturalWidth || (el as any).width || 512;
+          const h = el.naturalHeight || (el as any).height || 512;
+          const offscreen = document.createElement("canvas");
+          offscreen.width = w;
+          offscreen.height = h;
+          const ctx2d = offscreen.getContext("2d");
+          if (ctx2d) {
+            try {
+              ctx2d.drawImage(el, 0, 0);
+              blob = await new Promise<Blob | null>((res) => {
+                offscreen.toBlob((b) => res(b), "image/png");
+              });
+            } catch {
+              // canvas tainted — tenta pelo src abaixo
+            }
+          }
+        }
+
+        // Abordagem 2 (fallback): usa o src da imagem
+        if (!blob) {
+          const src: string | undefined =
+            (img as any).__moldaOriginalSrc ||
+            (typeof img?.getSrc === "function" ? img.getSrc() : undefined) ||
+            img?._originalElement?.src ||
+            img?._element?.src;
+          if (!src) {
+            console.error("[removeBackground] Sem src acessível na imagem.");
+            return;
+          }
+          const res = await fetch(src);
+          blob = await res.blob();
+        }
+
+        const resultBlob = await imglyRemoveBg(blob, {
+          model: "large", // isnet — melhor qualidade, maior precisão em objetos complexos
+          output: { format: "image/png", quality: 1 },
+        });
+
+        const dataUrl = await new Promise<string>((resolve, reject) => {
+          const reader = new FileReader();
+          reader.onload = () => resolve(reader.result as string);
+          reader.onerror = reject;
+          reader.readAsDataURL(resultBlob);
+        });
+
+        await new Promise<void>((resolve) => {
+          img.setSrc(
+            dataUrl,
+            () => {
+              // Garante que o boundingBox está correto após troca de src
+              try { img.setCoords?.(); } catch { }
+              try { c.requestRenderAll?.(); } catch { }
+              resolve();
+            },
+            { crossOrigin: "anonymous" }
+          );
+        });
+
+        historyRef.current?.push("removeBackground");
+        emitHistory();
+      } catch (err) {
+        console.error("[removeBackground] falhou:", err);
+      }
     },
     onCropModeChange: (cb) => {
       cropModeListenersRef.current.add(cb);
