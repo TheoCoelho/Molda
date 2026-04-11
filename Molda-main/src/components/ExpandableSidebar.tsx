@@ -5,6 +5,7 @@ import { Input } from "../components/ui/input";
 import { Label } from "../components/ui/label";
 import { Textarea } from "../components/ui/textarea";
 import UploadGallery from "../components/UploadGallery";
+import DesignFinder from "../components/DesignFinder";
 import { useRecentFonts } from "../hooks/use-recent-fonts";
 import {
   Settings,
@@ -322,6 +323,7 @@ const ExpandableSidebar: React.FC<ExpandableSidebarProps> = (props) => {
 
   const [isExpanded, setIsExpanded] = useState(true);
   const [activeSection, setActiveSection] = useState<SectionId>("settings");
+  const [uploadSubTab, setUploadSubTab] = useState<"encontrar" | "adicionar">("encontrar");
 
   useEffect(() => onExpandChange?.(isExpanded), [isExpanded, onExpandChange]);
 
@@ -410,22 +412,57 @@ const ExpandableSidebar: React.FC<ExpandableSidebarProps> = (props) => {
               />
             )}
             {activeSection === "upload" && (
-              <UploadGallery
-                onImageInsert={(src, opts) => {
-                  console.log(`[ExpandableSidebar] Image inserted, current tool: ${tool}`);
-                  // Desativar ferramentas de desenho quando inserir imagem
-                  if (tool !== "select" && tool !== "text") {
-                    console.log(`[ExpandableSidebar] Deactivating tool ${tool} -> select on image insert (this should reset cursor)`);
-                    setTool("select");
-                  } else {
-                    console.log(`[ExpandableSidebar] Tool is already ${tool}, no need to change`);
-                  }
+              <div className="flex flex-col gap-3">
+                {/* Sub-tabs */}
+                <div className="flex gap-1 rounded-xl bg-black/5 dark:bg-white/5 p-1 shrink-0">
+                  <button
+                    type="button"
+                    onClick={() => setUploadSubTab("encontrar")}
+                    className={`flex-1 rounded-lg py-1.5 text-xs font-medium transition ${
+                      uploadSubTab === "encontrar"
+                        ? "bg-white dark:bg-white/15 shadow-sm text-black dark:text-white"
+                        : "text-black/50 dark:text-white/50 hover:text-black dark:hover:text-white"
+                    }`}
+                  >
+                    Encontrar
+                  </button>
+                  <button
+                    type="button"
+                    onClick={() => setUploadSubTab("adicionar")}
+                    className={`flex-1 rounded-lg py-1.5 text-xs font-medium transition ${
+                      uploadSubTab === "adicionar"
+                        ? "bg-white dark:bg-white/15 shadow-sm text-black dark:text-white"
+                        : "text-black/50 dark:text-white/50 hover:text-black dark:hover:text-white"
+                    }`}
+                  >
+                    Adicionar
+                  </button>
+                </div>
 
-                  // Call the original onImageInsert (which adds to canvas and should trigger cancelContinuousLine)
-                  onImageInsert?.(src, opts);
-                  onImageInserted?.();
-                }}
-              />
+                {uploadSubTab === "encontrar" ? (
+                  <DesignFinder
+                    onImageInsert={(src, opts) => {
+                      if (tool !== "select" && tool !== "text") setTool("select");
+                      onImageInsert?.(src, opts);
+                      onImageInserted?.();
+                    }}
+                  />
+                ) : (
+                  <UploadGallery
+                    onImageInsert={(src, opts) => {
+                      console.log(`[ExpandableSidebar] Image inserted, current tool: ${tool}`);
+                      if (tool !== "select" && tool !== "text") {
+                        console.log(`[ExpandableSidebar] Deactivating tool ${tool} -> select on image insert (this should reset cursor)`);
+                        setTool("select");
+                      } else {
+                        console.log(`[ExpandableSidebar] Tool is already ${tool}, no need to change`);
+                      }
+                      onImageInsert?.(src, opts);
+                      onImageInserted?.();
+                    }}
+                  />
+                )}
+              </div>
             )}
             {activeSection === "brush" && (
               <BrushSectionAccordion
