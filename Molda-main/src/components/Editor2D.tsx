@@ -476,6 +476,62 @@ function loadFabricRuntime(): Promise<any> {
 // Storing it at module level allows Ctrl+C on one canvas tab and Ctrl+V on another.
 let _globalFabricClipboard: any = null;
 
+// ── Background-removal Web Worker ───────────────────────────────────────────
+// The singleton worker is created on first use and reused for subsequent calls.
+// Running inference in a Worker ensures the main thread / UI stays responsive.
+let _bgWorker: Worker | null = null;
+let _bgWorkerReqId = 0;
+const _bgWorkerCallbacks = new Map<
+  number,
+  { resolve: (b: Blob) => void; reject: (e: Error) => void }
+>();
+
+function _getOrCreateBgWorker(): Worker {
+  if (!_bgWorker) {
+    _bgWorker = new Worker(
+      new URL("../workers/bg-removal.worker.ts", import.meta.url),
+      { type: "module" }
+    );
+    _bgWorker.onmessage = (e: MessageEvent) => {
+      const { id, ok, buffer, error } = e.data as {
+        id: number;
+        ok: boolean;
+        buffer?: ArrayBuffer;
+        error?: string;
+      };
+      const cb = _bgWorkerCallbacks.get(id);
+      if (!cb) return;
+      _bgWorkerCallbacks.delete(id);
+      if (ok && buffer) {
+        cb.resolve(new Blob([buffer], { type: "image/png" }));
+      } else {
+        cb.reject(new Error(error ?? "unknown worker error"));
+      }
+    };
+    _bgWorker.onerror = () => {
+      for (const cb of _bgWorkerCallbacks.values()) {
+        cb.reject(new Error("bg-removal worker crashed"));
+      }
+      _bgWorkerCallbacks.clear();
+      _bgWorker = null; // allow recreation on next attempt
+    };
+  }
+  return _bgWorker;
+}
+
+function _removeBackgroundInWorker(blob: Blob): Promise<Blob> {
+  return new Promise((resolve, reject) => {
+    const id = ++_bgWorkerReqId;
+    _bgWorkerCallbacks.set(id, { resolve, reject });
+    const worker = _getOrCreateBgWorker();
+    blob
+      .arrayBuffer()
+      .then((buffer) => worker.postMessage({ id, buffer }, [buffer]))
+      .catch(reject);
+  });
+}
+// ────────────────────────────────────────────────────────────────────────────
+
 const Editor2D = forwardRef<Editor2DHandle, Props>(function Editor2D(
   {
     isActive = true,
@@ -10819,9 +10875,6 @@ const Editor2D = forwardRef<Editor2DHandle, Props>(function Editor2D(
       const img = imgs[0];
 
       try {
-        // Lazy load: só baixa o módulo quando o usuário usar a ferramenta
-        const { removeBackground: imglyRemoveBg } = await import("@imgly/background-removal");
-
         // Pega o elemento HTML já carregado pelo Fabric — evita fetch/CORS
         const el: HTMLImageElement | null =
           img._originalElement || img._element || null;
@@ -10830,7 +10883,6 @@ const Editor2D = forwardRef<Editor2DHandle, Props>(function Editor2D(
 
         if (el) {
           // Abordagem 1: desenha o elemento no canvas offscreen → blob PNG
-          // Funciona com data URLs, object URLs e qualquer origem carregada com crossOrigin
           const w = el.naturalWidth || (el as any).width || 512;
           const h = el.naturalHeight || (el as any).height || 512;
           const offscreen = document.createElement("canvas");
@@ -10864,10 +10916,8 @@ const Editor2D = forwardRef<Editor2DHandle, Props>(function Editor2D(
           blob = await res.blob();
         }
 
-        const resultBlob = await imglyRemoveBg(blob, {
-          model: "large", // isnet — melhor qualidade, maior precisão em objetos complexos
-          output: { format: "image/png", quality: 1 },
-        });
+        // Processa no Worker — a main thread / UI NÃO trava durante a inferência ONNX
+        const resultBlob = await _removeBackgroundInWorker(blob);
 
         const dataUrl = await new Promise<string>((resolve, reject) => {
           const reader = new FileReader();
@@ -10893,6 +10943,7 @@ const Editor2D = forwardRef<Editor2DHandle, Props>(function Editor2D(
         emitHistory();
       } catch (err) {
         console.error("[removeBackground] falhou:", err);
+        throw err; // propaga para o .catch() do caller exibir o toast de erro
       }
     },
     onCropModeChange: (cb) => {

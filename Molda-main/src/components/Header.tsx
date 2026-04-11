@@ -1,8 +1,9 @@
 import { useEffect, useState } from "react";
 import { Link, useNavigate } from "react-router-dom";
 import { Button } from "../components/ui/button";
-import { Building2, Shield, User, LogOut } from "lucide-react";
+import { Building2, Moon, Shield, Sun, User, LogOut } from "lucide-react";
 import { useAuth } from "../contexts/AuthContext";
+import { useTheme } from "../contexts/ThemeContext";
 import { Avatar, AvatarFallback, AvatarImage } from "../components/ui/avatar";
 import { supabase } from "../integrations/supabase/client";
 import { AVATAR_BUCKET } from "../lib/constants/storage";
@@ -17,6 +18,7 @@ import SparkleButton from "./SparkleButton";
 
 const Header = () => {
   const { user, signOut, loading, getProfile } = useAuth();
+  const { theme, toggleTheme } = useTheme();
   const [avatarUrl, setAvatarUrl] = useState<string | null>(null);
   const [role, setRole] = useState<string | null>(null);
   const navigate = useNavigate();
@@ -89,6 +91,19 @@ const Header = () => {
         </nav>
 
         <div className="flex items-center gap-4">
+          <Button
+            variant="ghost"
+            size="icon"
+            onClick={toggleTheme}
+            aria-label={theme === "dark" ? "Ativar modo claro" : "Ativar modo escuro"}
+            className="rounded-full"
+          >
+            {theme === "dark" ? (
+              <Sun className="h-4 w-4" />
+            ) : (
+              <Moon className="h-4 w-4" />
+            )}
+          </Button>
           {loading ? (
             <div className="w-8 h-8 animate-pulse bg-gray-200 rounded-full" />
           ) : !user?.id ? (

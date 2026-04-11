@@ -43,8 +43,41 @@
 }
 
 .dark {
-  --primary: var(--brand-bg-hsl);
-  --ring: var(--brand-bg-hsl);
+  --brand-primary: #FAFAFA;
+  --brand-secondary: #D1D5DB;
+  --brand-accent: #9CA3AF;
+  --brand-bg: #0A0A0F;
+  --brand-surface: #111118;
+  --brand-text: #F5F5F5;
+  --brand-muted: #6B7280;
+  --brand-border: #1F2937;
+
+  --brand-primary-hsl: 0 0% 98%;
+  --brand-secondary-hsl: 220 9% 82%;
+  --brand-accent-hsl: 220 9% 62%;
+  --brand-bg-hsl: 240 5% 4%;
+  --brand-surface-hsl: 240 5% 7%;
+  --brand-text-hsl: 0 0% 96%;
+  --brand-muted-hsl: 220 9% 46%;
+  --brand-border-hsl: 217 19% 17%;
+
+  --background: var(--brand-bg-hsl);
+  --foreground: var(--brand-text-hsl);
+  --card: var(--brand-surface-hsl);
+  --card-foreground: var(--brand-text-hsl);
+  --popover: var(--brand-surface-hsl);
+  --popover-foreground: var(--brand-text-hsl);
+  --primary: 169 61% 46%;
+  --primary-foreground: 240 5% 4%;
+  --secondary: var(--brand-surface-hsl);
+  --secondary-foreground: var(--brand-text-hsl);
+  --accent: var(--brand-surface-hsl);
+  --accent-foreground: var(--brand-text-hsl);
+  --muted: var(--brand-surface-hsl);
+  --muted-foreground: var(--brand-muted-hsl);
+  --border: var(--brand-border-hsl);
+  --input: var(--brand-border-hsl);
+  --ring: 169 61% 46%;
 }
 
 .brand-black-base {

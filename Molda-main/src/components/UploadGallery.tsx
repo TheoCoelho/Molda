@@ -666,7 +666,7 @@ export default function UploadGallery({ onImageInsert }: Props) {
 
   return (
     <div className="space-y-4">
-      <h3 className="text-lg font-semibold text-gray-800">Upload de Imagens</h3>
+      <h3 className="text-lg font-semibold text-gray-800 dark:text-gray-100">Upload de Imagens</h3>
 
       {envMissing && (
         <div className="text-sm text-red-700 bg-red-50 border border-red-200 rounded-md p-3">
@@ -687,13 +687,13 @@ export default function UploadGallery({ onImageInsert }: Props) {
         onKeyDown={(e) => !envMissing && user && (e.key === "Enter" || e.key === " ") && openFilePicker()}
         className={`border-2 border-dashed rounded-xl p-6 text-center transition-colors cursor-pointer ${
           envMissing || !user
-            ? "border-gray-200 bg-gray-50 cursor-not-allowed"
-            : "border-gray-300 hover:border-purple-400"
+            ? "border-gray-200 dark:border-border bg-gray-50 dark:bg-white/5 cursor-not-allowed"
+            : "border-gray-300 dark:border-border hover:border-purple-400 dark:hover:border-purple-500"
         }`}
         aria-disabled={envMissing || !user}
       >
-        <FileImage className="w-12 h-12 text-gray-400 mx-auto mb-2" />
-        <p className="text-sm text-gray-600">Clique para fazer upload</p>
+        <FileImage className="w-12 h-12 text-gray-400 dark:text-gray-500 mx-auto mb-2" />
+        <p className="text-sm text-gray-600 dark:text-gray-400">Clique para fazer upload</p>
       </div>
 
       <input
@@ -710,20 +710,20 @@ export default function UploadGallery({ onImageInsert }: Props) {
         onClick={() => { if (expandedGroupIds.size > 0) setExpandedGroupIds(new Set()); }}
       >
         {envMissing ? (
-          <div className="col-span-2 text-center text-xs text-gray-500 py-2">
+          <div className="col-span-2 text-center text-xs text-gray-500 dark:text-gray-400 py-2">
             Configure o Supabase para carregar a galeria.
           </div>
         ) : loadingGallery ? (
-          <div className="col-span-2 flex items-center justify-center py-6 text-sm text-gray-600">
+          <div className="col-span-2 flex items-center justify-center py-6 text-sm text-gray-600 dark:text-gray-400">
             <Loader2 className="w-4 h-4 mr-2 animate-spin" />
             Carregando sua galeria...
           </div>
         ) : !user ? (
-          <div className="col-span-2 text-center text-xs text-gray-500 py-2">
+          <div className="col-span-2 text-center text-xs text-gray-500 dark:text-gray-400 py-2">
             Faça login para ver sua galeria.
           </div>
         ) : gallery.length === 0 ? (
-          <div className="col-span-2 text-center text-xs text-gray-500 py-2">
+          <div className="col-span-2 text-center text-xs text-gray-500 dark:text-gray-400 py-2">
             Nenhuma imagem ainda. Faça o primeiro upload.
           </div>
         ) : (
@@ -745,7 +745,7 @@ export default function UploadGallery({ onImageInsert }: Props) {
                     {/* Card traseiro com a segunda versão */}
                     {backItem && (
                       <div
-                        className="absolute inset-0 overflow-hidden rounded-md border border-gray-200"
+                        className="absolute inset-0 overflow-hidden rounded-md border border-gray-200 dark:border-border"
                         style={{
                           transform: 'translate(7px, -6px) rotate(5deg)',
                           zIndex: 1,
@@ -762,7 +762,7 @@ export default function UploadGallery({ onImageInsert }: Props) {
                     )}
                     {/* Card principal (frente) — define a altura do container */}
                     <div
-                      className="relative aspect-square overflow-hidden rounded-md border bg-white hover:shadow-md transition-shadow"
+                      className="relative aspect-square overflow-hidden rounded-md border bg-white dark:bg-card hover:shadow-md transition-shadow"
                       style={{ zIndex: 2 }}
                     >
                       <img
@@ -801,7 +801,7 @@ export default function UploadGallery({ onImageInsert }: Props) {
             return (
               <div
                 key={entry.key}
-                className={`group relative aspect-square overflow-hidden rounded-md border bg-white cursor-pointer hover:shadow-md transition-all duration-300 ${
+                className={`group relative aspect-square overflow-hidden rounded-md border bg-white dark:bg-card cursor-pointer hover:shadow-md transition-all duration-300 ${
                   entry.inactive ? 'opacity-40 pointer-events-none' : ''
                 }`}
                 draggable={!entry.inactive}
@@ -852,7 +852,7 @@ export default function UploadGallery({ onImageInsert }: Props) {
                   className="max-h-[56vh] w-auto object-contain"
                 />
               ) : (
-                <div className="text-gray-500 text-sm">Selecione uma imagem…</div>
+                <div className="text-gray-500 dark:text-gray-400 text-sm">Selecione uma imagem…</div>
               )}
             </div>
 

@@ -1,8 +1,7 @@
 // src/components/FloatingEditorToolbar.tsx
-import React, { useEffect, useMemo, useRef, useState, useCallback } from "react";
-import { GradientAngleJoystick } from './GradientAngleJoystick';
-import type { GradientFill, GradientStop } from "./Editor2D";
+import React, { useEffect, useMemo, useRef, useState } from "react";
 import "./FloatingEditorToolbar.custom.css";
+import type { GradientFill } from "./Editor2D";
 import {
   Droplet,
   Trash2,
@@ -13,7 +12,6 @@ import {
   Pipette,
   Circle,
   Minus,
-  Plus,
   Eye,
 } from "lucide-react";
 type Props = {
@@ -55,7 +53,7 @@ type Props = {
     historyCapture?: () => void;
   } | null;
 
-  /** Callback para aplicar degradê no objeto selecionado */
+  /** Callback para aplicar gradiente à seleção atual */
   onApplyGradient?: (gradient: GradientFill) => void;
 };
 
@@ -137,7 +135,6 @@ export default function FloatingEditorToolbar({
   onRedo,
   canUndo,
   canRedo,
-  onApplyGradient,
 }: Props) {
   // refs e medidas
   const barRef = useRef<HTMLDivElement>(null);
@@ -181,44 +178,7 @@ export default function FloatingEditorToolbar({
   // Painel/hover
   const [isColorPanelOpen, setIsColorPanelOpen] = useState(false);
   const [showSwatchBar, setShowSwatchBar] = useState(false);
-  const swatchBarTimeout = useRef<ReturnType<typeof setTimeout> | null>(null);
-
-  /** ====== Modo do painel: "solid" ou "gradient" ====== */
-  const [colorMode, setColorMode] = useState<"solid" | "gradient">("solid");
-
-  /** ====== Estado do Degradê ====== */
-  const [gradStops, setGradStops] = useState<GradientStop[]>([
-    { offset: 0, color: "#000000" },
-    { offset: 1, color: "#FFFFFF" },
-  ]);
-  const [gradAngle, setGradAngle] = useState<number>(0);
-  const [gradType, setGradType] = useState<'linear' | 'radial'>('linear');
-  const [gradRadius, setGradRadius] = useState<number>(1.0);
-  const [selectedStopIdx, setSelectedStopIdx] = useState<number>(0);
-  const [stopDragging, setStopDragging] = useState(false);
-  const gradBarRef = useRef<HTMLDivElement>(null);
-  const gradApplyingRef = useRef(false);
-
-  // Sincroniza estado do gradient quando seleção muda
-  useEffect(() => {
-    if (gradApplyingRef.current) return;
-    
-    // Tenta pegar o preenchimento do objeto ativo
-    const fillVal = (editor2DRef as any)?.getActiveObject?.()?.get('fill') 
-                 || (editor2DRef as any)?.getActiveObject?.()?.get('stroke');
-                 
-    if (fillVal && typeof fillVal === 'object' && (fillVal as any).type === 'gradient') {
-      const gf = fillVal as GradientFill;
-      setColorMode('gradient');
-      setGradStops(gf.colorStops.length >= 2 ? gf.colorStops : [
-        { offset: 0, color: '#000000' },
-        { offset: 1, color: '#FFFFFF' },
-      ]);
-      setGradAngle(gf.angle || 0);
-      setGradType(gf.gradientType || 'linear');
-      setSelectedStopIdx(0);
-    }
-  }, [selectionKind, editor2DRef]);
+  const swatchBarTimeout = useRef<NodeJS.Timeout | null>(null);
 
   // aplica cor em tempo real ao arrastar (com rAF)
   const [svDragging, setSvDragging] = useState(false);
@@ -226,7 +186,6 @@ export default function FloatingEditorToolbar({
   const rafRef = useRef<number | null>(null);
   useEffect(() => {
     if (!(svDragging || hueDragging)) return;
-    if (colorMode !== 'solid') return; // não interferir com o modo degradê
     if (rafRef.current) cancelAnimationFrame(rafRef.current);
     rafRef.current = requestAnimationFrame(() => {
       setActiveColor(hsvToHex(h, s, v));
@@ -352,119 +311,6 @@ export default function FloatingEditorToolbar({
     return () => window.removeEventListener("keydown", onKey);
   }, []);
 
-  // ====== Gradient helpers ======
-  function interpolateHex(hex1: string, hex2: string, t: number): string {
-    const h1 = hexToHsv(hex1) || [0, 0, 0];
-    const h2 = hexToHsv(hex2) || [0, 0, 0];
-    return hsvToHex(
-      h1[0] + (h2[0] - h1[0]) * t,
-      h1[1] + (h2[1] - h1[1]) * t,
-      h1[2] + (h2[2] - h1[2]) * t,
-    );
-  }
-
-  const applyGradient = useCallback((stops: GradientStop[], angle: number, type: any = gradType, radius: number = gradRadius) => {
-    gradApplyingRef.current = true;
-    const gradFill: GradientFill = {
-      type: 'gradient',
-      gradientType: type,
-      angle,
-      colorStops: stops,
-      radius,
-    };
-    onApplyGradient?.(gradFill);
-    requestAnimationFrame(() => { gradApplyingRef.current = false; });
-  }, [onApplyGradient, gradType, gradRadius]);
-
-  const onStopBarPointer = useCallback((e: React.PointerEvent, idx: number) => {
-    const bar = gradBarRef.current;
-    if (!bar) return;
-    (e.currentTarget as HTMLElement).setPointerCapture(e.pointerId);
-    setStopDragging(true);
-    setSelectedStopIdx(idx);
-    const rect = bar.getBoundingClientRect();
-    const x = clamp((e.clientX - rect.left) / rect.width, 0, 1);
-    setGradStops(prev => {
-      const next = [...prev];
-      next[idx] = { ...next[idx], offset: Math.round(x * 100) / 100 };
-      return next;
-    });
-  }, []);
-
-  const onStopBarMove = useCallback((e: React.PointerEvent, idx: number) => {
-    if (!stopDragging) return;
-    const bar = gradBarRef.current;
-    if (!bar) return;
-    const rect = bar.getBoundingClientRect();
-    const x = clamp((e.clientX - rect.left) / rect.width, 0, 1);
-    setGradStops(prev => {
-      const next = [...prev];
-      next[idx] = { ...next[idx], offset: Math.round(x * 100) / 100 };
-      return next;
-    });
-  }, [stopDragging]);
-
-  // Aplica em tempo real
-  const gradRafRef = useRef<number | null>(null);
-  useEffect(() => {
-    if (colorMode !== 'gradient') return;
-    if (gradRafRef.current) cancelAnimationFrame(gradRafRef.current);
-    gradRafRef.current = requestAnimationFrame(() => {
-      applyGradient(gradStops, gradAngle, gradType, gradRadius);
-    });
-    return () => {
-      if (gradRafRef.current) cancelAnimationFrame(gradRafRef.current);
-      gradRafRef.current = null;
-    };
-  }, [gradStops, gradAngle, gradType, gradRadius, colorMode, applyGradient]);
-
-  const gradientCSS = useMemo(() => {
-    const sorted = [...gradStops].sort((a, b) => a.offset - b.offset);
-    const stopsStr = sorted.map(s => `${s.color} ${Math.round(s.offset * 100)}%`).join(', ');
-    return `linear-gradient(${gradAngle}deg, ${stopsStr})`;
-  }, [gradStops, gradAngle]);
-
-  const selectedStop = gradStops[selectedStopIdx] || gradStops[0];
-  const selectedStopHSV = useMemo(() => hexToHsv(selectedStop?.color || '#000000') || [0, 0, 0], [selectedStop?.color]);
-
-  const updateSelectedStopColor = useCallback((hex: string) => {
-    setGradStops(prev => {
-      const next = [...prev];
-      if (next[selectedStopIdx]) {
-        next[selectedStopIdx] = { ...next[selectedStopIdx], color: hex.toUpperCase() };
-      }
-      return next;
-    });
-  }, [selectedStopIdx]);
-
-  const addGradStop = useCallback(() => {
-    setGradStops(prev => {
-      if (prev.length >= 8) return prev;
-      const sorted = [...prev].sort((a, b) => a.offset - b.offset);
-      let maxGap = 0, gapIdx = 0;
-      for (let i = 0; i < sorted.length - 1; i++) {
-        const gap = sorted[i + 1].offset - sorted[i].offset;
-        if (gap > maxGap) { maxGap = gap; gapIdx = i; }
-      }
-      const newOffset = (sorted[gapIdx].offset + sorted[gapIdx + 1].offset) / 2;
-      const c1 = sorted[gapIdx].color;
-      const c2 = sorted[gapIdx + 1].color;
-      const midColor = interpolateHex(c1, c2, 0.5);
-      const newStops = [...prev, { offset: Math.round(newOffset * 100) / 100, color: midColor }];
-      setSelectedStopIdx(newStops.length - 1);
-      return newStops;
-    });
-  }, []);
-
-  const removeGradStop = useCallback((idx: number) => {
-    setGradStops(prev => {
-      if (prev.length <= 2) return prev;
-      const next = prev.filter((_, i) => i !== idx);
-      setSelectedStopIdx(si => Math.min(si, next.length - 1));
-      return next;
-    });
-  }, []);
-
   return (
     <div className="relative z-20 inline-block select-none">
       <div className="group relative">
@@ -530,393 +376,68 @@ export default function FloatingEditorToolbar({
             {isColorPanelOpen && (
               <div className="absolute left-0 bottom-full mb-3 z-30">
                 <div className="rounded-2xl p-3 w-[min(320px,95vw)] bg-white/90 dark:bg-neutral-900/95 border border-black/10 dark:border-white/10">
-
-                  {/* ===== Tabs Sólido / Degradê ===== */}
-                  <div className="flex mb-3 rounded-lg overflow-hidden border border-black/10 dark:border-white/10">
-                    <button
-                      type="button"
-                      className={[
-                        "flex-1 py-1.5 text-xs font-medium transition-colors",
-                        colorMode === 'solid'
-                          ? 'bg-primary/15 text-primary'
-                          : 'bg-transparent text-muted-foreground hover:bg-black/5 dark:hover:bg-white/5',
-                      ].join(' ')}
-                      onClick={() => {
-                        setColorMode('solid');
-                        setActiveColor(hsvToHex(h, s, v));
-                        editor2DRef?.historyCapture?.();
+                  {/* S/V */}
+                  <div
+                    ref={svRef}
+                    className="relative h-[160px] rounded-xl overflow-hidden cursor-crosshair"
+                    style={{ backgroundColor: `hsl(${h},100%,50%)` }}
+                    onPointerDown={onSvPointer}
+                    onPointerMove={(e) => svDragging && onSvPointer(e)}
+                    onPointerUp={() => { setSvDragging(false); editor2DRef?.historyCapture?.(); }}
+                    onPointerLeave={() => setSvDragging(false)}
+                  >
+                    <div className="absolute inset-0 bg-[linear-gradient(to_right,#fff,transparent)]" />
+                    <div className="absolute inset-0 bg-[linear-gradient(to_top,#000,transparent)]" />
+                    <div
+                      className="absolute h-4 w-4 rounded-full border-2 border-white shadow"
+                      style={{
+                        left: `${s * 100}%`,
+                        top: `${(1 - v) * 100}%`,
+                        transform: "translate(-50%, -50%)",
+                        background: currentHex,
                       }}
-                    >
-                      Sólido
-                    </button>
-                    <button
-                      type="button"
-                      className={[
-                        "flex-1 py-1.5 text-xs font-medium transition-colors",
-                        colorMode === 'gradient'
-                          ? 'bg-primary/15 text-primary'
-                          : 'bg-transparent text-muted-foreground hover:bg-black/5 dark:hover:bg-white/5',
-                      ].join(' ')}
-                      onClick={() => {
-                        setColorMode('gradient');
-                        applyGradient(gradStops, gradAngle);
-                        editor2DRef?.historyCapture?.();
-                      }}
-                    >
-                      Degradê
-                    </button>
+                    />
                   </div>
 
-                  {colorMode === 'solid' ? (
-                    <>
-                      {/* S/V */}
-                      <div
-                        ref={svRef}
-                        className="relative h-[160px] rounded-xl overflow-hidden cursor-crosshair"
-                        style={{ backgroundColor: `hsl(${h},100%,50%)` }}
-                        onPointerDown={onSvPointer}
-                        onPointerMove={(e) => svDragging && onSvPointer(e)}
-                        onPointerUp={() => { setSvDragging(false); editor2DRef?.historyCapture?.(); }}
-                        onPointerLeave={() => setSvDragging(false)}
-                      >
-                        <div className="absolute inset-0 bg-[linear-gradient(to_right,#fff,transparent)]" />
-                        <div className="absolute inset-0 bg-[linear-gradient(to_top,#000,transparent)]" />
-                        <div
-                          className="absolute h-4 w-4 rounded-full border-2 border-white shadow"
-                          style={{
-                            left: `${s * 100}%`,
-                            top: `${(1 - v) * 100}%`,
-                            transform: "translate(-50%, -50%)",
-                            background: currentHex,
-                          }}
-                        />
-                      </div>
+                  {/* Hue */}
+                  <div
+                    ref={hueRef}
+                    className="mt-3 h-4 rounded-full cursor-ew-resize"
+                    style={{
+                      background:
+                        "linear-gradient(to right, #f00, #ff0, #0f0, #0ff, #00f, #f0f, #f00)",
+                    }}
+                    onPointerDown={onHuePointer}
+                    onPointerMove={(e) => hueDragging && onHuePointer(e)}
+                    onPointerUp={() => { setHueDragging(false); editor2DRef?.historyCapture?.(); }}
+                    onPointerLeave={() => setHueDragging(false)}
+                  >
+                    <div
+                      className="h-4 w-4 rounded-full border-2 border-white shadow -mt-0.5"
+                      style={{ transform: `translateX(${(h / 360) * 100}%)` }}
+                    />
+                  </div>
 
-                      {/* Hue */}
-                      <div
-                        ref={hueRef}
-                        className="mt-3 h-4 rounded-full cursor-pointer relative"
-                        style={{
-                          background:
-                            "linear-gradient(to right, #f00, #ff0, #0f0, #0ff, #00f, #f0f, #f00)",
-                        }}
-                        onPointerDown={(e) => {
-                          if (e.target === e.currentTarget) {
-                            const rect = (e.currentTarget as HTMLElement).getBoundingClientRect();
-                            const x = clamp((e.clientX - rect.left) / rect.width, 0, 1);
-                            setH(x * 360);
-                            setActiveColor(hsvToHex(x * 360, s, v));
-                            editor2DRef?.historyCapture?.();
-                          }
-                        }}
-                      >
-                        <div
-                          className="absolute top-1/2 h-4 w-4 rounded-full border-2 border-white shadow cursor-ew-resize"
-                          style={{
-                            left: `${(h / 360) * 100}%`,
-                            transform: 'translate(-50%, -50%)',
-                          }}
-                          onPointerDown={(e) => {
-                            e.stopPropagation();
-                            (e.currentTarget as HTMLElement).setPointerCapture(e.pointerId);
-                            setHueDragging(true);
-                            const rect = hueRef.current!.getBoundingClientRect();
-                            const x = clamp((e.clientX - rect.left) / rect.width, 0, 1);
-                            setH(x * 360);
-                          }}
-                          onPointerMove={(e) => {
-                            if (!hueDragging) return;
-                            const rect = hueRef.current!.getBoundingClientRect();
-                            const x = clamp((e.clientX - rect.left) / rect.width, 0, 1);
-                            setH(x * 360);
-                          }}
-                          onPointerUp={() => { setHueDragging(false); editor2DRef?.historyCapture?.(); }}
-                        />
-                      </div>
-
-                      {/* Linha: HEX + conta-gotas (visual) */}
-                      <div className="mt-3 flex items-center gap-2">
-                        <input
-                          aria-label="Cor em HEX"
-                          value={hexInput}
-                          onChange={onHexChange}
-                          onBlur={() => editor2DRef?.historyCapture?.()}
-                          maxLength={7}
-                          className="w-28 px-2 py-1 rounded border border-black/10 dark:border-white/10 bg-white/70 dark:bg-neutral-900/70 text-sm"
-                          placeholder="#000000"
-                        />
-                        <div className="flex-1" />
-                        <button
-                          type="button"
-                          className="h-9 w-9 rounded-xl border bg-white/70 dark:bg-neutral-800/70 border-black/10 dark:border-white/10 grid place-items-center"
-                          title="Conta-gotas do sistema (visual)"
-                        >
-                          <Pipette className="h-4 w-4" />
-                        </button>
-                      </div>
-                    </>
-                  ) : (
-                    <>
-                      {/* ===== MODO DEGRADÊ ===== */}
-
-                      {/* Barra de preview do degradê */}
-                      <div
-                        ref={gradBarRef}
-                        className="relative h-8 rounded-lg overflow-visible cursor-pointer"
-                        style={{ background: gradientCSS }}
-                        onClick={(e) => {
-                          const target = e.target as HTMLElement;
-                          if (target === gradBarRef.current) {
-                            const rect = gradBarRef.current!.getBoundingClientRect();
-                            const offset = clamp((e.clientX - rect.left) / rect.width, 0, 1);
-                            const sorted = [...gradStops].sort((a, b) => a.offset - b.offset);
-                            let leftC = sorted[0]?.color || '#000000';
-                            let rightC = sorted[sorted.length - 1]?.color || '#FFFFFF';
-                            for (let i = 0; i < sorted.length - 1; i++) {
-                              if (offset >= sorted[i].offset && offset <= sorted[i + 1].offset) {
-                                leftC = sorted[i].color;
-                                rightC = sorted[i + 1].color;
-                                break;
-                              }
-                            }
-                            const newColor = interpolateHex(leftC, rightC, 0.5);
-                            setGradStops(prev => {
-                              if (prev.length >= 8) return prev;
-                              const next = [...prev, { offset: Math.round(offset * 100) / 100, color: newColor }];
-                              setSelectedStopIdx(next.length - 1);
-                              return next;
-                            });
-                          }
-                        }}
-                      >
-                        {gradStops.map((stop, idx) => (
-                          <div
-                            key={idx}
-                            className={[
-                              "absolute top-1/2 h-5 w-5 rounded-full border-2 shadow cursor-grab",
-                              "transform -translate-x-1/2 -translate-y-1/2",
-                              idx === selectedStopIdx
-                                ? 'border-primary ring-2 ring-primary/30 z-10'
-                                : 'border-white z-[5]',
-                            ].join(' ')}
-                            style={{
-                              left: `${stop.offset * 100}%`,
-                              background: stop.color,
-                            }}
-                            onPointerDown={(e) => {
-                              e.stopPropagation();
-                              onStopBarPointer(e, idx);
-                            }}
-                            onPointerMove={(e) => onStopBarMove(e, idx)}
-                            onPointerUp={() => {
-                              setStopDragging(false);
-                              editor2DRef?.historyCapture?.();
-                            }}
-                            onPointerLeave={() => { if (stopDragging) setStopDragging(false); }}
-                            onClick={(e) => {
-                              e.stopPropagation();
-                              setSelectedStopIdx(idx);
-                            }}
-                          />
-                        ))}
-                      </div>
-
-                      {/* Ações: Adicionar / Remover stop */}
-                      <div className="mt-2 flex items-center gap-2">
-                        <button
-                          type="button"
-                          className="h-7 px-2 rounded border border-black/10 dark:border-white/10 bg-white/70 dark:bg-neutral-800/70 text-xs flex items-center gap-1 hover:bg-black/5 dark:hover:bg-white/5 transition"
-                          onClick={addGradStop}
-                          disabled={gradStops.length >= 8}
-                          title="Adicionar cor"
-                        >
-                          <Plus className="h-3 w-3" /> Cor
-                        </button>
-                        <button
-                          type="button"
-                          className="h-7 px-2 rounded border border-black/10 dark:border-white/10 bg-white/70 dark:bg-neutral-800/70 text-xs flex items-center gap-1 hover:bg-black/5 dark:hover:bg-white/5 transition disabled:opacity-40"
-                          onClick={() => removeGradStop(selectedStopIdx)}
-                          disabled={gradStops.length <= 2}
-                          title="Remover cor selecionada"
-                        >
-                          <Minus className="h-3 w-3" /> Remover
-                        </button>
-                        <div className="flex-1" />
-                        <span className="text-[10px] text-muted-foreground">
-                          Stop {selectedStopIdx + 1}/{gradStops.length}
-                        </span>
-                      </div>
-
-                      {/* HSV do stop selecionado */}
-                      <div
-                        className="relative h-[120px] mt-3 rounded-xl overflow-hidden cursor-crosshair"
-                        style={{ backgroundColor: `hsl(${selectedStopHSV[0]},100%,50%)` }}
-                        onPointerDown={(e) => {
-                          const rect = (e.currentTarget as HTMLElement).getBoundingClientRect();
-                          (e.currentTarget as HTMLElement).setPointerCapture(e.pointerId);
-                          setSvDragging(true);
-                          const x = clamp((e.clientX - rect.left) / rect.width, 0, 1);
-                          const y = clamp((e.clientY - rect.top) / rect.height, 0, 1);
-                          updateSelectedStopColor(hsvToHex(selectedStopHSV[0], x, 1 - y));
-                        }}
-                        onPointerMove={(e) => {
-                          if (!svDragging) return;
-                          const rect = (e.currentTarget as HTMLElement).getBoundingClientRect();
-                          const x = clamp((e.clientX - rect.left) / rect.width, 0, 1);
-                          const y = clamp((e.clientY - rect.top) / rect.height, 0, 1);
-                          updateSelectedStopColor(hsvToHex(selectedStopHSV[0], x, 1 - y));
-                        }}
-                        onPointerUp={() => { setSvDragging(false); editor2DRef?.historyCapture?.(); }}
-                        onPointerLeave={() => setSvDragging(false)}
-                      >
-                        <div className="absolute inset-0 bg-[linear-gradient(to_right,#fff,transparent)]" />
-                        <div className="absolute inset-0 bg-[linear-gradient(to_top,#000,transparent)]" />
-                        <div
-                          className="absolute h-3.5 w-3.5 rounded-full border-2 border-white shadow"
-                          style={{
-                            left: `${selectedStopHSV[1] * 100}%`,
-                            top: `${(1 - selectedStopHSV[2]) * 100}%`,
-                            transform: "translate(-50%, -50%)",
-                            background: selectedStop?.color || '#000',
-                          }}
-                        />
-                      </div>
-
-                      {/* Hue para o stop selecionado */}
-                      <div
-                        className="mt-2 h-3.5 rounded-full cursor-pointer relative"
-                        style={{ background: "linear-gradient(to right, #f00, #ff0, #0f0, #0ff, #00f, #f0f, #f00)" }}
-                        onPointerDown={(e) => {
-                          if (e.target === e.currentTarget) {
-                            const rect = (e.currentTarget as HTMLElement).getBoundingClientRect();
-                            const x = clamp((e.clientX - rect.left) / rect.width, 0, 1);
-                            updateSelectedStopColor(hsvToHex(x * 360, selectedStopHSV[1], selectedStopHSV[2]));
-                            editor2DRef?.historyCapture?.();
-                          }
-                        }}
-                      >
-                        <div
-                          className="absolute top-1/2 h-3.5 w-3.5 rounded-full border-2 border-white shadow cursor-ew-resize"
-                          style={{
-                            left: `${(selectedStopHSV[0] / 360) * 100}%`,
-                            transform: 'translate(-50%, -50%)',
-                          }}
-                          onPointerDown={(e) => {
-                            e.stopPropagation();
-                            (e.currentTarget as HTMLElement).setPointerCapture(e.pointerId);
-                            setHueDragging(true);
-                            const bar = (e.currentTarget.parentElement as HTMLElement);
-                            const rect = bar.getBoundingClientRect();
-                            const x = clamp((e.clientX - rect.left) / rect.width, 0, 1);
-                            updateSelectedStopColor(hsvToHex(x * 360, selectedStopHSV[1], selectedStopHSV[2]));
-                          }}
-                          onPointerMove={(e) => {
-                            if (!hueDragging) return;
-                            const bar = (e.currentTarget.parentElement as HTMLElement);
-                            const rect = bar.getBoundingClientRect();
-                            const x = clamp((e.clientX - rect.left) / rect.width, 0, 1);
-                            updateSelectedStopColor(hsvToHex(x * 360, selectedStopHSV[1], selectedStopHSV[2]));
-                          }}
-                          onPointerUp={() => { setHueDragging(false); editor2DRef?.historyCapture?.(); }}
-                        />
-                      </div>
-
-                      {/* Joystick de Ângulo (Animado com Efeito de Recolha) */}
-                      <div 
-                        className={[
-                          "overflow-hidden transition-all duration-300 ease-in-out flex justify-center border-t border-black/5 dark:border-white/5",
-                          gradType === 'linear' ? "max-h-40 opacity-100 mt-3 pt-3 scale-100" : "max-h-0 opacity-0 mt-0 pt-0 scale-90 pointer-events-none"
-                        ].join(' ')}
-                      >
-                        <GradientAngleJoystick 
-                          angle={gradAngle} 
-                          onChange={setGradAngle} 
-                          onFinalChange={() => editor2DRef?.historyCapture?.()}
-                        />
-                      </div>
-
-                      {/* Raio (apenas para Radial) */}
-                      <div 
-                        className={[
-                          "overflow-hidden transition-all duration-300 ease-in-out",
-                          gradType === 'radial' ? "max-h-20 opacity-100 mt-3" : "max-h-0 opacity-0 mt-0 pointer-events-none"
-                        ].join(' ')}
-                      >
-                        <div className="flex items-center gap-2 border-t border-black/5 dark:border-white/5 pt-3">
-                          <span className="text-xs text-muted-foreground shrink-0 w-10">Raio</span>
-                          <input
-                            type="range"
-                            min={0.1}
-                            max={3}
-                            step={0.05}
-                            value={gradRadius}
-                            onChange={(e) => {
-                              const r = parseFloat(e.target.value);
-                              setGradRadius(r);
-                              applyGradient(gradStops, gradAngle, gradType, r);
-                            }}
-                            onPointerUp={() => editor2DRef?.historyCapture?.()}
-                            className="flex-1 accent-primary h-1.5 rounded"
-                          />
-                          <span className="text-xs text-muted-foreground w-8 text-right">{Math.round(gradRadius * 100)}%</span>
-                        </div>
-                      </div>
-
-                      {/* HEX do stop selecionado + Botões de tipo */}
-                      <div className="mt-2 flex items-center gap-2">
-                        <div
-                          className="h-6 w-6 rounded-md border border-black/10 dark:border-white/10 shrink-0"
-                          style={{ background: selectedStop?.color || '#000' }}
-                        />
-                        <input
-                          aria-label="Cor do stop em HEX"
-                          value={selectedStop?.color || '#000000'}
-                          onChange={(e) => {
-                            const val = e.target.value.trim().toUpperCase();
-                            if (/^#([0-9A-F]{6})$/.test(val)) {
-                              updateSelectedStopColor(val);
-                            }
-                          }}
-                          onBlur={() => editor2DRef?.historyCapture?.()}
-                          maxLength={7}
-                          className="w-20 px-2 py-0.5 rounded border border-black/10 dark:border-white/10 bg-white/70 dark:bg-neutral-900/70 text-xs"
-                          placeholder="#000000"
-                        />
-                        <div className="flex-1" />
-                        {(['linear', 'radial'] as const).map((t) => (
-                          <button
-                            key={t}
-                            type="button"
-                            title={t === 'linear' ? 'Degradê Linear' : 'Degradê Radial'}
-                            className={[
-                              "h-7 w-7 rounded border transition grid place-items-center",
-                              gradType === t
-                                ? 'bg-primary/15 border-primary/40 text-primary'
-                                : 'border-black/10 dark:border-white/10 bg-white/70 dark:bg-neutral-800/70 hover:bg-black/5 dark:hover:bg-white/5',
-                            ].join(' ')}
-                            onClick={() => {
-                              setGradType(t);
-                              applyGradient(gradStops, gradAngle, t, gradRadius);
-                              editor2DRef?.historyCapture?.();
-                            }}
-                          >
-                            {t === 'linear' ? (
-                              <svg width="14" height="14" viewBox="0 0 14 14" fill="none">
-                                <defs><linearGradient id="lg2" x1="0" y1="7" x2="14" y2="7" gradientUnits="userSpaceOnUse"><stop stopColor="currentColor" stopOpacity="0.2"/><stop offset="1" stopColor="currentColor"/></linearGradient></defs>
-                                <rect width="14" height="14" rx="2" fill="url(#lg2)"/>
-                              </svg>
-                            ) : (
-                              <svg width="14" height="14" viewBox="0 0 14 14" fill="none">
-                                <defs><radialGradient id="rg2" cx="50%" cy="50%" r="50%"><stop stopColor="currentColor"/><stop offset="1" stopColor="currentColor" stopOpacity="0.1"/></radialGradient></defs>
-                                <rect width="14" height="14" rx="2" fill="url(#rg2)"/>
-                              </svg>
-                            )}
-                          </button>
-                        ))}
-                      </div>
-                    </>
-                  )}
-
+                  {/* Linha: HEX + conta-gotas (visual) */}
+                  <div className="mt-3 flex items-center gap-2">
+                    <input
+                      aria-label="Cor em HEX"
+                      value={hexInput}
+                      onChange={onHexChange}
+                      onBlur={() => editor2DRef?.historyCapture?.()}
+                      maxLength={7}
+                      className="w-28 px-2 py-1 rounded border border-black/10 dark:border-white/10 bg-white/70 dark:bg-neutral-900/70 text-sm"
+                      placeholder="#000000"
+                    />
+                    <div className="flex-1" />
+                    <button
+                      type="button"
+                      className="h-9 w-9 rounded-xl border bg-white/70 dark:bg-neutral-800/70 border-black/10 dark:border-white/10 grid place-items-center"
+                      title="Conta-gotas do sistema (visual)"
+                    >
+                      <Pipette className="h-4 w-4" />
+                    </button>
+                  </div>
                 </div>
               </div>
             )}
@@ -962,7 +483,7 @@ export default function FloatingEditorToolbar({
                 aria-label="Densidade do molde"
                 title={`Densidade: ${stampDensity}%`}
               />
-              <span className="text-xs text-gray-500 tabular-nums min-w-[2.5rem]">{stampDensity}%</span>
+              <span className="text-xs text-gray-500 dark:text-gray-400 tabular-nums min-w-[2.5rem]">{stampDensity}%</span>
             </div>
           )}
 
@@ -985,7 +506,7 @@ export default function FloatingEditorToolbar({
                 aria-label="Largura"
                 title={`Largura: ${strokeWidth}px`}
               />
-              <span className="text-xs text-gray-500 tabular-nums min-w-[2rem]">{strokeWidth}px</span>
+              <span className="text-xs text-gray-500 dark:text-gray-400 tabular-nums min-w-[2rem]">{strokeWidth}px</span>
             </div>
           )}
 
@@ -1004,7 +525,7 @@ export default function FloatingEditorToolbar({
               aria-label="Opacidade"
               title={`Opacidade: ${Math.round(opacity * 100)}%`}
             />
-            <span className="text-xs text-gray-500 tabular-nums min-w-[2.5rem]">{Math.round(opacity * 100)}%</span>
+            <span className="text-xs text-gray-500 dark:text-gray-400 tabular-nums min-w-[2.5rem]">{Math.round(opacity * 100)}%</span>
           </div>
 
           {/* Separador */}

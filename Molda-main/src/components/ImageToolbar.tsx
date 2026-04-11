@@ -22,6 +22,7 @@ import {
 } from "lucide-react";
 import type { Editor2DHandle, ImageAdjustments, ImageEffects, ImageEffectKind } from "../components/Editor2D";
 import { Slider } from "../components/ui/slider";
+import { toast } from "sonner";
 
 type Props = {
   visible: boolean;
@@ -36,6 +37,8 @@ type Props = {
    * ou empurrar o layout para baixo (push).
    */
   inlinePanelMode?: "overlay" | "push";
+  /** Chamado com true quando a remoção de fundo começa e false quando termina */
+  onBgRemoveLoadingChange?: (loading: boolean) => void;
 };
 
 type CropTool = "default" | "square" | "lasso" | "color" | "magic";
@@ -64,6 +67,7 @@ export default function ImageToolbar({
   editor,
   position = "bottom",
   inlinePanelMode = "overlay",
+  onBgRemoveLoadingChange,
 }: Props) {
   if (!visible) return null;
 
@@ -624,9 +628,21 @@ export default function ImageToolbar({
     if (next === "magic") {
       setCropTool("default");
       setBgRemoveLoading(true);
+      onBgRemoveLoadingChange?.(true);
+      const toastId = toast.loading("Removendo fundo...", {
+        duration: Infinity,
+      });
       Promise.resolve(editor?.current?.removeBackground?.())
-        .catch(() => {})
-        .finally(() => setBgRemoveLoading(false));
+        .then(() => {
+          toast.success("Fundo removido!", { id: toastId, duration: 3000, description: undefined });
+        })
+        .catch(() => {
+          toast.error("Falha ao remover o fundo.", { id: toastId, duration: 4000, description: undefined });
+        })
+        .finally(() => {
+          setBgRemoveLoading(false);
+          onBgRemoveLoadingChange?.(false);
+        });
       return;
     }
   };

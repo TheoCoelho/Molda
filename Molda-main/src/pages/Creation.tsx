@@ -1045,6 +1045,7 @@ const Creation = () => {
   const [cropModeActive, setCropModeActive] = useState(false);
   const [colorCutModeActive, setColorCutModeActive] = useState(false);
   const [effectsEditModeActive, setEffectsEditModeActive] = useState(false);
+  const [bgRemovingTabId, setBgRemovingTabId] = useState<string | null>(null);
   const toolbarTransitionTimeoutRef = useRef<NodeJS.Timeout | null>(null);
 
   // Detecta mudança de toolbar ativa (não de seleção geral) e aplica transição flip
@@ -2167,7 +2168,7 @@ const Creation = () => {
                       ))}
                     </div>
                   )}
-                  <div className="absolute bottom-3 left-3 text-xs text-gray-700 glass px-2 py-1 rounded">
+                  <div className="absolute bottom-3 left-3 text-xs text-gray-700 dark:text-gray-300 glass px-2 py-1 rounded">
                     Arraste para rotacionar · Scroll para zoom
                   </div>
                 </div>
@@ -2264,6 +2265,15 @@ const Creation = () => {
                                 zIndex: tab.id === activeCanvasTab ? 2 : 1,
                               }}
                             >
+                              {/* Overlay de loading restrito à tab onde ocorre a remoção de fundo */}
+                              {bgRemovingTabId === tab.id && (
+                                <div className="absolute inset-0 z-[100] flex flex-col items-center justify-center gap-3 bg-white/60 dark:bg-black/50 backdrop-blur-sm">
+                                  <svg className="h-8 w-8 animate-spin text-foreground/70" viewBox="0 0 24 24" fill="none">
+                                    <circle className="opacity-25" cx="12" cy="12" r="10" stroke="currentColor" strokeWidth="4" />
+                                    <path className="opacity-75" fill="currentColor" d="M4 12a8 8 0 018-8v8z" />
+                                  </svg>
+                                </div>
+                              )}
                               <div
                                 style={{
                                   position: "absolute",
@@ -2450,6 +2460,7 @@ const Creation = () => {
                                 editor={{ current: editorRefs.current[activeCanvasTab] as Editor2DHandle }}
                                 visible={activeIs2D && (effectsEditModeActive || selectionKind === "image")}
                                 position="inline"
+                                onBgRemoveLoadingChange={(loading) => setBgRemovingTabId(loading ? activeCanvasTab : null)}
                               />
                             </div>
                           </div>
