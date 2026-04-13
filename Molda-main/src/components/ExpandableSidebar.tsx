@@ -393,7 +393,7 @@ const ExpandableSidebar: React.FC<ExpandableSidebarProps> = (props) => {
         <div
           className={`flex-1 min-w-0 min-h-0 max-h-full overflow-hidden flex flex-col`}
         >
-          <div className={activeSection === "brush" ? "flex h-full flex-1 min-h-0 max-h-full flex-col px-2" : "flex-1 overflow-y-auto rounded-2xl p-4 lg:p-6 pb-2"}>
+          <div className={activeSection === "brush" ? "flex h-full flex-1 min-h-0 max-h-full flex-col px-2" : activeSection === "upload" ? "flex-1 overflow-hidden flex flex-col" : "flex-1 overflow-y-auto rounded-2xl p-4 lg:p-6 pb-2"}>
             {activeSection === "settings" && (
               <SettingsContent
                 projectId={projectId}
@@ -412,16 +412,16 @@ const ExpandableSidebar: React.FC<ExpandableSidebarProps> = (props) => {
               />
             )}
             {activeSection === "upload" && (
-              <div className="flex flex-col gap-3">
-                {/* Sub-tabs */}
-                <div className="flex gap-1 rounded-xl bg-black/5 dark:bg-white/5 p-1 shrink-0">
+              <div className="flex flex-col h-full min-h-0">
+                {/* Sub-tabs — full width */}
+                <div className="flex shrink-0 border-b border-black/10 dark:border-white/10">
                   <button
                     type="button"
                     onClick={() => setUploadSubTab("encontrar")}
-                    className={`flex-1 rounded-lg py-1.5 text-xs font-medium transition ${
+                    className={`flex-1 py-2.5 text-xs font-medium transition border-b-2 -mb-px ${
                       uploadSubTab === "encontrar"
-                        ? "bg-white dark:bg-white/15 shadow-sm text-black dark:text-white"
-                        : "text-black/50 dark:text-white/50 hover:text-black dark:hover:text-white"
+                        ? "border-black dark:border-white text-black dark:text-white"
+                        : "border-transparent text-black/45 dark:text-white/45 hover:text-black dark:hover:text-white"
                     }`}
                   >
                     Encontrar
@@ -429,39 +429,42 @@ const ExpandableSidebar: React.FC<ExpandableSidebarProps> = (props) => {
                   <button
                     type="button"
                     onClick={() => setUploadSubTab("adicionar")}
-                    className={`flex-1 rounded-lg py-1.5 text-xs font-medium transition ${
+                    className={`flex-1 py-2.5 text-xs font-medium transition border-b-2 -mb-px ${
                       uploadSubTab === "adicionar"
-                        ? "bg-white dark:bg-white/15 shadow-sm text-black dark:text-white"
-                        : "text-black/50 dark:text-white/50 hover:text-black dark:hover:text-white"
+                        ? "border-black dark:border-white text-black dark:text-white"
+                        : "border-transparent text-black/45 dark:text-white/45 hover:text-black dark:hover:text-white"
                     }`}
                   >
                     Adicionar
                   </button>
                 </div>
 
-                {uploadSubTab === "encontrar" ? (
-                  <DesignFinder
-                    onImageInsert={(src, opts) => {
-                      if (tool !== "select" && tool !== "text") setTool("select");
-                      onImageInsert?.(src, opts);
-                      onImageInserted?.();
-                    }}
-                  />
-                ) : (
-                  <UploadGallery
-                    onImageInsert={(src, opts) => {
-                      console.log(`[ExpandableSidebar] Image inserted, current tool: ${tool}`);
-                      if (tool !== "select" && tool !== "text") {
-                        console.log(`[ExpandableSidebar] Deactivating tool ${tool} -> select on image insert (this should reset cursor)`);
-                        setTool("select");
-                      } else {
-                        console.log(`[ExpandableSidebar] Tool is already ${tool}, no need to change`);
-                      }
-                      onImageInsert?.(src, opts);
-                      onImageInserted?.();
-                    }}
-                  />
-                )}
+                {/* Content */}
+                <div className="flex-1 overflow-y-auto p-4 lg:p-5 pb-2">
+                  {uploadSubTab === "encontrar" ? (
+                    <DesignFinder
+                      onImageInsert={(src, opts) => {
+                        if (tool !== "select" && tool !== "text") setTool("select");
+                        onImageInsert?.(src, opts);
+                        onImageInserted?.();
+                      }}
+                    />
+                  ) : (
+                    <UploadGallery
+                      onImageInsert={(src, opts) => {
+                        console.log(`[ExpandableSidebar] Image inserted, current tool: ${tool}`);
+                        if (tool !== "select" && tool !== "text") {
+                          console.log(`[ExpandableSidebar] Deactivating tool ${tool} -> select on image insert (this should reset cursor)`);
+                          setTool("select");
+                        } else {
+                          console.log(`[ExpandableSidebar] Tool is already ${tool}, no need to change`);
+                        }
+                        onImageInsert?.(src, opts);
+                        onImageInserted?.();
+                      }}
+                    />
+                  )}
+                </div>
               </div>
             )}
             {activeSection === "brush" && (

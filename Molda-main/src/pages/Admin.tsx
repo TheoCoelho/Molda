@@ -14,6 +14,7 @@ import { toast } from "sonner";
 import { cn } from "@/lib/utils";
 import { UPLOAD_MODEL_API } from "@/lib/constants/storage";
 import { invalidateModelCache } from "@/lib/models";
+import DecalZoneEditor, { type DecalZoneDraft } from "@/components/admin/DecalZoneEditor";
 
 type Part = {
   id: string;
@@ -43,6 +44,7 @@ type ProductSubtype = {
   description?: string | null;
   card_image_path?: string | null;
   model_3d_path?: string | null;
+  decal_zones_json?: DecalZoneDraft[] | null;
   print_area_width_cm?: number | null;
   print_area_height_cm?: number | null;
   min_decal_area_cm2?: number | null;
@@ -132,6 +134,65 @@ const toNullableNumber = (value: string | number | null | undefined) => {
   return Number.isFinite(num) ? (num as number) : null;
 };
 
+const parseDecalZones = (value: unknown): DecalZoneDraft[] => {
+  if (!Array.isArray(value)) return [];
+  return value
+    .map((zone) => {
+      if (!zone || typeof zone !== "object") return null;
+      const z = zone as Record<string, unknown>;
+      const behavior = z.behavior === "constrain" ? "constrain" : "block";
+      const name = String(z.name || "zone");
+      const maxDecalSize = z.maxDecalSize == null ? undefined : Number(z.maxDecalSize);
+
+      if (z.kind === "stroke") {
+        const pointsRaw = Array.isArray(z.points) ? z.points : [];
+        const points = pointsRaw
+          .map((p) => (Array.isArray(p) && p.length === 3 ? [Number(p[0]), Number(p[1]), Number(p[2])] : null))
+          .filter((p): p is [number, number, number] => !!p && p.every((n) => Number.isFinite(n)));
+        const normalsRaw = Array.isArray(z.normals) ? z.normals : [];
+        const normals = normalsRaw
+          .map((p) => (Array.isArray(p) && p.length === 3 ? [Number(p[0]), Number(p[1]), Number(p[2])] : null))
+          .filter((p): p is [number, number, number] => !!p && p.every((n) => Number.isFinite(n)));
+        const width = Number(z.width);
+        if (!points.length || !Number.isFinite(width) || width <= 0) return null;
+        return {
+          kind: "stroke",
+          name,
+          points,
+          normals: normals.length ? normals : undefined,
+          width,
+          behavior,
+          maxDecalSize: Number.isFinite(maxDecalSize) ? maxDecalSize : undefined,
+        } satisfies DecalZoneDraft;
+      }
+
+      const center = Array.isArray(z.center) ? z.center : [];
+      if (center.length !== 3) return null;
+      const cx = Number(center[0]);
+      const cy = Number(center[1]);
+      const cz = Number(center[2]);
+      const normalRaw = Array.isArray(z.normal) && z.normal.length === 3 ? z.normal : null;
+      const nx = normalRaw ? Number(normalRaw[0]) : NaN;
+      const ny = normalRaw ? Number(normalRaw[1]) : NaN;
+      const nz = normalRaw ? Number(normalRaw[2]) : NaN;
+      const radius = Number(z.radius);
+      if (!Number.isFinite(cx) || !Number.isFinite(cy) || !Number.isFinite(cz) || !Number.isFinite(radius)) {
+        return null;
+      }
+      return {
+        name,
+        center: [cx, cy, cz] as [number, number, number],
+        normal: Number.isFinite(nx) && Number.isFinite(ny) && Number.isFinite(nz)
+          ? [nx, ny, nz] as [number, number, number]
+          : undefined,
+        radius,
+        behavior,
+        maxDecalSize: Number.isFinite(maxDecalSize) ? maxDecalSize : undefined,
+      } satisfies DecalZoneDraft;
+    })
+    .filter((z): z is DecalZoneDraft => !!z);
+};
+
 const Admin = () => {
   const [loading, setLoading] = useState(false);
   const [parts, setParts] = useState<Part[]>([]);
@@ -181,6 +242,7 @@ const Admin = () => {
   const [subtypeImageFile, setSubtypeImageFile] = useState<File | null>(null);
   const [subtypeImagePreview, setSubtypeImagePreview] = useState<string | null>(null);
   const [subtypeModelFile, setSubtypeModelFile] = useState<FileList | null>(null);
+  const [subtypeDecalZones, setSubtypeDecalZones] = useState<DecalZoneDraft[]>([]);
 
   const [productForm, setProductForm] = useState({
     id: "",
@@ -424,6 +486,7 @@ const Admin = () => {
     });
     setSubtypeImageFile(null);
     setSubtypeModelFile(null);
+    setSubtypeDecalZones([]);
     setSelectedSubtypeMaterialIds([]);
   };
 
@@ -513,6 +576,7 @@ const Admin = () => {
       is_active: subtypeForm.is_active,
       card_image_path: subtypeForm.card_image_path || null,
       model_3d_path: subtypeForm.model_3d_path || null,
+      decal_zones_json: subtypeDecalZones,
       print_area_width_cm: toNullableNumber(subtypeForm.print_area_width_cm),
       print_area_height_cm: toNullableNumber(subtypeForm.print_area_height_cm),
       min_decal_area_cm2: toNullableNumber(subtypeForm.min_decal_area_cm2) ?? 5,
@@ -544,7 +608,8 @@ const Admin = () => {
         message.includes("neck_zone_y_min") ||
         message.includes("underarm_zone_y_min") ||
         message.includes("underarm_zone_y_max") ||
-        message.includes("underarm_zone_abs_x_min")
+        message.includes("underarm_zone_abs_x_min") ||
+        message.includes("decal_zones_json")
       );
     };
 
@@ -591,7 +656,7 @@ const Admin = () => {
             .eq("id", subtypeForm.id);
           error = fallback.error;
           if (!error) {
-            toast.warning("Subtipo salvo sem as colunas de restricoes de impressao. Execute o SQL subtype_print_constraints.sql no Supabase para habilitar todos os campos.");
+            toast.warning("Subtipo salvo sem colunas novas. Execute os SQL subtype_print_constraints.sql e 07_add_decal_zones_json.sql no Supabase para habilitar todos os campos.");
           }
         }
 
@@ -604,7 +669,7 @@ const Admin = () => {
           const fallback = await supabase.from("product_subtypes").insert(legacyPayload);
           error = fallback.error;
           if (!error) {
-            toast.warning("Subtipo salvo sem as colunas de restricoes de impressao. Execute o SQL subtype_print_constraints.sql no Supabase para habilitar todos os campos.");
+            toast.warning("Subtipo salvo sem colunas novas. Execute os SQL subtype_print_constraints.sql e 07_add_decal_zones_json.sql no Supabase para habilitar todos os campos.");
           }
         }
 
@@ -1205,6 +1270,17 @@ const Admin = () => {
               </form>
 
               <div className="space-y-3">
+                <div className="glass rounded-xl border p-3">
+                  <p className="mb-2 text-xs text-muted-foreground">
+                    Preview 3D e marcação de zonas no painel da lista de subtipos.
+                  </p>
+                  <DecalZoneEditor
+                    modelPath={subtypeForm.model_3d_path}
+                    localModelFile={subtypeModelFile}
+                    zones={subtypeDecalZones}
+                    onChange={setSubtypeDecalZones}
+                  />
+                </div>
                 {subtypes.length === 0 ? (
                   <div className="rounded-xl border border-dashed px-4 py-6 text-sm text-muted-foreground">
                     Nenhum subtipo cadastrado.
@@ -1232,6 +1308,11 @@ const Admin = () => {
                             {(subtype as any).model_3d_path && (
                               <span className="inline-flex items-center rounded-full bg-blue-100 px-1.5 py-0.5 text-[10px] font-medium text-blue-700" title={(subtype as any).model_3d_path}>
                                 3D
+                              </span>
+                            )}
+                            {Array.isArray((subtype as any).decal_zones_json) && (subtype as any).decal_zones_json.length > 0 && (
+                              <span className="inline-flex items-center rounded-full bg-rose-100 px-1.5 py-0.5 text-[10px] font-medium text-rose-700">
+                                {((subtype as any).decal_zones_json as unknown[]).length} zona(s)
                               </span>
                             )}
                           </div>
@@ -1273,6 +1354,7 @@ const Admin = () => {
                               underarm_zone_y_max: String(subtype.underarm_zone_y_max ?? 0.72),
                               underarm_zone_abs_x_min: String(subtype.underarm_zone_abs_x_min ?? 0.55),
                             });
+                            setSubtypeDecalZones(parseDecalZones((subtype as any).decal_zones_json));
                             setSelectedSubtypeMaterialIds(subtypeMaterialIdsBySubtypeId.get(subtype.id) ?? []);
                           }}
                         >

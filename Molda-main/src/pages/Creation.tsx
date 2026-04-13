@@ -37,6 +37,7 @@ import { useAuth } from "../contexts/AuthContext";
 import type { ExternalDecalData, DecalTransform, DecalStateSnapshot } from "../types/decals";
 import { STORAGE_BUCKET } from "../lib/supabaseClient";
 import { toast } from "sonner";
+import { normalizeDbDecalZones, type ModelDecalZone } from "../lib/models";
 
 type CanvasTab = { id: string; name: string; type: "2d" | "3d" };
 type SelectionKind = "none" | "text" | "image" | "other";
@@ -79,6 +80,7 @@ type SubtypePrintConstraints = {
   underarm_zone_y_min?: number | null;
   underarm_zone_y_max?: number | null;
   underarm_zone_abs_x_min?: number | null;
+  decal_zones_json?: unknown;
 };
 
 const TRANSPARENT_PNG =
@@ -186,6 +188,7 @@ const Creation = () => {
   const [fixedSubtypeFabric, setFixedSubtypeFabric] = useState<string | null>(null);
   const [isSubtypeFabricLocked, setIsSubtypeFabricLocked] = useState(false);
   const [subtypePrintConstraints, setSubtypePrintConstraints] = useState<SubtypePrintConstraints | null>(null);
+  const [subtypeDecalZonesOverride, setSubtypeDecalZonesOverride] = useState<ModelDecalZone[]>([]);
   const [decalViabilityAlerts, setDecalViabilityAlerts] = useState<Record<string, string[]>>({});
   const [notes, setNotes] = useState("");
 
@@ -212,6 +215,7 @@ const Creation = () => {
       setFixedSubtypeFabric(null);
       setIsSubtypeFabricLocked(false);
       setSubtypePrintConstraints(null);
+      setSubtypeDecalZonesOverride([]);
 
       if (!subtype) return;
 
@@ -228,14 +232,14 @@ const Creation = () => {
 
         let subtypeQuery = supabase
           .from("product_subtypes")
-          .select("id, print_area_width_cm, print_area_height_cm, min_decal_area_cm2, neck_zone_y_min, underarm_zone_y_min, underarm_zone_y_max, underarm_zone_abs_x_min")
+          .select("id, print_area_width_cm, print_area_height_cm, min_decal_area_cm2, neck_zone_y_min, underarm_zone_y_min, underarm_zone_y_max, underarm_zone_abs_x_min, decal_zones_json")
           .ilike("name", subtype)
           .limit(1);
 
         if (typeId) {
           subtypeQuery = supabase
             .from("product_subtypes")
-            .select("id, print_area_width_cm, print_area_height_cm, min_decal_area_cm2, neck_zone_y_min, underarm_zone_y_min, underarm_zone_y_max, underarm_zone_abs_x_min")
+            .select("id, print_area_width_cm, print_area_height_cm, min_decal_area_cm2, neck_zone_y_min, underarm_zone_y_min, underarm_zone_y_max, underarm_zone_abs_x_min, decal_zones_json")
             .eq("type_id", typeId)
             .ilike("name", subtype)
             .limit(1);
@@ -258,7 +262,9 @@ const Creation = () => {
             underarm_zone_y_min: subtypeMeta.underarm_zone_y_min ?? 0.45,
             underarm_zone_y_max: subtypeMeta.underarm_zone_y_max ?? 0.72,
             underarm_zone_abs_x_min: subtypeMeta.underarm_zone_abs_x_min ?? 0.55,
+            decal_zones_json: subtypeMeta.decal_zones_json,
           });
+          setSubtypeDecalZonesOverride(normalizeDbDecalZones(subtypeMeta.decal_zones_json));
         }
 
         const { data: relRows, error: relErr } = await supabase
@@ -2148,6 +2154,7 @@ const Creation = () => {
                     baseColor={baseColor}
                     externalDecals={decalsFor3D}
                     onDecalsChange={handleDecalStateChange}
+                    decalZonesOverride={subtypeDecalZonesOverride}
                   />
                   {subtypePrintConstraints && (
                     <div className="absolute top-3 left-3 max-w-xs rounded border border-amber-300/70 bg-amber-50/85 px-2 py-1 text-[11px] text-amber-900">

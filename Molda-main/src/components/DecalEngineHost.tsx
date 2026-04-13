@@ -4,7 +4,7 @@ import React, { useEffect, useRef, useState } from "react";
 // Caminho relativo do projeto Molda-main/src/components -> ../../.. -> decal-engine/src/usage.ts
 import initDecalDemo, { DecalDemoHandle } from "../../../decal-engine/src/usage";
 import { DEFAULT_GIZMO_THEME } from "../../../gizmo-theme";
-import { getModelConfigFromSelectionAsync } from "../lib/models";
+import { getModelConfigFromSelectionAsync, type ModelDecalZone } from "../lib/models";
 import { supabase } from "@/integrations/supabase/client";
 import type { DecalStateSnapshot, ExternalDecalData } from "../types/decals";
 
@@ -12,6 +12,7 @@ type Selection = { part?: string | null; type?: string | null; subtype?: string 
 type Props = {
   className?: string;
   selection?: Selection;
+  decalZonesOverride?: ModelDecalZone[];
   decals?: ExternalDecalData[];
   onDecalsChange?: (state: DecalStateSnapshot[]) => void;
   interactive?: boolean;
@@ -20,6 +21,7 @@ type Props = {
 export default function DecalEngineHost({
   className,
   selection,
+  decalZonesOverride,
   decals = [],
   onDecalsChange,
   interactive = true,
@@ -95,8 +97,18 @@ export default function DecalEngineHost({
         const src = cfg.src || "/models/tshirt-low-poly/scene.gltf";
         // usage.ts espera caminho relativo a /models
         const modelParam = src.startsWith("/models/") ? src.replace("/models/", "") : src;
+        const finalDecalZones = Array.isArray(decalZonesOverride) ? decalZonesOverride : cfg.decalZones;
+        const zoneCount = Array.isArray(finalDecalZones) ? finalDecalZones.length : 0;
 
         console.log("[DecalEngineHost] Inicializando engine com modelo:", modelParam);
+        console.log("[DecalEngineHost] Zonas de decal carregadas:", zoneCount, {
+          part: selection?.part,
+          type: selection?.type,
+          subtype: selection?.subtype,
+        });
+        if (zoneCount === 0) {
+          console.warn("[DecalEngineHost] Nenhuma zona carregada para esta selecao; restricoes de bloqueio/limite ficarao inativas.");
+        }
 
         const handle = await initDecalDemo(mountEl, {
           interactive,
@@ -104,6 +116,7 @@ export default function DecalEngineHost({
           gizmoTheme: DEFAULT_GIZMO_THEME,
           model: modelParam,
           hideMenu: true,
+          decalZones: finalDecalZones,
         });
         if (cancelled) return;
         apiRef.current = handle;
@@ -119,7 +132,7 @@ export default function DecalEngineHost({
     return () => {
       cancelled = true;
     };
-  }, [selection?.part, selection?.type, selection?.subtype, interactive]);
+  }, [selection?.part, selection?.type, selection?.subtype, decalZonesOverride, interactive]);
 
   useEffect(() => {
     if (!ready) return;

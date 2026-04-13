@@ -5,6 +5,49 @@ export type Selection = {
   subtype?: string | null;
 };
 
+/**
+ * Define uma zona de restrição para posicionamento de decals sobre o modelo 3D.
+ * As coordenadas são em espaço de mundo (após aplicar scale/rotation/position do modelo).
+ */
+type ModelSphereDecalZone = {
+  kind?: "sphere";
+  /** Nome legível da zona (para debug e logs). Ex: "collar", "shoulder-seam-left". */
+  name: string;
+  /** Centro da esfera de restrição em espaço de mundo [x, y, z]. */
+  center: [number, number, number];
+  /** Normal da superfície no ponto marcado (opcional). */
+  normal?: [number, number, number];
+  /** Raio da esfera de influência (em unidades de mundo). */
+  radius: number;
+  /**
+   * Comportamento quando um decal cai nesta zona:
+   * - "block": decal não é exibido nesta região.
+   * - "constrain": decal é reduzido proporcionalmente para caber (uso com maxDecalSize).
+   */
+  behavior: "block" | "constrain";
+  /**
+   * Apenas para behavior="constrain": dimensão máxima permitida (largura e altura)
+   * do decal em unidades de mundo. Decals maiores são reduzidos proporcionalmente.
+   */
+  maxDecalSize?: number;
+};
+
+type ModelStrokeDecalZone = {
+  kind: "stroke";
+  /** Nome legível da zona (para debug e logs). */
+  name: string;
+  /** Traço pintado em sequência de pontos no espaço de mundo. */
+  points: [number, number, number][];
+  /** Normais opcionais por ponto do traço. */
+  normals?: [number, number, number][];
+  /** Largura do traço de pincel em unidades de mundo. */
+  width: number;
+  behavior: "block" | "constrain";
+  maxDecalSize?: number;
+};
+
+export type ModelDecalZone = ModelSphereDecalZone | ModelStrokeDecalZone;
+
 export type ModelConfig = {
   src?: string; // Ex.: "/models/tshirt/scene.gltf" ou ".glb"
   camera?: { position?: [number, number, number]; fov?: number };
@@ -12,6 +55,8 @@ export type ModelConfig = {
   scale?: number | [number, number, number];
   rotation?: [number, number, number];
   position?: [number, number, number];
+  /** Zonas de restrição de decal para este modelo. */
+  decalZones?: ModelDecalZone[];
 };
 
 /* ---------- Normalização e sinônimos ---------- */
@@ -110,6 +155,64 @@ function canonicalize(sel: Selection): Required<Selection> {
 
 const keyFrom = (sel: Selection) => `${sel.part ?? ""}:${sel.type ?? ""}:${sel.subtype ?? ""}`;
 
+export function normalizeDbDecalZones(value: unknown): ModelDecalZone[] {
+  if (!Array.isArray(value)) return [];
+  return value
+    .map((zone) => {
+      if (!zone || typeof zone !== "object") return null;
+      const z = zone as Record<string, unknown>;
+      const behavior = z.behavior === "constrain" ? "constrain" : "block";
+      const maxDecalSize = z.maxDecalSize == null ? undefined : Number(z.maxDecalSize);
+
+      if (z.kind === "stroke") {
+        const pointsRaw = Array.isArray(z.points) ? z.points : [];
+        const points = pointsRaw
+          .map((p) => (Array.isArray(p) && p.length === 3 ? [Number(p[0]), Number(p[1]), Number(p[2])] : null))
+          .filter((p): p is [number, number, number] => !!p && p.every((n) => Number.isFinite(n)));
+        const normalsRaw = Array.isArray(z.normals) ? z.normals : [];
+        const normals = normalsRaw
+          .map((p) => (Array.isArray(p) && p.length === 3 ? [Number(p[0]), Number(p[1]), Number(p[2])] : null))
+          .filter((p): p is [number, number, number] => !!p && p.every((n) => Number.isFinite(n)));
+        const width = Number(z.width);
+        if (!points.length || !Number.isFinite(width) || width <= 0) return null;
+        return {
+          kind: "stroke",
+          name: String(z.name || "zone"),
+          points,
+          normals: normals.length ? normals : undefined,
+          width,
+          behavior,
+          maxDecalSize: Number.isFinite(maxDecalSize) ? maxDecalSize : undefined,
+        } satisfies ModelDecalZone;
+      }
+
+      const center = Array.isArray(z.center) ? z.center : [];
+      if (center.length !== 3) return null;
+      const cx = Number(center[0]);
+      const cy = Number(center[1]);
+      const cz = Number(center[2]);
+      const normalRaw = Array.isArray(z.normal) && z.normal.length === 3 ? z.normal : null;
+      const nx = normalRaw ? Number(normalRaw[0]) : NaN;
+      const ny = normalRaw ? Number(normalRaw[1]) : NaN;
+      const nz = normalRaw ? Number(normalRaw[2]) : NaN;
+      const radius = Number(z.radius);
+      if (!Number.isFinite(cx) || !Number.isFinite(cy) || !Number.isFinite(cz) || !Number.isFinite(radius)) {
+        return null;
+      }
+      return {
+        name: String(z.name || "zone"),
+        center: [cx, cy, cz] as [number, number, number],
+        normal: Number.isFinite(nx) && Number.isFinite(ny) && Number.isFinite(nz)
+          ? [nx, ny, nz] as [number, number, number]
+          : undefined,
+        radius,
+        behavior,
+        maxDecalSize: Number.isFinite(maxDecalSize) ? maxDecalSize : undefined,
+      } satisfies ModelDecalZone;
+    })
+    .filter((z): z is ModelDecalZone => !!z);
+}
+
 /* ---------- Registry (permanece em inglês / slugs canônicos) ---------- */
 
 const REGISTRY: Record<string, ModelConfig> = {
@@ -121,6 +224,14 @@ const REGISTRY: Record<string, ModelConfig> = {
     scale: 0.8,
     rotation: [0, 0, 0],
     position: [0, 0, 0],
+    decalZones: [
+      // Gola: área acima do peito onde o decal atravessa para o pescoço
+      { name: "collar", center: [0, 1.25, 0.12], radius: 0.28, behavior: "block" },
+      // Costura do ombro esquerdo
+      { name: "shoulder-seam-left", center: [-0.55, 1.1, 0.05], radius: 0.18, behavior: "block" },
+      // Costura do ombro direito
+      { name: "shoulder-seam-right", center: [0.55, 1.1, 0.05], radius: 0.18, behavior: "block" },
+    ],
   },
 
   // Camiseta manga longa
@@ -257,6 +368,7 @@ export async function getModelConfigFromSelectionAsync(
   // Try to find from DB
   try {
     const subtypeSlug = canon.subtype;
+    const typeSlug = canon.type;
 
     if (subtypeSlug) {
       // Converte para o mesmo formato de slug usado no Admin (hyphens)
@@ -264,12 +376,76 @@ export async function getModelConfigFromSelectionAsync(
         .replace(/[^a-z0-9]+/g, "-")
         .replace(/(^-|-$)+/g, "");
 
-      // Busca subtipo pelo slug
-      const { data } = await supabaseClient
-        .from("product_subtypes")
-        .select("model_3d_path, slug")
-        .eq("slug", dbSlug)
-        .maybeSingle();
+      let resolvedTypeId: string | null = null;
+      if (typeSlug) {
+        const dbTypeSlug = typeSlug
+          .replace(/[^a-z0-9]+/g, "-")
+          .replace(/(^-|-$)+/g, "");
+        // Aceita tanto slug quanto nome, para cobrir fluxos que navegam com label.
+        let typeLookup = await supabaseClient
+          .from("product_types")
+          .select("id")
+          .eq("slug", dbTypeSlug)
+          .maybeSingle();
+        if (!typeLookup.data) {
+          typeLookup = await supabaseClient
+            .from("product_types")
+            .select("id")
+            .ilike("name", typeSlug)
+            .maybeSingle();
+        }
+        resolvedTypeId = (typeLookup.data?.id as string | undefined) ?? null;
+      }
+
+      // Busca subtipo por slug e, se não achar, por nome (resiliente a custom slugs).
+      const findSubtypeWithZones = async () => {
+        const bySlugQuery = supabaseClient
+          .from("product_subtypes")
+          .select("model_3d_path, slug, decal_zones_json")
+          .eq("slug", dbSlug);
+        const bySlug = resolvedTypeId
+          ? await bySlugQuery.eq("type_id", resolvedTypeId).maybeSingle()
+          : await bySlugQuery.maybeSingle();
+        if (bySlug.data) return bySlug;
+
+        const byNameQuery = supabaseClient
+          .from("product_subtypes")
+          .select("model_3d_path, slug, decal_zones_json")
+          .ilike("name", subtypeSlug);
+        const byName = resolvedTypeId
+          ? await byNameQuery.eq("type_id", resolvedTypeId).maybeSingle()
+          : await byNameQuery.maybeSingle();
+        return byName;
+      };
+
+      const withZones = await findSubtypeWithZones();
+
+      let data = withZones.data as { model_3d_path?: string; decal_zones_json?: unknown } | null;
+      if (!data && withZones.error && String(withZones.error.message || "").includes("decal_zones_json")) {
+        // Compatibilidade: banco ainda sem a coluna json de zonas.
+        const findLegacySubtype = async () => {
+          const bySlugQuery = supabaseClient
+            .from("product_subtypes")
+            .select("model_3d_path, slug")
+            .eq("slug", dbSlug);
+          const bySlug = resolvedTypeId
+            ? await bySlugQuery.eq("type_id", resolvedTypeId).maybeSingle()
+            : await bySlugQuery.maybeSingle();
+          if (bySlug.data) return bySlug;
+
+          const byNameQuery = supabaseClient
+            .from("product_subtypes")
+            .select("model_3d_path, slug")
+            .ilike("name", subtypeSlug);
+          const byName = resolvedTypeId
+            ? await byNameQuery.eq("type_id", resolvedTypeId).maybeSingle()
+            : await byNameQuery.maybeSingle();
+          return byName;
+        };
+
+        const legacy = await findLegacySubtype();
+        data = legacy.data as { model_3d_path?: string } | null;
+      }
 
       if (data?.model_3d_path) {
         const config: ModelConfig = {
@@ -279,6 +455,7 @@ export async function getModelConfigFromSelectionAsync(
           scale: 0.8,
           rotation: [0, 0, 0],
           position: [0, 0, 0],
+          decalZones: normalizeDbDecalZones(data.decal_zones_json),
         };
         _dbCache.set(key, { config, ts: Date.now() });
         return config;

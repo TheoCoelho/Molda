@@ -795,8 +795,8 @@ const Create = () => {
 
   const CARD_SIZE = 400;
   const CARD_GAP = 40;
-  const STATIC_CARD_SIZE = 420;
-  const STATIC_CARD_GAP = 24;
+  const STATIC_CARD_SIZE = CARD_SIZE;
+  const STATIC_CARD_GAP = CARD_GAP;
 
   const renderStaticCards = (
     items: { id: string; label: string; description?: string; imageUrl?: string }[],
@@ -1013,6 +1013,12 @@ const Create = () => {
                     {searchActive && searchMatch.mode === "subtype"
                       ? renderStaticCards(
                           searchSubtypeCardItems,
+                          selectedSubtype,
+                          (id) => handleSelectSubtype(id)
+                        )
+                      : subtypeCarouselItems.length <= 3
+                      ? renderStaticCards(
+                          subtypeCarouselItems,
                           selectedSubtype,
                           (id) => handleSelectSubtype(id)
                         )
