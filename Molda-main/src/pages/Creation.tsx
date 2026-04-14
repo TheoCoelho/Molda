@@ -703,6 +703,9 @@ const Creation = () => {
   const [tabDecalPreviews, setTabDecalPreviews] = useState<Record<string, string>>({});
   const [tabDecalPlacements, setTabDecalPlacements] = useState<Record<string, DecalTransform>>({});
   const [tabPrintTypes, setTabPrintTypes] = useState<Record<string, string>>({});
+  /** Automatic gizmo dimensions derived from canvas content bounds (fallback for tabs without explicit placement). */
+  const [tabDecalAutoSizes, setTabDecalAutoSizes] = useState<Record<string, { width: number; height: number }>>({});
+  const tabDecalAutoSizesRef = useRef<Record<string, { width: number; height: number }>>({});
   const tabVisibilityRef = useRef<Record<string, boolean>>(tabVisibility);
   const tabDecalPreviewsRef = useRef<Record<string, string>>(tabDecalPreviews);
   const tabDecalPlacementsRef = useRef<Record<string, DecalTransform>>(tabDecalPlacements);
@@ -719,6 +722,9 @@ const Creation = () => {
   useEffect(() => {
     tabPrintTypesRef.current = tabPrintTypes;
   }, [tabPrintTypes]);
+  useEffect(() => {
+    tabDecalAutoSizesRef.current = tabDecalAutoSizes;
+  }, [tabDecalAutoSizes]);
 
   const captureTabImage = useCallback(async (tabId: string): Promise<string | null> => {
     const inst = editorRefs.current[tabId];
@@ -729,16 +735,82 @@ const Creation = () => {
     try {
       inst.refresh?.();
     } catch { }
-    const dataUrl = inst.exportPNG?.();
-    const current = tabDecalPreviewsRef.current;
-    if (dataUrl && current[tabId] !== dataUrl) {
-      const next = { ...current, [tabId]: dataUrl };
-      tabDecalPreviewsRef.current = next;
-      setTabDecalPreviews(next);
-      return dataUrl;
+
+    const fullDataUrl = inst.exportPNG?.() ?? null;
+    const bounds = inst.getContentBounds?.() ?? null;
+
+    let finalDataUrl: string | null = fullDataUrl;
+
+    if (fullDataUrl && bounds) {
+      // Crop the exported PNG to the actual content region so the 3D texture
+      // fills the gizmo box completely (no transparent padding around the design).
+      try {
+        const img = new Image();
+        img.src = fullDataUrl;
+        await img.decode();
+        const pw = img.naturalWidth;
+        const ph = img.naturalHeight;
+        const cropX = Math.round(bounds.ratioLeft * pw);
+        const cropY = Math.round(bounds.ratioTop * ph);
+        const cropW = Math.max(1, Math.round(bounds.ratioW * pw));
+        const cropH = Math.max(1, Math.round(bounds.ratioH * ph));
+        const offscreen = document.createElement("canvas");
+        offscreen.width = cropW;
+        offscreen.height = cropH;
+        const ctx = offscreen.getContext("2d");
+        if (ctx) {
+          ctx.drawImage(img, cropX, cropY, cropW, cropH, 0, 0, cropW, cropH);
+          finalDataUrl = offscreen.toDataURL("image/png");
+        }
+      } catch {
+        // fall back to full canvas PNG on any error
+      }
+
+      // --------------- Gizmo sizing ---------------
+      // DECAL_DOMINANT_SIZE is the single reference parameter that controls
+      // how large decals appear on the 3D model. It sets the world-unit size
+      // of the dominant axis (width or height, whichever is larger).
+      // The other axis is scaled proportionally to preserve the crop aspect ratio.
+      //
+      //   Increase DECAL_DOMINANT_SIZE → bigger decals on the model.
+      //   Decrease DECAL_DOMINANT_SIZE → smaller decals on the model.
+      //
+      const DECAL_DOMINANT_SIZE = 0.85; // world units — change ONLY this value to resize all decals
+
+      const cropAspect = bounds.ratioH > 0 ? bounds.ratioW / bounds.ratioH : 1; // W/H of crop
+      let autoW: number, autoH: number;
+      if (cropAspect >= 1) {
+        // wider than tall — dominant axis is width
+        autoW = DECAL_DOMINANT_SIZE;
+        autoH = DECAL_DOMINANT_SIZE / cropAspect;
+      } else {
+        // taller than wide — dominant axis is height
+        autoH = DECAL_DOMINANT_SIZE;
+        autoW = DECAL_DOMINANT_SIZE * cropAspect;
+      }
+      const clamp = (v: number, lo: number, hi: number) => Math.min(hi, Math.max(lo, v));
+      autoW = clamp(autoW, 0.10, 1.50);
+      autoH = clamp(autoH, 0.10, 1.50);
+
+      const prev = tabDecalAutoSizesRef.current;
+      if (!prev[tabId] || Math.abs(prev[tabId].width - autoW) > 0.001 || Math.abs(prev[tabId].height - autoH) > 0.001) {
+        const next = { ...prev, [tabId]: { width: autoW, height: autoH } };
+        tabDecalAutoSizesRef.current = next;
+        setTabDecalAutoSizes(next);
+      }
     }
-    return current[tabId] ?? null;
-  }, [setTabDecalPreviews]);
+
+    if (finalDataUrl) {
+      const current = tabDecalPreviewsRef.current;
+      if (current[tabId] !== finalDataUrl) {
+        const next = { ...current, [tabId]: finalDataUrl };
+        tabDecalPreviewsRef.current = next;
+        setTabDecalPreviews(next);
+      }
+    }
+
+    return tabDecalPreviewsRef.current[tabId] ?? null;
+  }, [setTabDecalPreviews, setTabDecalAutoSizes]);
 
   const ensureTabHasDecalPreview = useCallback(async (tabId: string) => {
     const result = await captureTabImage(tabId);
@@ -762,13 +834,36 @@ const Creation = () => {
   const decalsFor3D = useMemo<ExternalDecalData[]>(() => {
     return canvasTabs
       .filter((tab) => tab.type === "2d" && tabVisibility[tab.id] && tabDecalPreviews[tab.id])
-      .map((tab) => ({
-        id: tab.id,
-        label: tab.name,
-        dataUrl: tabDecalPreviews[tab.id],
-        transform: tabDecalPlacements[tab.id] ?? null,
-      }));
-  }, [canvasTabs, tabDecalPreviews, tabVisibility, tabDecalPlacements]);
+      .map((tab) => {
+        const placement = tabDecalPlacements[tab.id] ?? null;
+        const autoSize = tabDecalAutoSizes[tab.id] ?? null;
+
+        // autoSize (derived from 2D canvas content bounds) ALWAYS controls width/height.
+        // placement only contributes position/normal/angle (where the user placed the decal in 3D).
+        // This prevents the engine's initial default size (0.3) from polluting tabDecalPlacements
+        // and permanently overriding the content-aware sizing.
+        let transform: DecalTransform | null = null;
+        if (autoSize) {
+          transform = {
+            width: autoSize.width,
+            height: autoSize.height,
+            position: placement?.position ?? null,
+            normal: placement?.normal ?? null,
+            angle: placement?.angle,
+            depth: placement?.depth,
+          };
+        } else if (placement) {
+          transform = placement;
+        }
+
+        return {
+          id: tab.id,
+          label: tab.name,
+          dataUrl: tabDecalPreviews[tab.id],
+          transform,
+        };
+      });
+  }, [canvasTabs, tabDecalPreviews, tabVisibility, tabDecalPlacements, tabDecalAutoSizes]);
 
   const viabilityAlertItems = useMemo(() => {
     return Object.entries(decalViabilityAlerts).map(([id, messages]) => {
@@ -1504,6 +1599,7 @@ const Creation = () => {
         project_key: payload.draftKey,
         data: payload,
         updated_at: payload.savedAt,
+        ephemeral_expires_at: payload.ephemeralExpiresAt ?? null,
       } as const;
 
       const { data: upserted, error } = await supabase

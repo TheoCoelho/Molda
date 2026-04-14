@@ -16,6 +16,8 @@ type Props = {
   decals?: ExternalDecalData[];
   onDecalsChange?: (state: DecalStateSnapshot[]) => void;
   interactive?: boolean;
+  /** Ativa a ferramenta de zona de restrição interativa. */
+  zoneTool?: { active: boolean; behavior?: "block" | "constrain"; name?: string } | null;
 };
 
 export default function DecalEngineHost({
@@ -25,6 +27,7 @@ export default function DecalEngineHost({
   decals = [],
   onDecalsChange,
   interactive = true,
+  zoneTool,
 }: Props) {
   const containerRef = useRef<HTMLDivElement | null>(null);
   const apiRef = useRef<DecalDemoHandle | null>(null);
@@ -204,6 +207,17 @@ export default function DecalEngineHost({
       apiRef.current = null;
     };
   }, []);
+
+  // Sync zona de restrição interativa com o engine
+  useEffect(() => {
+    const api = apiRef.current;
+    if (!api) return;
+    if (zoneTool?.active) {
+      api.activateZoneTool({ behavior: zoneTool.behavior, name: zoneTool.name });
+    } else {
+      api.deactivateZoneTool();
+    }
+  }, [zoneTool]);
 
   return (
     <div

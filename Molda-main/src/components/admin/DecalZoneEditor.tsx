@@ -46,7 +46,13 @@ function normalizeModelUrl(path?: string | null) {
   return `/models/${path}`;
 }
 
-function ModelMesh({ src }: { src: string }) {
+function ModelMesh({
+  src,
+  onViewCenter,
+}: {
+  src: string;
+  onViewCenter?: (center: [number, number, number]) => void;
+}) {
   const { scene: rawScene } = useGLTF(src);
   const scene = useMemo(() => rawScene.clone(true), [rawScene]);
 
@@ -69,8 +75,18 @@ function ModelMesh({ src }: { src: string }) {
       scene.position.z -= center.z;
       const yMin = boxAfterScale.min.y - center.y;
       scene.position.y -= yMin;
+
+      const finalBox = new THREE.Box3().setFromObject(scene);
+      if (!finalBox.isEmpty() && onViewCenter) {
+        const finalCenter = finalBox.getCenter(new THREE.Vector3());
+        onViewCenter([
+          Number(finalCenter.x.toFixed(4)),
+          Number(finalCenter.y.toFixed(4)),
+          Number(finalCenter.z.toFixed(4)),
+        ]);
+      }
     }
-  }, [scene]);
+  }, [scene, onViewCenter]);
 
   useMemo(() => {
     scene.traverse((obj) => {
@@ -157,10 +173,18 @@ export default function DecalZoneEditor({ modelPath, localModelFile, zones, onCh
   const activeStrokeNameRef = useRef<string | null>(null);
   const zonesRef = useRef<DecalZoneDraft[]>(zones);
   const [blobPreviewUrl, setBlobPreviewUrl] = useState<string>("");
+  const [viewCenter, setViewCenter] = useState<[number, number, number]>([0, 1, 0]);
+  const controlsRef = useRef<any>(null);
 
   useEffect(() => {
     zonesRef.current = zones;
   }, [zones]);
+
+  useEffect(() => {
+    if (!controlsRef.current) return;
+    controlsRef.current.target.set(viewCenter[0], viewCenter[1], viewCenter[2]);
+    controlsRef.current.update();
+  }, [viewCenter]);
 
   useEffect(() => {
     if (!localModelFile || localModelFile.length === 0) {
@@ -424,7 +448,7 @@ export default function DecalZoneEditor({ modelPath, localModelFile, zones, onCh
                   onPointerMove={handleBrushPointerMove}
                   onPointerUp={stopPainting}
                 >
-                  <ModelMesh src={resolvedUrl} />
+                  <ModelMesh src={resolvedUrl} onViewCenter={setViewCenter} />
                 </group>
               </Bounds>
             </Suspense>
@@ -437,7 +461,7 @@ export default function DecalZoneEditor({ modelPath, localModelFile, zones, onCh
               );
             })}
 
-            <OrbitControls enabled={!brushEnabled} enablePan={false} minDistance={1.3} maxDistance={8} />
+            <OrbitControls ref={controlsRef} enabled={!brushEnabled} enablePan={false} minDistance={1.3} maxDistance={8} />
           </Canvas>
         )}
       </div>

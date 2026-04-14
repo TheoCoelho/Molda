@@ -287,6 +287,14 @@ const Create = () => {
           return;
         }
 
+        // Limpeza server-side: exclui rascunhos efêmeros expirados antes de buscar
+        await supabase
+          .from("project_drafts")
+          .delete()
+          .eq("user_id", user.id)
+          .not("ephemeral_expires_at", "is", null)
+          .lt("ephemeral_expires_at", new Date().toISOString());
+
         const { data, error } = await supabase
           .from("project_drafts")
           .select("id, project_key, data, updated_at")

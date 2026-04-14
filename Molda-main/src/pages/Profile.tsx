@@ -301,6 +301,14 @@ const Profile = () => {
         let publicPiecesBackendMissing = false;
 
         if (isOwnProfile) {
+          // Limpeza server-side: exclui rascunhos efêmeros expirados antes de buscar
+          await supabase
+            .from("project_drafts")
+            .delete()
+            .eq("user_id", effectiveViewedUserId)
+            .not("ephemeral_expires_at", "is", null)
+            .lt("ephemeral_expires_at", new Date().toISOString());
+
           const result = await supabase
             .from("project_drafts")
             .select("id, project_key, data, updated_at, is_public")
