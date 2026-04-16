@@ -766,7 +766,7 @@ body::before { display: none !important; }
   color: hsl(var(--foreground));
   padding: 18px;
   aspect-ratio: 1 / 1;
-  min-height: 240px;
+  min-height: 200px;
   display: flex;
   flex-direction: column;
   gap: 12px;

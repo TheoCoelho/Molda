@@ -838,15 +838,18 @@ const Creation = () => {
         const placement = tabDecalPlacements[tab.id] ?? null;
         const autoSize = tabDecalAutoSizes[tab.id] ?? null;
 
-        // autoSize (derived from 2D canvas content bounds) ALWAYS controls width/height.
-        // placement only contributes position/normal/angle (where the user placed the decal in 3D).
-        // This prevents the engine's initial default size (0.3) from polluting tabDecalPlacements
-        // and permanently overriding the content-aware sizing.
+        // autoSize (derived from 2D canvas content bounds) is used as the INITIAL size
+        // when no explicit placement size exists yet. Once the engine emits a size
+        // (after zone constraint, manual resize, or first placement), placement.width/height
+        // become authoritative so zone constraints and user resizes persist when moving
+        // between areas. AutoSize is only the default for the very first render.
+        const hasExplicitWidth = placement != null && typeof placement.width === "number" && placement.width > 0;
+        const hasExplicitHeight = placement != null && typeof placement.height === "number" && placement.height > 0;
         let transform: DecalTransform | null = null;
         if (autoSize) {
           transform = {
-            width: autoSize.width,
-            height: autoSize.height,
+            width: hasExplicitWidth ? placement!.width! : autoSize.width,
+            height: hasExplicitHeight ? placement!.height! : autoSize.height,
             position: placement?.position ?? null,
             normal: placement?.normal ?? null,
             angle: placement?.angle,
