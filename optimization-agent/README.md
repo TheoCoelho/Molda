@@ -1,6 +1,6 @@
 # 🚀 Agente Otimizador de Performance - Molda
 
-Agente inteligente para otimizar performance, fluidez e velocidade do projeto **Molda-13** sem remover nenhuma funcionalidade.
+Agente inteligente para otimizar performance, fluidez e velocidade do projeto **Molda-14** sem remover nenhuma funcionalidade.
 
 ## 📋 Funcionalidades
 
@@ -50,6 +50,16 @@ npm install
 npm run optimize:full
 ```
 
+### Executar Agente de Branding Visual (autônomo)
+```bash
+npm run design:brand -- --brief ./brand-brief.example.json
+```
+
+Com saída customizada:
+```bash
+npm run design:brand -- --brief ./brand-brief.example.json --out ./reports/brand-pack-custom
+```
+
 ### Executar Análises Específicas
 ```bash
 # Análise de bundle
@@ -86,6 +96,16 @@ Todos os relatórios são salvos em `./reports/`:
 - `performance-report.html`
 - `optimization-suggestions.md`
 - `metrics-dashboard.html`
+
+Para o agente de branding, o pacote visual é salvo em `./reports/brand-agent/<timestamp>/` com:
+- `brand-system.json`
+- `tokens.css`
+- `tailwind.brand.extend.cjs`
+- `BRAND_GUIDE.md`
+- `logos/logo-wordmark.svg`
+- `logos/logo-monogram.svg`
+- `logos/logo-emblem.svg`
+- `patterns/interactive-patterns.css`
 
 ## ⚙️ Configuração
 

@@ -12,6 +12,7 @@ export type ExternalDecalPayload = {
   id: string;
   label?: string;
   src: string;
+  locked?: boolean;
   width?: number;
   height?: number;
   depth?: number;
@@ -26,6 +27,7 @@ export type DecalDemoHandle = {
   subscribe: (listener: (state: any) => void) => () => void;
   destroy: () => void;
 };
+
 
 export type InitDecalDemoOptions = {
   interactive?: boolean;
@@ -54,52 +56,52 @@ export async function initDecalDemo(container: HTMLElement, opts?: InitDecalDemo
   const showGallery = isInteractive && !hideMenu;
   const theme = resolveGizmoTheme(opts?.gizmoTheme);
   if (!hideMenu) {
-  const models = [
-    { label: "Manga Longa", value: "long_sleeve_t-_shirt/scene.gltf" },
-    { label: "Oversized", value: "oversize_t-shirt_free/scene.gltf" },
-    { label: "Block Shape Abstract", value: "oversize_t-shirt/scene.gltf" },
-    { label: "Low Poly", value: "t-shirt_low_poly/scene.gltf" },
-    { label: "TShirt Model", value: "tshirt_model/scene.gltf" },
-    { label: "Masculino + Shorts", value: "male_tshirt_and_shorts_-_plain_texture/scene.gltf" },
-    { label: "Manga Longa Feminina", value: "womens_long_sleeve/scene.gltf" },
-    { label: "TShirt (GLTF)", value: "tshirt (1)/scene.gltf" },
-    { label: "TShirt 3D Free", value: "t-shirt_3d_model_free/scene.gltf" },
-    { label: "Low Poly (GLB)", value: "t-shirt_low_poly.glb" },
-    { label: "Low Poly (USDZ)", value: "T-Shirt_Low_Poly.usdz" },
-  ];
-  const menu = document.createElement("div");
-  Object.assign(menu.style, {
-    position: "absolute",
-    top: "10px",
-    left: "10px",
-    zIndex: "1000",
-    background: "rgba(30,30,30,0.85)",
-    padding: "8px 12px",
-    borderRadius: "8px",
-    color: "#fff",
-    fontFamily: "system-ui, -apple-system, Segoe UI, Roboto, sans-serif",
-    display: "flex",
-    gap: "8px",
-  } as CSSStyleDeclaration);
-  models.forEach((m) => {
-    const btn = document.createElement("button");
-    btn.textContent = m.label;
-    Object.assign(btn.style, {
-      padding: "6px 10px",
-      border: "none",
-      borderRadius: "6px",
-      background: "#4a4a4a",
+    const models = [
+      { label: "Manga Longa", value: "long_sleeve_t-_shirt/scene.gltf" },
+      { label: "Oversized", value: "oversize_t-shirt_free/scene.gltf" },
+      { label: "Block Shape Abstract", value: "oversize_t-shirt/scene.gltf" },
+      { label: "Low Poly", value: "t-shirt_low_poly/scene.gltf" },
+      { label: "TShirt Model", value: "tshirt_model/scene.gltf" },
+      { label: "Masculino + Shorts", value: "male_tshirt_and_shorts_-_plain_texture/scene.gltf" },
+      { label: "Manga Longa Feminina", value: "womens_long_sleeve/scene.gltf" },
+      { label: "TShirt (GLTF)", value: "tshirt (1)/scene.gltf" },
+      { label: "TShirt 3D Free", value: "t-shirt_3d_model_free/scene.gltf" },
+      { label: "Low Poly (GLB)", value: "t-shirt_low_poly.glb" },
+      { label: "Low Poly (USDZ)", value: "T-Shirt_Low_Poly.usdz" },
+    ];
+    const menu = document.createElement("div");
+    Object.assign(menu.style, {
+      position: "absolute",
+      top: "10px",
+      left: "10px",
+      zIndex: "1000",
+      background: "rgba(30,30,30,0.85)",
+      padding: "8px 12px",
+      borderRadius: "8px",
       color: "#fff",
-      cursor: "pointer",
+      fontFamily: "system-ui, -apple-system, Segoe UI, Roboto, sans-serif",
+      display: "flex",
+      gap: "8px",
     } as CSSStyleDeclaration);
-    btn.onclick = () => {
-      const url = new URL(window.location.href);
-      url.searchParams.set("model", m.value);
-      window.location.href = url.toString();
-    };
-    menu.appendChild(btn);
-  });
-  container.appendChild(menu);
+    models.forEach((m) => {
+      const btn = document.createElement("button");
+      btn.textContent = m.label;
+      Object.assign(btn.style, {
+        padding: "6px 10px",
+        border: "none",
+        borderRadius: "6px",
+        background: "#4a4a4a",
+        color: "#fff",
+        cursor: "pointer",
+      } as CSSStyleDeclaration);
+      btn.onclick = () => {
+        const url = new URL(window.location.href);
+        url.searchParams.set("model", m.value);
+        window.location.href = url.toString();
+      };
+      menu.appendChild(btn);
+    });
+    container.appendChild(menu);
   }
 
   const galleryPanel = document.createElement("div");
@@ -213,6 +215,7 @@ export async function initDecalDemo(container: HTMLElement, opts?: InitDecalDemo
   };
 
   let root: THREE.Object3D | null = null;
+  let modelBounds: THREE.Box3 | null = null;
   let projector: ProjectorLike | null = null;
   const textureLoader = new THREE.TextureLoader();
 
@@ -233,6 +236,7 @@ export async function initDecalDemo(container: HTMLElement, opts?: InitDecalDemo
   type DecalRecord = {
     id: string;
     galleryItemId: string;
+    locked: boolean;
     projector: ProjectorLike;
     texture: THREE.Texture;
     aspect: number;
@@ -463,6 +467,7 @@ export async function initDecalDemo(container: HTMLElement, opts?: InitDecalDemo
       const aspect = getTextureAspect(texture);
 
       const ext = pendingExternalPayloads.get(item.id);
+      const locked = !!ext?.locked;
       if (ext) {
         if (typeof ext.width === "number") width = ext.width;
         if (typeof ext.height === "number") height = ext.height;
@@ -495,7 +500,7 @@ export async function initDecalDemo(container: HTMLElement, opts?: InitDecalDemo
         adapter = new MeshDecalAdapter(scene, texture, projectorOptions) as unknown as ProjectorLike;
       }
       adapter.attachTo(root);
-  applyScaledTransform(adapter, center, normal, width, height, depth, angle);
+      applyScaledTransform(adapter, center, normal, width, height, depth, angle);
       const mesh = adapter.getMesh ? adapter.getMesh() : null;
       if (mesh) {
         mesh.userData = mesh.userData || {};
@@ -504,6 +509,7 @@ export async function initDecalDemo(container: HTMLElement, opts?: InitDecalDemo
       const record: DecalRecord = {
         id: item.id,
         galleryItemId: item.id,
+        locked,
         projector: adapter,
         texture,
         aspect,
@@ -517,7 +523,7 @@ export async function initDecalDemo(container: HTMLElement, opts?: InitDecalDemo
       };
       decals.set(item.id, record);
       pendingExternalDecals.delete(item.id);
-      if (makeActive) setActiveDecal(item.id);
+      if (makeActive && !locked) setActiveDecal(item.id);
       renderGallery();
       emitDecalState();
     });
@@ -547,16 +553,26 @@ export async function initDecalDemo(container: HTMLElement, opts?: InitDecalDemo
     if (!item) {
       item = { id, label, src: payload.src, hidden: true };
       galleryState.items.push(item);
-      galleryState.selectedIds.add(id);
+      if (!payload.locked) {
+        galleryState.selectedIds.add(id);
+      }
       pendingExternalDecals.add(id);
       renderGallery();
       ensureDecalForGalleryItem(item, false);
       return;
     }
 
+    const srcChanged = item.src !== payload.src;
     item.label = label;
     item.src = payload.src;
     item.hidden = true;
+
+    // Se a imagem de origem mudou, descartamos a textura antiga para forçar recarregamento
+    if (srcChanged && item.texture) {
+      item.texture.dispose();
+      item.texture = undefined;
+    }
+
     pendingExternalDecals.add(id);
     renderGallery();
 
@@ -565,6 +581,7 @@ export async function initDecalDemo(container: HTMLElement, opts?: InitDecalDemo
       if (record) {
         record.texture = texture;
         record.aspect = getTextureAspect(texture);
+        record.locked = !!payload.locked;
         const hasWidth = typeof payload.width === "number";
         const hasHeight = typeof payload.height === "number";
         if (hasWidth) record.width = payload.width as number;
@@ -589,6 +606,10 @@ export async function initDecalDemo(container: HTMLElement, opts?: InitDecalDemo
           record.depth,
           record.angle
         );
+        if (record.locked) {
+          galleryState.selectedIds.delete(id);
+          if (activeDecalId === id) setActiveDecal(null);
+        }
         pendingExternalDecals.delete(id);
         emitDecalState();
       } else {
@@ -596,7 +617,9 @@ export async function initDecalDemo(container: HTMLElement, opts?: InitDecalDemo
           pendingExternalDecals.add(id);
           return;
         }
-        galleryState.selectedIds.add(id);
+        if (!payload.locked) {
+          galleryState.selectedIds.add(id);
+        }
         ensureDecalForGalleryItem(item!, false);
       }
     });
@@ -641,8 +664,8 @@ export async function initDecalDemo(container: HTMLElement, opts?: InitDecalDemo
     }
     projector = record.projector;
     decalWidth = record.width;
-  decalHeight = record.height;
-  decalDepth = record.depth ?? computeBaseDepth(decalWidth, decalHeight);
+    decalHeight = record.height;
+    decalDepth = record.depth ?? computeBaseDepth(decalWidth, decalHeight);
     decalAngle = record.angle;
     decalCenter = record.center;
     decalNormal = record.normal;
@@ -771,8 +794,8 @@ export async function initDecalDemo(container: HTMLElement, opts?: InitDecalDemo
         border: isActive
           ? "2px solid #c4b5fd"
           : isSelected
-          ? "2px solid #8b5cf6"
-          : "2px solid transparent",
+            ? "2px solid #8b5cf6"
+            : "2px solid transparent",
         backgroundColor: "#222",
         backgroundPosition: "center",
         backgroundSize: "cover",
@@ -996,16 +1019,18 @@ export async function initDecalDemo(container: HTMLElement, opts?: InitDecalDemo
   let selected = false;        // seleciona ao criar
   let isInteracting = false;   // evita auto-deselect durante interações
 
-  // ---- raycast na malha ----
+  // ---- raycast na malha (objetos pré-alocados para evitar GC durante drag) ----
+  const _hitMouse = new THREE.Vector2();
+  const _hitRaycaster = new THREE.Raycaster();
   function hitAt(clientX: number, clientY: number) {
     if (!root) return null;
     const rect = renderer.domElement.getBoundingClientRect();
-    const x = ((clientX - rect.left) / rect.width) * 2 - 1;
-    const y = -((clientY - rect.top) / rect.height) * 2 + 1;
-    const mouse = new THREE.Vector2(x, y);
-    const raycaster = new THREE.Raycaster();
-    raycaster.setFromCamera(mouse, camera);
-    const hits = raycaster.intersectObject(root, true);
+    _hitMouse.set(
+      ((clientX - rect.left) / rect.width) * 2 - 1,
+      -((clientY - rect.top) / rect.height) * 2 + 1
+    );
+    _hitRaycaster.setFromCamera(_hitMouse, camera);
+    const hits = _hitRaycaster.intersectObject(root, true);
     if (!hits.length) return null;
     const h = hits[0];
     const p = h.point.clone();
@@ -1035,7 +1060,9 @@ export async function initDecalDemo(container: HTMLElement, opts?: InitDecalDemo
     }
     const decalId = obj && obj.userData ? (obj.userData.__decalId as string | undefined) : undefined;
     if (!decalId) return null;
-    return decals.get(decalId) ?? null;
+    const record = decals.get(decalId) ?? null;
+    if (record && record.locked) return null;
+    return record;
   }
 
   // ---- overlay SVG (gizmo) ----
@@ -1167,12 +1194,12 @@ export async function initDecalDemo(container: HTMLElement, opts?: InitDecalDemo
     cutSubmenuOpen = false;
     cutMenuOpen = true;
     const menuRect = cutMenu.getBoundingClientRect();
-  let left = clientX - rect.left;
-  let top = clientY - rect.top;
-  const maxLeft = Math.max(rect.width - menuRect.width - 8, 8);
-  const maxTop = Math.max(rect.height - menuRect.height - 8, 8);
-  left = Math.min(Math.max(8, left), maxLeft);
-  top = Math.min(Math.max(8, top), maxTop);
+    let left = clientX - rect.left;
+    let top = clientY - rect.top;
+    const maxLeft = Math.max(rect.width - menuRect.width - 8, 8);
+    const maxTop = Math.max(rect.height - menuRect.height - 8, 8);
+    left = Math.min(Math.max(8, left), maxLeft);
+    top = Math.min(Math.max(8, top), maxTop);
     cutMenu.style.left = `${left}px`;
     cutMenu.style.top = `${top}px`;
   };
@@ -1311,8 +1338,8 @@ export async function initDecalDemo(container: HTMLElement, opts?: InitDecalDemo
     setHandlePos(handles.mr, (sTR.x + sBR.x) / 2, (sTR.y + sBR.y) / 2);
 
     // handle de rotação 24px “para fora” do topo (usa up da câmera)
-  const topMid = new THREE.Vector2((sTL.x + sTR.x) / 2, (sTL.y + sTR.y) / 2);
-  const dirUp2D = new THREE.Vector2(sTL.y - sTR.y, sTR.x - sTL.x).normalize();
+    const topMid = new THREE.Vector2((sTL.x + sTR.x) / 2, (sTL.y + sTR.y) / 2);
+    const dirUp2D = new THREE.Vector2(sTL.y - sTR.y, sTR.x - sTL.x).normalize();
     const rotAnchor = topMid.clone();
     const rotHandle = topMid.clone().add(dirUp2D.multiplyScalar(24));
     rotLine.setAttribute("x1", String(rotAnchor.x));
@@ -1359,8 +1386,8 @@ export async function initDecalDemo(container: HTMLElement, opts?: InitDecalDemo
     const z = rel.dot(decalNormal);
     const hx = decalWidth * 0.5;
     const hy = decalHeight * 0.5;
-  const hz = (decalDepth ?? Math.max(decalWidth, decalHeight) * depthMultiplier) * 0.5;
-    const insideRect  = Math.abs(x) <= hx && Math.abs(y) <= hy;
+    const hz = (decalDepth ?? Math.max(decalWidth, decalHeight) * depthMultiplier) * 0.5;
+    const insideRect = Math.abs(x) <= hx && Math.abs(y) <= hy;
     const insideDepth = Math.abs(z) <= hz;
     return insideRect && insideDepth;
   }
@@ -1376,6 +1403,8 @@ export async function initDecalDemo(container: HTMLElement, opts?: InitDecalDemo
 
   // ---- arrasto pela malha (mover decal) — canvas, clicando dentro do gizmo
   let draggingMesh = false;
+  let meshDragRafId = 0; // RAF throttle para pointermove do canvas
+  let meshDragPendingEv: PointerEvent | null = null;
   function attachDragHandlers() {
     const el = renderer.domElement;
     el.addEventListener("pointerdown", (ev) => {
@@ -1407,24 +1436,33 @@ export async function initDecalDemo(container: HTMLElement, opts?: InitDecalDemo
       controls.enabled = false;
       updateOverlay();
     });
+    // pointermove com RAF throttle: no máximo 1 atualização por frame
     el.addEventListener("pointermove", (ev) => {
       if (!draggingMesh || !projector) return;
-      const h = hitAt(ev.clientX, ev.clientY);
-      if (!h) return; // sem hit -> ignora (não sai do objeto)
-      decalCenter.copy(h.point);
-      decalNormal.copy(h.normal);
-      applyScaledTransform(
-        projector,
-        decalCenter,
-        decalNormal,
-        decalWidth,
-        decalHeight,
-        decalDepth,
-        decalAngle,
-        true // isPreview - movimentação fluida
-      );
-      syncActiveDecalTransform();
-      updateOverlay();
+      meshDragPendingEv = ev;
+      if (meshDragRafId) return; // já agendado
+      meshDragRafId = requestAnimationFrame(() => {
+        meshDragRafId = 0;
+        const pendingEv = meshDragPendingEv;
+        meshDragPendingEv = null;
+        if (!pendingEv || !draggingMesh || !projector) return;
+        const h = hitAt(pendingEv.clientX, pendingEv.clientY);
+        if (!h) return;
+        decalCenter.copy(h.point);
+        decalNormal.copy(h.normal);
+        applyScaledTransform(
+          projector,
+          decalCenter,
+          decalNormal,
+          decalWidth,
+          decalHeight,
+          decalDepth,
+          decalAngle,
+          true // isPreview - movimentação fluida
+        );
+        syncActiveDecalTransform();
+        updateOverlay();
+      });
     });
     el.addEventListener("pointerup", () => {
       if (draggingMesh && projector) {
@@ -1434,6 +1472,7 @@ export async function initDecalDemo(container: HTMLElement, opts?: InitDecalDemo
       }
       draggingMesh = false;
       isInteracting = false;
+      meshDragPendingEv = null;
       controls.enabled = true;
       emitDecalState();
     });
@@ -1445,6 +1484,7 @@ export async function initDecalDemo(container: HTMLElement, opts?: InitDecalDemo
       }
       draggingMesh = false;
       isInteracting = false;
+      meshDragPendingEv = null;
       controls.enabled = true;
       emitDecalState();
     });
@@ -1600,7 +1640,7 @@ export async function initDecalDemo(container: HTMLElement, opts?: InitDecalDemo
             decalHeight = nextH;
           }
         }
-  decalDepth = computeBaseDepth(decalWidth, decalHeight);
+        decalDepth = computeBaseDepth(decalWidth, decalHeight);
       }
     }
 
@@ -1741,7 +1781,7 @@ export async function initDecalDemo(container: HTMLElement, opts?: InitDecalDemo
     if (bbox.isEmpty()) {
       defaultWidth = 0.3;
       defaultHeight = 0.3;
-  defaultDepth = computeBaseDepth(defaultWidth, defaultHeight);
+      defaultDepth = computeBaseDepth(defaultWidth, defaultHeight);
       defaultCenter.set(0, 0.5, 0.1);
       defaultNormal.set(0, 0, 1);
       ensureAllSelectedDecals();
@@ -1752,7 +1792,7 @@ export async function initDecalDemo(container: HTMLElement, opts?: InitDecalDemo
     const base = Math.max(size.x, size.y, size.z) || 1.0;
     defaultWidth = base * 0.25;
     defaultHeight = defaultWidth;
-  defaultDepth = computeBaseDepth(defaultWidth, defaultHeight);
+    defaultDepth = computeBaseDepth(defaultWidth, defaultHeight);
 
     const center = bbox.getCenter(new THREE.Vector3());
     defaultCenter.set(center.x, center.y, bbox.max.z + 0.02);
@@ -1778,6 +1818,7 @@ export async function initDecalDemo(container: HTMLElement, opts?: InitDecalDemo
       modelContainer.add(root);
 
       const bbox = new THREE.Box3().setFromObject(root);
+      modelBounds = bbox.clone();
       const size = bbox.getSize(new THREE.Vector3());
       const center = bbox.getCenter(new THREE.Vector3());
 
@@ -1792,7 +1833,7 @@ export async function initDecalDemo(container: HTMLElement, opts?: InitDecalDemo
       controls.target.copy(center);
       controls.update();
 
-    configureDecalPlacement(root);
+      configureDecalPlacement(root);
       if (isInteractive) attachDragHandlers();
     },
     undefined,
@@ -1889,12 +1930,60 @@ export async function initDecalDemo(container: HTMLElement, opts?: InitDecalDemo
   const listeners: Array<(state: any) => void> = [];
   function notifyListeners(state: any) {
     listeners.forEach((fn) => {
-      try { fn(state); } catch {}
+      try { fn(state); } catch { }
     });
   }
 
   function collectDecalState() {
+    const minDecalAreaCm2 = 5;
+
     return Array.from(decals.values()).map((record) => ({
+      ...(function () {
+        const warnings: string[] = [];
+        const approxAreaCm2 = Math.max(0, record.width * 100) * Math.max(0, record.height * 100);
+        if (approxAreaCm2 > 0 && approxAreaCm2 < minDecalAreaCm2) {
+          warnings.push("min_area_violation");
+        }
+
+        let normalizedPosition: { x: number; y: number; z: number } | null = null;
+        if (modelBounds && !modelBounds.isEmpty()) {
+          const size = modelBounds.getSize(new THREE.Vector3());
+          const safe = new THREE.Vector3(
+            Math.max(size.x, 1e-6),
+            Math.max(size.y, 1e-6),
+            Math.max(size.z, 1e-6)
+          );
+          normalizedPosition = {
+            x: (record.center.x - modelBounds.min.x) / safe.x,
+            y: (record.center.y - modelBounds.min.y) / safe.y,
+            z: (record.center.z - modelBounds.min.z) / safe.z,
+          };
+
+          if (normalizedPosition.y >= 0.82) {
+            warnings.push("neck_zone_risk");
+          }
+
+          if (
+            Math.abs((normalizedPosition.x - 0.5) * 2) >= 0.55 &&
+            normalizedPosition.y >= 0.45 &&
+            normalizedPosition.y <= 0.72
+          ) {
+            warnings.push("underarm_zone_risk");
+          }
+        }
+
+        if (Math.abs(record.normal.x) > 0.72 || Math.abs(record.normal.z) > 0.95) {
+          warnings.push("relief_overlap_risk");
+        }
+
+        return {
+          viability: {
+            approxAreaCm2,
+            normalizedPosition,
+            warnings,
+          },
+        };
+      })(),
       id: record.id,
       position: {
         x: record.center.x,
@@ -1933,7 +2022,7 @@ export async function initDecalDemo(container: HTMLElement, opts?: InitDecalDemo
     listeners.push(listener);
     const initialState = collectDecalState();
     if (initialState.length) {
-      try { listener(initialState); } catch {}
+      try { listener(initialState); } catch { }
     }
     // Retorna função para remover listener
     return () => {
@@ -1947,7 +2036,7 @@ export async function initDecalDemo(container: HTMLElement, opts?: InitDecalDemo
     cancelAnimationFrame(rafId);
     if (emitRafId) cancelAnimationFrame(emitRafId);
     // caso a UI esteja no meio de um drag
-    try { detachWindowDragListeners(); } catch {}
+    try { detachWindowDragListeners(); } catch { }
     resizeObserver.disconnect();
     controls.dispose();
     renderer.dispose();

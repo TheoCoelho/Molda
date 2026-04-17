@@ -7,12 +7,14 @@ import { Tabs, TabsContent, TabsList, TabsTrigger } from "@/components/ui/tabs";
 import { Textarea } from "@/components/ui/textarea";
 import { Switch } from "@/components/ui/switch";
 import { Label } from "@/components/ui/label";
-import { Accordion, AccordionContent, AccordionItem, AccordionTrigger } from "@/components/ui/accordion";
-import { RadioGroup, RadioGroupItem } from "@/components/ui/radio-group";
+import { Checkbox } from "@/components/ui/checkbox";
 import { supabase } from "@/integrations/supabase/client";
 import { PRODUCT_IMAGES_BUCKET } from "@/lib/constants/storage";
 import { toast } from "sonner";
 import { cn } from "@/lib/utils";
+import { UPLOAD_MODEL_API } from "@/lib/constants/storage";
+import { invalidateModelCache } from "@/lib/models";
+import DecalZoneEditor, { type DecalZoneDraft } from "@/components/admin/DecalZoneEditor";
 
 type Part = {
   id: string;
@@ -41,6 +43,15 @@ type ProductSubtype = {
   name: string;
   description?: string | null;
   card_image_path?: string | null;
+  model_3d_path?: string | null;
+  decal_zones_json?: DecalZoneDraft[] | null;
+  print_area_width_cm?: number | null;
+  print_area_height_cm?: number | null;
+  min_decal_area_cm2?: number | null;
+  neck_zone_y_min?: number | null;
+  underarm_zone_y_min?: number | null;
+  underarm_zone_y_max?: number | null;
+  underarm_zone_abs_x_min?: number | null;
   sort_order?: number | null;
   is_active: boolean;
 };
@@ -79,6 +90,31 @@ type Supplier = {
   is_active: boolean;
 };
 
+type PrintingMethod = {
+  id: string;
+  code: string;
+  name: string;
+  description?: string | null;
+  sort_order?: number | null;
+  is_active: boolean;
+};
+
+type MaterialPrintingMethod = {
+  material_id: string;
+  printing_method_id: string;
+};
+
+type ProductMaterial = {
+  product_id: string;
+  material_id: string;
+  supplier_id?: string | null;
+};
+
+type SubtypeMaterial = {
+  subtype_id: string;
+  material_id: string;
+};
+
 const slugify = (value: string) =>
   value
     .toLowerCase()
@@ -92,6 +128,71 @@ const toNumber = (value: string | number | null | undefined, fallback = 0) => {
   return Number.isFinite(num) ? (num as number) : fallback;
 };
 
+const toNullableNumber = (value: string | number | null | undefined) => {
+  if (value === null || value === undefined || value === "") return null;
+  const num = typeof value === "string" ? Number(value) : value;
+  return Number.isFinite(num) ? (num as number) : null;
+};
+
+const parseDecalZones = (value: unknown): DecalZoneDraft[] => {
+  if (!Array.isArray(value)) return [];
+  return value
+    .map((zone) => {
+      if (!zone || typeof zone !== "object") return null;
+      const z = zone as Record<string, unknown>;
+      const behavior = z.behavior === "constrain" ? "constrain" : "block";
+      const name = String(z.name || "zone");
+      const maxDecalSize = z.maxDecalSize == null ? undefined : Number(z.maxDecalSize);
+
+      if (z.kind === "stroke") {
+        const pointsRaw = Array.isArray(z.points) ? z.points : [];
+        const points = pointsRaw
+          .map((p) => (Array.isArray(p) && p.length === 3 ? [Number(p[0]), Number(p[1]), Number(p[2])] : null))
+          .filter((p): p is [number, number, number] => !!p && p.every((n) => Number.isFinite(n)));
+        const normalsRaw = Array.isArray(z.normals) ? z.normals : [];
+        const normals = normalsRaw
+          .map((p) => (Array.isArray(p) && p.length === 3 ? [Number(p[0]), Number(p[1]), Number(p[2])] : null))
+          .filter((p): p is [number, number, number] => !!p && p.every((n) => Number.isFinite(n)));
+        const width = Number(z.width);
+        if (!points.length || !Number.isFinite(width) || width <= 0) return null;
+        return {
+          kind: "stroke",
+          name,
+          points,
+          normals: normals.length ? normals : undefined,
+          width,
+          behavior,
+          maxDecalSize: Number.isFinite(maxDecalSize) ? maxDecalSize : undefined,
+        } satisfies DecalZoneDraft;
+      }
+
+      const center = Array.isArray(z.center) ? z.center : [];
+      if (center.length !== 3) return null;
+      const cx = Number(center[0]);
+      const cy = Number(center[1]);
+      const cz = Number(center[2]);
+      const normalRaw = Array.isArray(z.normal) && z.normal.length === 3 ? z.normal : null;
+      const nx = normalRaw ? Number(normalRaw[0]) : NaN;
+      const ny = normalRaw ? Number(normalRaw[1]) : NaN;
+      const nz = normalRaw ? Number(normalRaw[2]) : NaN;
+      const radius = Number(z.radius);
+      if (!Number.isFinite(cx) || !Number.isFinite(cy) || !Number.isFinite(cz) || !Number.isFinite(radius)) {
+        return null;
+      }
+      return {
+        name,
+        center: [cx, cy, cz] as [number, number, number],
+        normal: Number.isFinite(nx) && Number.isFinite(ny) && Number.isFinite(nz)
+          ? [nx, ny, nz] as [number, number, number]
+          : undefined,
+        radius,
+        behavior,
+        maxDecalSize: Number.isFinite(maxDecalSize) ? maxDecalSize : undefined,
+      } satisfies DecalZoneDraft;
+    })
+    .filter((z): z is DecalZoneDraft => !!z);
+};
+
 const Admin = () => {
   const [loading, setLoading] = useState(false);
   const [parts, setParts] = useState<Part[]>([]);
@@ -101,6 +202,11 @@ const Admin = () => {
   const [inventory, setInventory] = useState<Inventory[]>([]);
   const [materials, setMaterials] = useState<Material[]>([]);
   const [suppliers, setSuppliers] = useState<Supplier[]>([]);
+  const [printingMethods, setPrintingMethods] = useState<PrintingMethod[]>([]);
+  const [materialPrintingMethods, setMaterialPrintingMethods] = useState<MaterialPrintingMethod[]>([]);
+  const [productMaterials, setProductMaterials] = useState<ProductMaterial[]>([]);
+  const [subtypeMaterials, setSubtypeMaterials] = useState<SubtypeMaterial[]>([]);
+  const [selectedSubtypeMaterialIds, setSelectedSubtypeMaterialIds] = useState<string[]>([]);
 
   const [typeForm, setTypeForm] = useState({
     id: "",
@@ -124,14 +230,25 @@ const Admin = () => {
     sort_order: "0",
     is_active: true,
     card_image_path: "",
+    model_3d_path: "",
+    print_area_width_cm: "",
+    print_area_height_cm: "",
+    min_decal_area_cm2: "5",
+    neck_zone_y_min: "0.82",
+    underarm_zone_y_min: "0.45",
+    underarm_zone_y_max: "0.72",
+    underarm_zone_abs_x_min: "0.55",
   });
   const [subtypeImageFile, setSubtypeImageFile] = useState<File | null>(null);
   const [subtypeImagePreview, setSubtypeImagePreview] = useState<string | null>(null);
+  const [subtypeModelFile, setSubtypeModelFile] = useState<FileList | null>(null);
+  const [subtypeDecalZones, setSubtypeDecalZones] = useState<DecalZoneDraft[]>([]);
 
   const [productForm, setProductForm] = useState({
     id: "",
     type_id: "",
     subtype_id: "",
+    material_id: "",
     sku: "",
     name: "",
     description: "",
@@ -159,23 +276,22 @@ const Admin = () => {
     is_active: true,
   });
 
-  const [carouselForm, setCarouselForm] = useState({
-    level: "type" as "type" | "subtype",
-    part_slug: "",
-    parent_type_id: "",
-    name: "",
-    slug: "",
-    description: "",
-    sort_order: "0",
-    is_active: true,
-  });
-  const [carouselImageFile, setCarouselImageFile] = useState<File | null>(null);
-  const [carouselImagePreview, setCarouselImagePreview] = useState<string | null>(null);
-
   const loadCatalog = useCallback(async () => {
     setLoading(true);
     try {
-      const [partsRes, typesRes, subtypesRes, productsRes, inventoryRes, materialsRes, suppliersRes] = await Promise.all([
+      const [
+        partsRes,
+        typesRes,
+        subtypesRes,
+        productsRes,
+        inventoryRes,
+        materialsRes,
+        suppliersRes,
+        printingMethodsRes,
+        materialPrintingMethodsRes,
+        productMaterialsRes,
+        subtypeMaterialsRes,
+      ] = await Promise.all([
         supabase.from("parts").select("*").order("sort_order", { ascending: true }),
         supabase.from("product_types").select("*").order("sort_order", { ascending: true }),
         supabase.from("product_subtypes").select("*").order("sort_order", { ascending: true }),
@@ -183,8 +299,13 @@ const Admin = () => {
         supabase.from("inventory").select("*"),
         supabase.from("materials").select("*").order("name", { ascending: true }),
         supabase.from("suppliers").select("*").order("name", { ascending: true }),
+        supabase.from("printing_methods").select("*").order("sort_order", { ascending: true }),
+        supabase.from("material_printing_methods").select("*"),
+        supabase.from("product_materials").select("*"),
+        supabase.from("subtype_materials").select("*"),
       ]);
 
+      // Tabelas principais — erro aqui aborta o carregamento
       if (partsRes.error) throw partsRes.error;
       if (typesRes.error) throw typesRes.error;
       if (subtypesRes.error) throw subtypesRes.error;
@@ -193,6 +314,12 @@ const Admin = () => {
       if (materialsRes.error) throw materialsRes.error;
       if (suppliersRes.error) throw suppliersRes.error;
 
+      // Tabelas de migração — falha silenciosa se ainda não existirem no DB
+      if (printingMethodsRes.error) console.warn("[admin] printing_methods:", printingMethodsRes.error.message);
+      if (materialPrintingMethodsRes.error) console.warn("[admin] material_printing_methods:", materialPrintingMethodsRes.error.message);
+      if (productMaterialsRes.error) console.warn("[admin] product_materials:", productMaterialsRes.error.message);
+      if (subtypeMaterialsRes.error) console.warn("[admin] subtype_materials:", subtypeMaterialsRes.error.message);
+
       setParts((partsRes.data as Part[]) || []);
       setTypes((typesRes.data as ProductType[]) || []);
       setSubtypes((subtypesRes.data as ProductSubtype[]) || []);
@@ -200,6 +327,10 @@ const Admin = () => {
       setInventory((inventoryRes.data as Inventory[]) || []);
       setMaterials((materialsRes.data as Material[]) || []);
       setSuppliers((suppliersRes.data as Supplier[]) || []);
+      setPrintingMethods((printingMethodsRes.data as PrintingMethod[]) || []);
+      setMaterialPrintingMethods((materialPrintingMethodsRes.data as MaterialPrintingMethod[]) || []);
+      setProductMaterials((productMaterialsRes.data as ProductMaterial[]) || []);
+      setSubtypeMaterials((subtypeMaterialsRes.data as SubtypeMaterial[]) || []);
     } catch (err: any) {
       console.error("[admin.loadCatalog]", err);
       toast.error(err?.message || "Falha ao carregar dados do catalogo.");
@@ -239,51 +370,57 @@ const Admin = () => {
     setProductImagePreview(null);
   }, [productImageFile]);
 
-  useEffect(() => {
-    if (carouselImageFile) {
-      const url = URL.createObjectURL(carouselImageFile);
-      setCarouselImagePreview(url);
-      return () => URL.revokeObjectURL(url);
-    }
-    setCarouselImagePreview(null);
-  }, [carouselImageFile]);
-
   const partById = useMemo(() => new Map(parts.map((p) => [p.id, p])), [parts]);
   const typeById = useMemo(() => new Map(types.map((t) => [t.id, t])), [types]);
-  const bodyPartOptions = [
-    { slug: "head", label: "Cabeca" },
-    { slug: "torso", label: "Tronco" },
-    { slug: "legs", label: "Pernas" },
-  ];
+  const materialById = useMemo(() => new Map(materials.map((m) => [m.id, m])), [materials]);
+  const printingMethodById = useMemo(
+    () => new Map(printingMethods.map((method) => [method.id, method])),
+    [printingMethods]
+  );
+  const materialPrintingMethodIds = useMemo(() => {
+    const map = new Map<string, string[]>();
+    materialPrintingMethods.forEach((relation) => {
+      const list = map.get(relation.material_id) ?? [];
+      list.push(relation.printing_method_id);
+      map.set(relation.material_id, list);
+    });
+    return map;
+  }, [materialPrintingMethods]);
+  const productMaterialByProductId = useMemo(() => {
+    const map = new Map<string, ProductMaterial>();
+    productMaterials.forEach((relation) => {
+      if (!map.has(relation.product_id)) {
+        map.set(relation.product_id, relation);
+      }
+    });
+    return map;
+  }, [productMaterials]);
+  const materialPrintingNamesByMaterialId = useMemo(() => {
+    const map = new Map<string, string[]>();
+    materialPrintingMethods.forEach((relation) => {
+      const method = printingMethodById.get(relation.printing_method_id);
+      if (!method) return;
+      const list = map.get(relation.material_id) ?? [];
+      list.push(method.name);
+      map.set(relation.material_id, list);
+    });
+    return map;
+  }, [materialPrintingMethods, printingMethodById]);
 
-  const selectedPartId = useMemo(() => {
-    if (!carouselForm.part_slug) return "";
-    return parts.find((part) => part.slug === carouselForm.part_slug)?.id || "";
-  }, [carouselForm.part_slug, parts]);
+  const subtypeMaterialIdsBySubtypeId = useMemo(() => {
+    const map = new Map<string, string[]>();
+    subtypeMaterials.forEach((rel) => {
+      const list = map.get(rel.subtype_id) ?? [];
+      list.push(rel.material_id);
+      map.set(rel.subtype_id, list);
+    });
+    return map;
+  }, [subtypeMaterials]);
 
   const inventoryByProductId = useMemo(
     () => new Map(inventory.map((inv) => [inv.product_id, inv])),
     [inventory]
   );
-  const typesByPart = useMemo(() => {
-    const map = new Map<string, ProductType[]>();
-    types.forEach((typeItem) => {
-      const list = map.get(typeItem.part_id) ?? [];
-      list.push(typeItem);
-      map.set(typeItem.part_id, list);
-    });
-    return map;
-  }, [types]);
-  const subtypesByType = useMemo(() => {
-    const map = new Map<string, ProductSubtype[]>();
-    subtypes.forEach((subtype) => {
-      const list = map.get(subtype.type_id) ?? [];
-      list.push(subtype);
-      map.set(subtype.type_id, list);
-    });
-    return map;
-  }, [subtypes]);
-
   useEffect(() => {
     const next: Record<string, { on_hand: number; reserved: number }> = {};
     products.forEach((product) => {
@@ -296,36 +433,10 @@ const Admin = () => {
     setInventoryEdits(next);
   }, [inventoryByProductId, products]);
 
-  useEffect(() => {
-    if (!selectedPartId) {
-      if (carouselForm.parent_type_id) {
-        setCarouselForm((prev) => ({ ...prev, parent_type_id: "" }));
-      }
-      return;
-    }
-    const existsInPart = types.some(
-      (typeItem) => typeItem.id === carouselForm.parent_type_id && typeItem.part_id === selectedPartId
-    );
-    if (!existsInPart && carouselForm.parent_type_id) {
-      setCarouselForm((prev) => ({ ...prev, parent_type_id: "" }));
-    }
-  }, [carouselForm.parent_type_id, selectedPartId, types]);
-
   const getPublicUrl = useCallback((path?: string | null) => {
     if (!path) return null;
     const { data } = supabase.storage.from(PRODUCT_IMAGES_BUCKET).getPublicUrl(path);
     return data?.publicUrl || null;
-  }, []);
-
-  const resolvePartIdBySlug = useCallback(async (slug: string) => {
-    if (!slug) return "";
-    const { data, error } = await supabase
-      .from("parts")
-      .select("id")
-      .eq("slug", slug)
-      .maybeSingle();
-    if (error) throw error;
-    return data?.id || "";
   }, []);
 
   const uploadImage = useCallback(async (file: File, folder: string) => {
@@ -364,8 +475,19 @@ const Admin = () => {
       sort_order: "0",
       is_active: true,
       card_image_path: "",
+      model_3d_path: "",
+      print_area_width_cm: "",
+      print_area_height_cm: "",
+      min_decal_area_cm2: "5",
+      neck_zone_y_min: "0.82",
+      underarm_zone_y_min: "0.45",
+      underarm_zone_y_max: "0.72",
+      underarm_zone_abs_x_min: "0.55",
     });
     setSubtypeImageFile(null);
+    setSubtypeModelFile(null);
+    setSubtypeDecalZones([]);
+    setSelectedSubtypeMaterialIds([]);
   };
 
   const resetProductForm = () => {
@@ -373,6 +495,7 @@ const Admin = () => {
       id: "",
       type_id: "",
       subtype_id: "",
+      material_id: "",
       sku: "",
       name: "",
       description: "",
@@ -400,20 +523,6 @@ const Admin = () => {
       phone: "",
       is_active: true,
     });
-  };
-
-  const resetCarouselForm = () => {
-    setCarouselForm({
-      level: "type",
-      part_slug: "",
-      parent_type_id: "",
-      name: "",
-      slug: "",
-      description: "",
-      sort_order: "0",
-      is_active: true,
-    });
-    setCarouselImageFile(null);
   };
 
   const handleSaveType = async (event: React.FormEvent) => {
@@ -456,7 +565,7 @@ const Admin = () => {
 
   const handleSaveSubtype = async (event: React.FormEvent) => {
     event.preventDefault();
-    const payload = {
+    const payload: Record<string, any> = {
       type_id: subtypeForm.type_id,
       name: subtypeForm.name.trim(),
       slug: (subtypeForm.slug || subtypeForm.name).trim()
@@ -466,6 +575,42 @@ const Admin = () => {
       sort_order: toNumber(subtypeForm.sort_order),
       is_active: subtypeForm.is_active,
       card_image_path: subtypeForm.card_image_path || null,
+      model_3d_path: subtypeForm.model_3d_path || null,
+      decal_zones_json: subtypeDecalZones,
+      print_area_width_cm: toNullableNumber(subtypeForm.print_area_width_cm),
+      print_area_height_cm: toNullableNumber(subtypeForm.print_area_height_cm),
+      min_decal_area_cm2: toNullableNumber(subtypeForm.min_decal_area_cm2) ?? 5,
+      neck_zone_y_min: toNullableNumber(subtypeForm.neck_zone_y_min) ?? 0.82,
+      underarm_zone_y_min: toNullableNumber(subtypeForm.underarm_zone_y_min) ?? 0.45,
+      underarm_zone_y_max: toNullableNumber(subtypeForm.underarm_zone_y_max) ?? 0.72,
+      underarm_zone_abs_x_min: toNullableNumber(subtypeForm.underarm_zone_abs_x_min) ?? 0.55,
+    };
+
+    const legacyPayload: Record<string, any> = {
+      type_id: payload.type_id,
+      name: payload.name,
+      slug: payload.slug,
+      description: payload.description,
+      sort_order: payload.sort_order,
+      is_active: payload.is_active,
+      card_image_path: payload.card_image_path,
+      model_3d_path: payload.model_3d_path,
+    };
+
+    const isMissingSubtypeConstraintColumn = (error: any) => {
+      const message = String(error?.message || "");
+      return (
+        error?.code === "42703" ||
+        error?.code === "PGRST204" ||
+        message.includes("min_decal_area_cm2") ||
+        message.includes("print_area_width_cm") ||
+        message.includes("print_area_height_cm") ||
+        message.includes("neck_zone_y_min") ||
+        message.includes("underarm_zone_y_min") ||
+        message.includes("underarm_zone_y_max") ||
+        message.includes("underarm_zone_abs_x_min") ||
+        message.includes("decal_zones_json")
+      );
     };
 
     if (!payload.type_id || !payload.name || !payload.slug) {
@@ -477,18 +622,76 @@ const Admin = () => {
       if (subtypeImageFile) {
         payload.card_image_path = await uploadImage(subtypeImageFile, "subtypes");
       }
+
+      // Upload do modelo 3D via Vite plugin (múltiplos arquivos: .gltf + .bin + texturas)
+      if (subtypeModelFile && subtypeModelFile.length > 0) {
+        const formData = new FormData();
+        for (let i = 0; i < subtypeModelFile.length; i++) {
+          formData.append("file", subtypeModelFile[i]);
+        }
+        formData.append("slug", payload.slug as string);
+        const uploadRes = await fetch(UPLOAD_MODEL_API, {
+          method: "POST",
+          body: formData,
+        });
+        const uploadJson = await uploadRes.json();
+        if (!uploadRes.ok || !uploadJson.success) {
+          throw new Error(uploadJson.error || "Falha ao fazer upload do modelo 3D.");
+        }
+        payload.model_3d_path = uploadJson.path;
+        const fileNames = uploadJson.files?.join(", ") || uploadJson.filename;
+        toast.success(`Modelo 3D salvo: ${fileNames}`);
+      }
+
       if (subtypeForm.id) {
-        const { error } = await supabase
+        let { error } = await supabase
           .from("product_subtypes")
           .update(payload)
           .eq("id", subtypeForm.id);
+
+        if (isMissingSubtypeConstraintColumn(error)) {
+          const fallback = await supabase
+            .from("product_subtypes")
+            .update(legacyPayload)
+            .eq("id", subtypeForm.id);
+          error = fallback.error;
+          if (!error) {
+            toast.warning("Subtipo salvo sem colunas novas. Execute os SQL subtype_print_constraints.sql e 07_add_decal_zones_json.sql no Supabase para habilitar todos os campos.");
+          }
+        }
+
         if (error) throw error;
         toast.success("Subtipo atualizado.");
       } else {
-        const { error } = await supabase.from("product_subtypes").insert(payload);
+        let { error } = await supabase.from("product_subtypes").insert(payload);
+
+        if (isMissingSubtypeConstraintColumn(error)) {
+          const fallback = await supabase.from("product_subtypes").insert(legacyPayload);
+          error = fallback.error;
+          if (!error) {
+            toast.warning("Subtipo salvo sem colunas novas. Execute os SQL subtype_print_constraints.sql e 07_add_decal_zones_json.sql no Supabase para habilitar todos os campos.");
+          }
+        }
+
         if (error) throw error;
         toast.success("Subtipo criado.");
       }
+      // Salva tecidos associados ao subtipo
+      const savedSubtypeId = subtypeForm.id
+        ? subtypeForm.id
+        : (await supabase.from("product_subtypes").select("id").eq("slug", payload.slug as string).single()).data?.id;
+
+      if (savedSubtypeId) {
+        await supabase.from("subtype_materials").delete().eq("subtype_id", savedSubtypeId);
+        if (selectedSubtypeMaterialIds.length > 0) {
+          await supabase.from("subtype_materials").insert(
+            selectedSubtypeMaterialIds.map((mid) => ({ subtype_id: savedSubtypeId, material_id: mid }))
+          );
+        }
+      }
+
+      // Invalida cache de modelos para que a nova config seja usada
+      invalidateModelCache();
       resetSubtypeForm();
       await loadCatalog();
     } catch (err: any) {
@@ -497,70 +700,6 @@ const Admin = () => {
     }
   };
 
-  const handleSaveCarouselItem = async (event: React.FormEvent) => {
-    event.preventDefault();
-    const basePayload = {
-      name: carouselForm.name.trim(),
-      slug: (carouselForm.slug || carouselForm.name).trim()
-        ? slugify(carouselForm.slug || carouselForm.name)
-        : "",
-      description: carouselForm.description.trim() || null,
-      sort_order: toNumber(carouselForm.sort_order),
-      is_active: carouselForm.is_active,
-    };
-
-    if (!basePayload.name || !basePayload.slug) {
-      toast.error("Nome e slug sao obrigatorios.");
-      return;
-    }
-
-    try {
-      if (carouselForm.level === "type") {
-        if (!carouselForm.part_slug) {
-          toast.error("Selecione a parte do corpo.");
-          return;
-        }
-        const resolvedPartId = await resolvePartIdBySlug(carouselForm.part_slug);
-        if (!resolvedPartId) {
-          toast.error("Parte do corpo nao encontrada no banco. Rode o SQL para criar head/torso/legs.");
-          return;
-        }
-        const payload = {
-          ...basePayload,
-          part_id: resolvedPartId,
-          card_image_path: null as string | null,
-        };
-        if (carouselImageFile) {
-          payload.card_image_path = await uploadImage(carouselImageFile, "types");
-        }
-        const { error } = await supabase.from("product_types").insert(payload);
-        if (error) throw error;
-        toast.success("Tipo criado no carrossel.");
-      } else {
-        if (!carouselForm.parent_type_id) {
-          toast.error("Selecione o tipo pai no acordeon.");
-          return;
-        }
-        const payload = {
-          ...basePayload,
-          type_id: carouselForm.parent_type_id,
-          card_image_path: null as string | null,
-        };
-        if (carouselImageFile) {
-          payload.card_image_path = await uploadImage(carouselImageFile, "subtypes");
-        }
-        const { error } = await supabase.from("product_subtypes").insert(payload);
-        if (error) throw error;
-        toast.success("Subtipo criado no carrossel.");
-      }
-
-      resetCarouselForm();
-      await loadCatalog();
-    } catch (err: any) {
-      console.error("[admin.saveCarouselItem]", err);
-      toast.error(err?.message || "Falha ao salvar item do carrossel.");
-    }
-  };
 
   const handleSaveProduct = async (event: React.FormEvent) => {
     event.preventDefault();
@@ -575,8 +714,8 @@ const Admin = () => {
       cover_image_path: productForm.cover_image_path || null,
     };
 
-    if (!payload.type_id || !payload.sku || !payload.name) {
-      toast.error("Tipo, SKU e nome sao obrigatorios.");
+    if (!payload.type_id || !payload.sku || !payload.name || !productForm.material_id) {
+      toast.error("Tipo, tecido, SKU e nome sao obrigatorios.");
       return;
     }
 
@@ -584,20 +723,69 @@ const Admin = () => {
       if (productImageFile) {
         payload.cover_image_path = await uploadImage(productImageFile, "products");
       }
+
+      let productId = productForm.id;
       if (productForm.id) {
-        const { error } = await supabase.from("products").update(payload).eq("id", productForm.id);
+        const { data, error } = await supabase
+          .from("products")
+          .update(payload)
+          .eq("id", productForm.id)
+          .select("id")
+          .single();
         if (error) throw error;
+        productId = data.id;
         toast.success("Produto atualizado.");
       } else {
-        const { error } = await supabase.from("products").insert(payload);
+        const { data, error } = await supabase
+          .from("products")
+          .insert(payload)
+          .select("id")
+          .single();
         if (error) throw error;
+        productId = data.id;
         toast.success("Produto criado.");
       }
+
+      if (!productId) {
+        throw new Error("Nao foi possivel identificar o produto salvo.");
+      }
+
+      const { error: deleteProductMaterialsError } = await supabase
+        .from("product_materials")
+        .delete()
+        .eq("product_id", productId);
+      if (deleteProductMaterialsError) throw deleteProductMaterialsError;
+
+      const { error: insertProductMaterialError } = await supabase.from("product_materials").insert({
+        product_id: productId,
+        material_id: productForm.material_id,
+      });
+      if (insertProductMaterialError) throw insertProductMaterialError;
+
       resetProductForm();
       await loadCatalog();
     } catch (err: any) {
       console.error("[admin.saveProduct]", err);
       toast.error(err?.message || "Falha ao salvar produto.");
+    }
+  };
+
+  const handleDeleteSubtype = async (id: string, name: string) => {
+    if (!window.confirm(`Tem certeza que deseja excluir o subtipo "${name}"?`)) {
+      return;
+    }
+
+    setLoading(true);
+    try {
+      const { error } = await supabase.from("product_subtypes").delete().eq("id", id);
+      if (error) throw error;
+      toast.success("Subtipo excluído com sucesso.");
+      await loadCatalog();
+    } catch (err: any) {
+      console.error("[admin.handleDeleteSubtype]", err);
+      toast.error(err?.message || "Falha ao excluir subtipo.");
+    } finally {
+      setLoading(false);
     }
   };
 
@@ -616,13 +804,16 @@ const Admin = () => {
 
     try {
       if (materialForm.id) {
-        const { error } = await supabase.from("materials").update(payload).eq("id", materialForm.id);
+        const { error } = await supabase
+          .from("materials")
+          .update(payload)
+          .eq("id", materialForm.id);
         if (error) throw error;
-        toast.success("Material atualizado.");
+        toast.success("Tecido atualizado.");
       } else {
         const { error } = await supabase.from("materials").insert(payload);
         if (error) throw error;
-        toast.success("Material criado.");
+        toast.success("Tecido criado.");
       }
       resetMaterialForm();
       await loadCatalog();
@@ -684,13 +875,35 @@ const Admin = () => {
     }
   };
 
+  const handleToggleMaterialPrintingMethod = async (
+    materialId: string,
+    printingMethodId: string,
+    checked: boolean
+  ) => {
+    try {
+      if (checked) {
+        const { error } = await supabase
+          .from("material_printing_methods")
+          .insert({ material_id: materialId, printing_method_id: printingMethodId });
+        if (error) throw error;
+      } else {
+        const { error } = await supabase
+          .from("material_printing_methods")
+          .delete()
+          .eq("material_id", materialId)
+          .eq("printing_method_id", printingMethodId);
+        if (error) throw error;
+      }
+      await loadCatalog();
+    } catch (err: any) {
+      console.error("[admin.toggleMaterialPrintingMethod]", err);
+      toast.error(err?.message || "Falha ao atualizar estamparia do tecido.");
+    }
+  };
+
   const activeSubtypesForType = useMemo(
     () => subtypes.filter((subtype) => subtype.type_id === productForm.type_id),
     [subtypes, productForm.type_id]
-  );
-  const typesForCarouselPart = useMemo(
-    () => (selectedPartId ? typesByPart.get(selectedPartId) ?? [] : []),
-    [selectedPartId, typesByPart]
   );
   return (
     <div className="min-h-screen bg-background text-foreground">
@@ -699,197 +912,18 @@ const Admin = () => {
         <div className="mb-8">
           <p className="text-xs uppercase tracking-[0.3em] text-muted-foreground">Admin</p>
           <h1 className="text-3xl font-semibold">Catalogo e disponibilidade</h1>
-          <p className="mt-2 text-sm text-muted-foreground">
-            Gerencie pecas, tipos, subtipos, produtos e estoque que abastecem os carrosseis do
-            Create.
-          </p>
+          <p className="mt-2 text-sm text-muted-foreground">Gerencie tipos, subtipos, produtos e estoque do Create.</p>
         </div>
 
-        <Tabs defaultValue="parts">
+        <Tabs defaultValue="types">
           <TabsList className="flex flex-wrap gap-2">
-            <TabsTrigger value="parts">Pecas</TabsTrigger>
             <TabsTrigger value="types">Tipos</TabsTrigger>
             <TabsTrigger value="subtypes">Subtipos</TabsTrigger>
-            <TabsTrigger value="materials">Materiais</TabsTrigger>
+            <TabsTrigger value="materials">Tecidos &amp; Estamparia</TabsTrigger>
             <TabsTrigger value="suppliers">Fornecedores</TabsTrigger>
             <TabsTrigger value="products">Produtos</TabsTrigger>
             <TabsTrigger value="inventory">Estoque</TabsTrigger>
           </TabsList>
-
-          <TabsContent value="parts" className="mt-6">
-            <div className="grid gap-6 lg:grid-cols-[360px_1fr]">
-              <form onSubmit={handleSaveCarouselItem} className="glass rounded-2xl border p-5 space-y-4">
-                <div>
-                  <h2 className="text-lg font-semibold">Nova peca do carrossel</h2>
-                  <p className="text-xs text-muted-foreground">
-                    Escolha a parte do corpo e defina se o item sera um tipo (nivel 1) ou subtipo.
-                  </p>
-                </div>
-                <div className="space-y-2">
-                  <Label>Parte do corpo</Label>
-                  <select
-                    value={carouselForm.part_slug}
-                    onChange={(e) => setCarouselForm((prev) => ({ ...prev, part_slug: e.target.value }))}
-                    className="w-full rounded-md border bg-background px-3 py-2 text-sm"
-                  >
-                    <option value="">Selecione</option>
-                    {bodyPartOptions.map((part) => (
-                      <option key={part.slug} value={part.slug}>
-                        {part.label}
-                      </option>
-                    ))}
-                  </select>
-                </div>
-                <div className="space-y-2">
-                  <Label>Nivel do carrossel</Label>
-                  <RadioGroup
-                    value={carouselForm.level}
-                    onValueChange={(value) =>
-                      setCarouselForm((prev) => ({ ...prev, level: value as "type" | "subtype" }))
-                    }
-                  >
-                    <div className="flex items-center gap-2">
-                      <RadioGroupItem value="type" id="carousel-level-type" />
-                      <Label htmlFor="carousel-level-type">Primeiro nivel (tipo)</Label>
-                    </div>
-                    <div className="flex items-center gap-2">
-                      <RadioGroupItem value="subtype" id="carousel-level-subtype" />
-                      <Label htmlFor="carousel-level-subtype">Subtipo de outro tipo</Label>
-                    </div>
-                  </RadioGroup>
-                </div>
-                {carouselForm.level === "subtype" && (
-                  <div className="rounded-lg border px-3 py-2 text-xs text-muted-foreground">
-                    {carouselForm.parent_type_id
-                      ? `Tipo pai selecionado: ${typeById.get(carouselForm.parent_type_id)?.name || "Selecionado"}`
-                      : "Selecione o tipo pai no acordeon ao lado."}
-                  </div>
-                )}
-                <div className="space-y-2">
-                  <Label>Nome</Label>
-                  <Input
-                    value={carouselForm.name}
-                    onChange={(e) => setCarouselForm((prev) => ({ ...prev, name: e.target.value }))}
-                    placeholder="Ex: Camiseta, Oversized"
-                  />
-                </div>
-                <div className="space-y-2">
-                  <Label>Slug</Label>
-                  <Input
-                    value={carouselForm.slug}
-                    onChange={(e) => setCarouselForm((prev) => ({ ...prev, slug: e.target.value }))}
-                    placeholder="deixe vazio para gerar automaticamente"
-                  />
-                </div>
-                <div className="space-y-2">
-                  <Label>Descricao</Label>
-                  <Textarea
-                    value={carouselForm.description}
-                    onChange={(e) => setCarouselForm((prev) => ({ ...prev, description: e.target.value }))}
-                    placeholder="Descricao curta para o card"
-                  />
-                </div>
-                <div className="space-y-2">
-                  <Label>Ordem</Label>
-                  <Input
-                    type="number"
-                    value={carouselForm.sort_order}
-                    onChange={(e) => setCarouselForm((prev) => ({ ...prev, sort_order: e.target.value }))}
-                  />
-                </div>
-                <div className="space-y-2">
-                  <Label>Imagem do card</Label>
-                  <Input type="file" accept="image/*" onChange={(e) => setCarouselImageFile(e.target.files?.[0] || null)} />
-                  {carouselImagePreview && (
-                    <img src={carouselImagePreview} alt="Preview" className="h-28 w-full rounded-lg object-cover" />
-                  )}
-                </div>
-                <div className="flex items-center justify-between">
-                  <Label>Ativo</Label>
-                  <Switch
-                    checked={carouselForm.is_active}
-                    onCheckedChange={(value) => setCarouselForm((prev) => ({ ...prev, is_active: value }))}
-                  />
-                </div>
-                <div className="flex items-center gap-2">
-                  <Button type="submit" disabled={loading}>
-                    Criar peca
-                  </Button>
-                  <Button type="button" variant="ghost" onClick={resetCarouselForm}>
-                    Limpar
-                  </Button>
-                </div>
-              </form>
-
-              <div className="glass rounded-2xl border p-5">
-                <div className="flex items-center justify-between">
-                  <h3 className="text-sm font-semibold">Arvore do carrossel</h3>
-                  <span className="text-[11px] uppercase tracking-[0.18em] text-muted-foreground">
-                    por parte do corpo
-                  </span>
-                </div>
-                {!carouselForm.part_slug ? (
-                  <div className="mt-4 rounded-xl border border-dashed px-4 py-6 text-xs text-muted-foreground">
-                    Selecione a parte do corpo para ver os tipos e subtipos.
-                  </div>
-                ) : !selectedPartId ? (
-                  <div className="mt-4 rounded-xl border border-dashed px-4 py-6 text-xs text-destructive">
-                    As partes fixas nao foram encontradas no banco. Rode o SQL para criar head/torso/legs.
-                  </div>
-                ) : typesForCarouselPart.length === 0 ? (
-                  <div className="mt-4 rounded-xl border border-dashed px-4 py-6 text-xs text-muted-foreground">
-                    Nenhum tipo cadastrado para esta parte.
-                  </div>
-                ) : (
-                  <Accordion type="multiple" className="mt-3">
-                    {typesForCarouselPart.map((typeItem) => {
-                      const subList = subtypesByType.get(typeItem.id) ?? [];
-                      const isSelectedParent = carouselForm.parent_type_id === typeItem.id;
-                      return (
-                        <AccordionItem key={typeItem.id} value={typeItem.id} className="border-b/60">
-                          <AccordionTrigger className="text-sm">{typeItem.name}</AccordionTrigger>
-                          <AccordionContent>
-                            <div className="flex items-center justify-between gap-3 text-xs">
-                              <span className="text-muted-foreground">
-                                {typeItem.description || "Sem descricao"}
-                              </span>
-                              <Button
-                                type="button"
-                                size="sm"
-                                variant={isSelectedParent ? "default" : "outline"}
-                                onClick={() =>
-                                  setCarouselForm((prev) => ({
-                                    ...prev,
-                                    level: "subtype",
-                                    parent_type_id: typeItem.id,
-                                  }))
-                                }
-                              >
-                                {isSelectedParent ? "Selecionado" : "Usar como pai"}
-                              </Button>
-                            </div>
-                            <div className="mt-3 space-y-2 pl-4 border-l border-border/60">
-                              {subList.length === 0 ? (
-                                <div className="text-xs text-muted-foreground">Sem subtipos</div>
-                              ) : (
-                                subList.map((subtype) => (
-                                  <div key={subtype.id} className="flex items-center justify-between text-xs">
-                                    <span className="font-medium">{subtype.name}</span>
-                                    <span className="text-muted-foreground">{subtype.description || "Subtipo"}</span>
-                                  </div>
-                                ))
-                              )}
-                            </div>
-                          </AccordionContent>
-                        </AccordionItem>
-                      );
-                    })}
-                  </Accordion>
-                )}
-              </div>
-            </div>
-
-          </TabsContent>
           <TabsContent value="types" className="mt-6">
             <div className="grid gap-6 lg:grid-cols-[360px_1fr]">
               <form onSubmit={handleSaveType} className="glass rounded-2xl border p-5 space-y-4">
@@ -1083,10 +1117,137 @@ const Admin = () => {
                   />
                 </div>
                 <div className="space-y-2">
+                  <Label>Area util de estampa (cm)</Label>
+                  <div className="grid grid-cols-2 gap-2">
+                    <Input
+                      type="number"
+                      min="1"
+                      step="0.1"
+                      value={subtypeForm.print_area_width_cm}
+                      onChange={(e) => setSubtypeForm((prev) => ({ ...prev, print_area_width_cm: e.target.value }))}
+                      placeholder="Largura"
+                    />
+                    <Input
+                      type="number"
+                      min="1"
+                      step="0.1"
+                      value={subtypeForm.print_area_height_cm}
+                      onChange={(e) => setSubtypeForm((prev) => ({ ...prev, print_area_height_cm: e.target.value }))}
+                      placeholder="Altura"
+                    />
+                  </div>
+                </div>
+                <div className="space-y-2">
+                  <Label>Area minima do decal (cm²)</Label>
+                  <Input
+                    type="number"
+                    min="1"
+                    step="0.1"
+                    value={subtypeForm.min_decal_area_cm2}
+                    onChange={(e) => setSubtypeForm((prev) => ({ ...prev, min_decal_area_cm2: e.target.value }))}
+                    placeholder="5"
+                  />
+                </div>
+                <div className="space-y-2">
+                  <Label>Zonas de alerta (normalizadas 0..1)</Label>
+                  <div className="grid grid-cols-2 gap-2">
+                    <Input
+                      type="number"
+                      min="0"
+                      max="1"
+                      step="0.01"
+                      value={subtypeForm.neck_zone_y_min}
+                      onChange={(e) => setSubtypeForm((prev) => ({ ...prev, neck_zone_y_min: e.target.value }))}
+                      placeholder="Gola y min"
+                    />
+                    <Input
+                      type="number"
+                      min="0"
+                      max="1"
+                      step="0.01"
+                      value={subtypeForm.underarm_zone_abs_x_min}
+                      onChange={(e) => setSubtypeForm((prev) => ({ ...prev, underarm_zone_abs_x_min: e.target.value }))}
+                      placeholder="Abaixo manga |x| min"
+                    />
+                    <Input
+                      type="number"
+                      min="0"
+                      max="1"
+                      step="0.01"
+                      value={subtypeForm.underarm_zone_y_min}
+                      onChange={(e) => setSubtypeForm((prev) => ({ ...prev, underarm_zone_y_min: e.target.value }))}
+                      placeholder="Abaixo manga y min"
+                    />
+                    <Input
+                      type="number"
+                      min="0"
+                      max="1"
+                      step="0.01"
+                      value={subtypeForm.underarm_zone_y_max}
+                      onChange={(e) => setSubtypeForm((prev) => ({ ...prev, underarm_zone_y_max: e.target.value }))}
+                      placeholder="Abaixo manga y max"
+                    />
+                  </div>
+                </div>
+                <div className="space-y-2">
                   <Label>Imagem do card</Label>
                   <Input type="file" accept="image/*" onChange={(e) => setSubtypeImageFile(e.target.files?.[0] || null)} />
                   {subtypeImagePreview && (
                     <img src={subtypeImagePreview} alt="Preview" className="h-28 w-full rounded-lg object-cover" />
+                  )}
+                </div>
+                <div className="space-y-2">
+                  <Label>Modelo 3D (.glb ou .gltf + .bin + texturas)</Label>
+                  <Input
+                    type="file"
+                    accept=".glb,.gltf,.bin,.png,.jpg,.jpeg,.webp"
+                    multiple
+                    onChange={(e) => setSubtypeModelFile(e.target.files || null)}
+                  />
+                  {subtypeModelFile && subtypeModelFile.length > 0 && (
+                    <div className="flex flex-col gap-1 rounded-lg border border-blue-200 bg-blue-50 px-3 py-2 text-xs text-blue-700">
+                      <div className="flex items-center gap-2">
+                        <span>📦</span>
+                        <span className="font-medium">{subtypeModelFile.length} arquivo(s) selecionado(s)</span>
+                      </div>
+                      {Array.from(subtypeModelFile).map((f, i) => (
+                        <div key={i} className="ml-5 truncate text-blue-500">
+                          {f.name} ({(f.size / 1024).toFixed(0)} KB)
+                        </div>
+                      ))}
+                    </div>
+                  )}
+                  {!subtypeModelFile && subtypeForm.model_3d_path && (
+                    <div className="flex items-center gap-2 rounded-lg border border-green-200 bg-green-50 px-3 py-2 text-xs text-green-700">
+                      <span>✅</span>
+                      <span className="truncate">Modelo atual: {subtypeForm.model_3d_path}</span>
+                    </div>
+                  )}
+                </div>
+                <div className="space-y-2">
+                  <Label>Tecidos associados a esta peca</Label>
+                  {materials.length === 0 ? (
+                    <div className="rounded-md border border-dashed px-3 py-2 text-xs text-muted-foreground">
+                      Nenhum tecido cadastrado. Crie tecidos na aba Tecidos &amp; Estamparia.
+                    </div>
+                  ) : (
+                    <div className="space-y-2 rounded-md border px-3 py-2">
+                      {materials.filter((m) => m.is_active).map((material) => (
+                        <label key={material.id} className="flex items-center gap-2 text-sm cursor-pointer">
+                          <Checkbox
+                            checked={selectedSubtypeMaterialIds.includes(material.id)}
+                            onCheckedChange={(checked) =>
+                              setSelectedSubtypeMaterialIds((prev) =>
+                                checked
+                                  ? prev.includes(material.id) ? prev : [...prev, material.id]
+                                  : prev.filter((id) => id !== material.id)
+                              )
+                            }
+                          />
+                          <span>{material.name}</span>
+                        </label>
+                      ))}
+                    </div>
                   )}
                 </div>
                 <div className="flex items-center justify-between">
@@ -1109,6 +1270,17 @@ const Admin = () => {
               </form>
 
               <div className="space-y-3">
+                <div className="glass rounded-xl border p-3">
+                  <p className="mb-2 text-xs text-muted-foreground">
+                    Preview 3D e marcação de zonas no painel da lista de subtipos.
+                  </p>
+                  <DecalZoneEditor
+                    modelPath={subtypeForm.model_3d_path}
+                    localModelFile={subtypeModelFile}
+                    zones={subtypeDecalZones}
+                    onChange={setSubtypeDecalZones}
+                  />
+                </div>
                 {subtypes.length === 0 ? (
                   <div className="rounded-xl border border-dashed px-4 py-6 text-sm text-muted-foreground">
                     Nenhum subtipo cadastrado.
@@ -1131,30 +1303,72 @@ const Admin = () => {
                           />
                         )}
                         <div>
-                          <div className="text-sm font-semibold">{subtype.name}</div>
+                          <div className="text-sm font-semibold flex items-center gap-1.5">
+                            {subtype.name}
+                            {(subtype as any).model_3d_path && (
+                              <span className="inline-flex items-center rounded-full bg-blue-100 px-1.5 py-0.5 text-[10px] font-medium text-blue-700" title={(subtype as any).model_3d_path}>
+                                3D
+                              </span>
+                            )}
+                            {Array.isArray((subtype as any).decal_zones_json) && (subtype as any).decal_zones_json.length > 0 && (
+                              <span className="inline-flex items-center rounded-full bg-rose-100 px-1.5 py-0.5 text-[10px] font-medium text-rose-700">
+                                {((subtype as any).decal_zones_json as unknown[]).length} zona(s)
+                              </span>
+                            )}
+                          </div>
                           <div className="text-xs text-muted-foreground">
                             {typeById.get(subtype.type_id)?.name || "Sem tipo"}
                           </div>
+                          <div className="text-xs text-muted-foreground mt-0.5">
+                            Area util: {subtype.print_area_width_cm ?? "-"} x {subtype.print_area_height_cm ?? "-"} cm
+                          </div>
+                          <div className="text-xs text-muted-foreground mt-0.5">
+                            {(() => {
+                              const ids = subtypeMaterialIdsBySubtypeId.get(subtype.id) ?? [];
+                              if (ids.length === 0) return "Nenhum tecido";
+                              return "Tecidos: " + ids.map((id) => materialById.get(id)?.name).filter(Boolean).join(", ");
+                            })()}
+                          </div>
                         </div>
                       </div>
-                      <Button
-                        size="sm"
-                        variant="outline"
-                        onClick={() =>
-                          setSubtypeForm({
-                            id: subtype.id,
-                            type_id: subtype.type_id,
-                            name: subtype.name,
-                            slug: subtype.slug,
-                            description: subtype.description || "",
-                            sort_order: String(subtype.sort_order ?? 0),
-                            is_active: subtype.is_active,
-                            card_image_path: subtype.card_image_path || "",
-                          })
-                        }
-                      >
-                        Editar
-                      </Button>
+                      <div className="flex items-center gap-2">
+                        <Button
+                          size="sm"
+                          variant="outline"
+                          onClick={() => {
+                            setSubtypeForm({
+                              id: subtype.id,
+                              type_id: subtype.type_id,
+                              name: subtype.name,
+                              slug: subtype.slug,
+                              description: subtype.description || "",
+                              sort_order: String(subtype.sort_order ?? 0),
+                              is_active: subtype.is_active,
+                              card_image_path: subtype.card_image_path || "",
+                              model_3d_path: (subtype as any).model_3d_path || "",
+                              print_area_width_cm: String(subtype.print_area_width_cm ?? ""),
+                              print_area_height_cm: String(subtype.print_area_height_cm ?? ""),
+                              min_decal_area_cm2: String(subtype.min_decal_area_cm2 ?? 5),
+                              neck_zone_y_min: String(subtype.neck_zone_y_min ?? 0.82),
+                              underarm_zone_y_min: String(subtype.underarm_zone_y_min ?? 0.45),
+                              underarm_zone_y_max: String(subtype.underarm_zone_y_max ?? 0.72),
+                              underarm_zone_abs_x_min: String(subtype.underarm_zone_abs_x_min ?? 0.55),
+                            });
+                            setSubtypeDecalZones(parseDecalZones((subtype as any).decal_zones_json));
+                            setSelectedSubtypeMaterialIds(subtypeMaterialIdsBySubtypeId.get(subtype.id) ?? []);
+                          }}
+                        >
+                          Editar
+                        </Button>
+                        <Button
+                          size="sm"
+                          variant="destructive"
+                          onClick={() => handleDeleteSubtype(subtype.id, subtype.name)}
+                          disabled={loading}
+                        >
+                          Excluir
+                        </Button>
+                      </div>
                     </div>
                   ))
                 )}
@@ -1163,10 +1377,11 @@ const Admin = () => {
           </TabsContent>
           <TabsContent value="materials" className="mt-6">
             <div className="grid gap-6 lg:grid-cols-[320px_1fr]">
-              <form onSubmit={handleSaveMaterial} className="glass rounded-2xl border p-5 space-y-4">
+              {/* Formulario de tecido */}
+              <form onSubmit={handleSaveMaterial} className="glass rounded-2xl border p-5 space-y-4 self-start">
                 <div>
-                  <h2 className="text-lg font-semibold">Novo material</h2>
-                  <p className="text-xs text-muted-foreground">Materiais usados nos produtos.</p>
+                  <h2 className="text-lg font-semibold">{materialForm.id ? "Editar tecido" : "Novo tecido"}</h2>
+                  <p className="text-xs text-muted-foreground">Adicione o tecido; configure as estamparias na matriz ao lado.</p>
                 </div>
                 <div className="space-y-2">
                   <Label>Nome</Label>
@@ -1202,42 +1417,88 @@ const Admin = () => {
                 </div>
               </form>
 
-              <div className="space-y-3">
-                {materials.length === 0 ? (
-                  <div className="rounded-xl border border-dashed px-4 py-6 text-sm text-muted-foreground">
-                    Nenhum material cadastrado.
+              {/* Matriz tecidos × estamparia */}
+              <div className="glass rounded-2xl border overflow-auto">
+                {materials.length === 0 || printingMethods.length === 0 ? (
+                  <div className="px-6 py-8 text-sm text-muted-foreground">
+                    {materials.length === 0
+                      ? "Nenhum tecido cadastrado. Adicione um tecido ao lado."
+                      : "Nenhum metodo de estamparia encontrado. Execute o SQL de seed."}
                   </div>
                 ) : (
-                  materials.map((material) => (
-                    <div
-                      key={material.id}
-                      className={cn(
-                        "glass rounded-xl border px-4 py-3 flex items-center justify-between gap-3",
-                        !material.is_active && "opacity-60"
-                      )}
-                    >
-                      <div>
-                        <div className="text-sm font-semibold">{material.name}</div>
-                        <div className="text-xs text-muted-foreground">
-                          {material.description || "Sem descricao"}
-                        </div>
-                      </div>
-                      <Button
-                        size="sm"
-                        variant="outline"
-                        onClick={() =>
-                          setMaterialForm({
-                            id: material.id,
-                            name: material.name,
-                            description: material.description || "",
-                            is_active: material.is_active,
-                          })
-                        }
-                      >
-                        Editar
-                      </Button>
-                    </div>
-                  ))
+                  <table className="w-full text-sm border-collapse">
+                    <thead>
+                      <tr className="border-b bg-muted/40">
+                        <th className="px-4 py-3 text-left font-semibold text-xs uppercase tracking-widest text-muted-foreground min-w-[140px]">
+                          Tecido
+                        </th>
+                        {printingMethods.map((method) => (
+                          <th
+                            key={method.id}
+                            className="px-3 py-3 text-center font-medium text-xs max-w-[90px]"
+                            title={method.description || method.name}
+                          >
+                            <span className="block leading-tight">{method.name.split(" ")[0]}</span>
+                          </th>
+                        ))}
+                        <th className="px-3 py-3 w-[60px]"></th>
+                      </tr>
+                    </thead>
+                    <tbody>
+                      {materials.map((material) => {
+                        const enabledIds = new Set(materialPrintingMethodIds.get(material.id) ?? []);
+                        return (
+                          <tr
+                            key={material.id}
+                            className={cn(
+                              "border-b transition-colors hover:bg-muted/20",
+                              materialForm.id === material.id && "bg-muted/30",
+                              !material.is_active && "opacity-50"
+                            )}
+                          >
+                            <td className="px-4 py-3">
+                              <div className="font-medium">{material.name}</div>
+                              {material.description && (
+                                <div className="text-xs text-muted-foreground truncate max-w-[120px]">{material.description}</div>
+                              )}
+                            </td>
+                            {printingMethods.map((method) => (
+                              <td key={method.id} className="px-3 py-3 text-center">
+                                <Checkbox
+                                  checked={enabledIds.has(method.id)}
+                                  disabled={loading}
+                                  onCheckedChange={(checked) =>
+                                    handleToggleMaterialPrintingMethod(
+                                      material.id,
+                                      method.id,
+                                      checked === true
+                                    )
+                                  }
+                                  aria-label={`${material.name} aceita ${method.name}`}
+                                />
+                              </td>
+                            ))}
+                            <td className="px-3 py-3 text-right">
+                              <Button
+                                size="sm"
+                                variant="ghost"
+                                onClick={() =>
+                                  setMaterialForm({
+                                    id: material.id,
+                                    name: material.name,
+                                    description: material.description || "",
+                                    is_active: material.is_active,
+                                  })
+                                }
+                              >
+                                Editar
+                              </Button>
+                            </td>
+                          </tr>
+                        );
+                      })}
+                    </tbody>
+                  </table>
                 )}
               </div>
             </div>
@@ -1375,6 +1636,23 @@ const Admin = () => {
                   </select>
                 </div>
                 <div className="space-y-2">
+                  <Label>Tecido (obrigatorio)</Label>
+                  <select
+                    value={productForm.material_id}
+                    onChange={(e) => setProductForm((prev) => ({ ...prev, material_id: e.target.value }))}
+                    className="w-full rounded-md border bg-background px-3 py-2 text-sm"
+                  >
+                    <option value="">Selecione</option>
+                    {materials
+                      .filter((material) => material.is_active)
+                      .map((material) => (
+                        <option key={material.id} value={material.id}>
+                          {material.name}
+                        </option>
+                      ))}
+                  </select>
+                </div>
+                <div className="space-y-2">
                   <Label>SKU</Label>
                   <Input
                     value={productForm.sku}
@@ -1456,6 +1734,9 @@ const Admin = () => {
                           <div className="text-sm font-semibold">{product.name}</div>
                           <div className="text-xs text-muted-foreground">
                             {typeById.get(product.type_id)?.name || "Sem tipo"}
+                            {" • "}
+                            {materialById.get(productMaterialByProductId.get(product.id)?.material_id || "")?.name ||
+                              "Sem tecido"}
                           </div>
                         </div>
                       </div>
@@ -1467,6 +1748,7 @@ const Admin = () => {
                             id: product.id,
                             type_id: product.type_id,
                             subtype_id: product.subtype_id || "",
+                            material_id: productMaterialByProductId.get(product.id)?.material_id || "",
                             sku: product.sku,
                             name: product.name,
                             description: product.description || "",

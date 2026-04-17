@@ -2,6 +2,7 @@ import { defineConfig } from "vite";
 import react from "@vitejs/plugin-react-swc";
 import path from "path";
 import { componentTagger } from "lovable-tagger";
+import uploadModelPlugin from "./vite-plugin-upload-model";
 
 // https://vitejs.dev/config/
 export default defineConfig(({ mode }) => ({
@@ -13,6 +14,7 @@ export default defineConfig(({ mode }) => ({
     react(),
     mode === 'development' &&
     componentTagger(),
+    uploadModelPlugin(),
   ].filter(Boolean),
   resolve: {
     alias: {
@@ -22,5 +24,6 @@ export default defineConfig(({ mode }) => ({
   },
   optimizeDeps: {
     include: ["three"],
+    exclude: ["@imgly/background-removal"],
   },
 }));

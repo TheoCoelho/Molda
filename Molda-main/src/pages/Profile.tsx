@@ -1,6 +1,6 @@
 // src/pages/Profile.tsx
-import { useMemo, useState, useEffect } from "react";
-import { useNavigate } from "react-router-dom";
+import { useMemo, useRef, useState, useEffect } from "react";
+import { useNavigate, useSearchParams } from "react-router-dom";
 import Header from "@/components/Header";
 import Canvas3DViewer from "@/components/Canvas3DViewer";
 import { Button } from "@/components/ui/button";
@@ -9,11 +9,23 @@ import { Tabs, TabsContent, TabsList, TabsTrigger } from "@/components/ui/tabs";
 import { Badge } from "@/components/ui/badge";
 import { Avatar, AvatarFallback, AvatarImage } from "@/components/ui/avatar";
 import { Dialog, DialogContent, DialogHeader, DialogTitle, DialogFooter } from "@/components/ui/dialog";
+import {
+  AlertDialog,
+  AlertDialogAction,
+  AlertDialogCancel,
+  AlertDialogContent,
+  AlertDialogDescription,
+  AlertDialogFooter,
+  AlertDialogHeader,
+  AlertDialogTitle,
+} from "@/components/ui/alert-dialog";
 import { Input } from "@/components/ui/input";
-import { Settings, Pencil } from "lucide-react";
+import { Earth, Loader2, MoreVertical, Pencil, Trash2 } from "lucide-react";
+import { toast } from "sonner";
 import { useAuth } from "@/contexts/AuthContext";
 import { supabase } from "@/integrations/supabase/client";
 import { AVATAR_BUCKET } from "@/lib/constants/storage";
+import { STORAGE_BUCKET } from "@/lib/supabaseClient";
 import type { DecalTransform, ExternalDecalData } from "@/types/decals";
 import { getProjectDisplayName } from "@/lib/creativeNames";
 
@@ -23,6 +35,8 @@ type ViewUser = {
   username?: string;
   email?: string;
   avatar?: string;       // URL pronta para exibição
+  designsCount?: number;
+  piecesCount?: number;
   createdAt?: string;
 };
 
@@ -47,6 +61,7 @@ type DraftData = {
   draftKey?: string;
   draftId?: string;
   projectKey?: string;
+  isPublic?: boolean;
   isPermanent?: boolean;
   ephemeralExpiresAt?: string | null;
 };
@@ -56,6 +71,7 @@ type DraftRecord = {
   projectKey: string;
   updatedAt: string | null;
   data: DraftData;
+  isPublic: boolean;
 };
 
 type CreationItem = {
@@ -67,19 +83,72 @@ type CreationItem = {
   baseColor?: string;
   selection?: { part?: string | null; type?: string | null; subtype?: string | null };
   externalDecals?: ExternalDecalData[];
+  isPublic: boolean;
 };
 
+type GalleryItem = {
+  id: string;
+  previewUrl: string;
+  originalName: string;
+  displayName: string;
+  sortKey: string;
+  isPublic: boolean;
+  designValue: number;
+};
+
+type SocialProfileRow = {
+  id?: string | null;
+  user_id?: string | null;
+  username: string | null;
+  nickname: string | null;
+  avatar_path: string | null;
+  designs_count: number | null;
+  pieces_count: number | null;
+};
+
+function normalizeUsername(value: string | null | undefined) {
+  return String(value || "").trim().toLowerCase().replace(/^@+/, "");
+}
+
+function isLikelyUuid(value: string) {
+  return /^[0-9a-f]{8}-[0-9a-f]{4}-[1-5][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i.test(value);
+}
+
+function getSocialProfileId(row: SocialProfileRow | null | undefined) {
+  return String(row?.id ?? row?.user_id ?? "").trim();
+}
+
+function readSignedUrl(entry: any): string {
+  return String(entry?.signedUrl ?? entry?.signedURL ?? "").trim();
+}
+
 const Profile = () => {
-  const { user: authUser, session, getProfile } = useAuth();
+  const { user: authUser, getProfile } = useAuth();
   const navigate = useNavigate();
+  const [searchParams] = useSearchParams();
+  const viewedUsername = useMemo(() => normalizeUsername(searchParams.get("username")), [searchParams]);
+
+  const viewedUserId = useMemo(() => {
+    const fromQuery = (searchParams.get("user") || "").trim();
+    if (fromQuery && fromQuery !== "undefined" && fromQuery !== "null") return fromQuery;
+    // Se a rota vier por username, o id real será resolvido no load do profile.
+    if (viewedUsername) return "";
+    return authUser?.id || "";
+  }, [searchParams, authUser?.id, viewedUsername]);
 
   const [user, setUser] = useState<ViewUser>({
     name: "Usuário",
     username: "",
     email: "",
     avatar: "",
+    designsCount: 0,
+    piecesCount: 0,
     createdAt: "Janeiro 2024",
   });
+
+  const effectiveViewedUserId = viewedUserId || user.id || "";
+
+  const isOwnProfile = Boolean(authUser?.id && effectiveViewedUserId && authUser.id === effectiveViewedUserId);
 
   // Estado do upload (mantido)
   const [openUpload, setOpenUpload] = useState(false);
@@ -97,21 +166,65 @@ const Profile = () => {
   const [drafts, setDrafts] = useState<DraftRecord[]>([]);
   const [draftsLoading, setDraftsLoading] = useState(false);
   const [draftsError, setDraftsError] = useState<string | null>(null);
+  const [galleryItems, setGalleryItems] = useState<GalleryItem[]>([]);
+  const [galleryLoading, setGalleryLoading] = useState(false);
+  const [galleryError, setGalleryError] = useState<string | null>(null);
+  const [togglingGalleryIds, setTogglingGalleryIds] = useState<Record<string, boolean>>({});
+  const [togglingPieceIds, setTogglingPieceIds] = useState<Record<string, boolean>>({});
+  const [selectedDesign, setSelectedDesign] = useState<GalleryItem | null>(null);
+  const [editPanelOpen, setEditPanelOpen] = useState(false);
+  const [editNameInput, setEditNameInput] = useState("");
+  const [editValueInput, setEditValueInput] = useState("0,00");
+  const [savingDesignEdit, setSavingDesignEdit] = useState(false);
+  const [deletingDesign, setDeletingDesign] = useState(false);
+  const [replacingDesign, setReplacingDesign] = useState(false);
+  const [deleteAllContentOpen, setDeleteAllContentOpen] = useState(false);
+  const [deletingAllContent, setDeletingAllContent] = useState(false);
+  const replaceDesignInputRef = useRef<HTMLInputElement | null>(null);
 
   const [piecesFilter, setPiecesFilter] = useState<"todas" | "finalizadas" | "rascunhos">("todas");
-
-  const [savedElements] = useState([
-    { id: 1, type: "image", name: "Logo Empresa", preview: "/api/placeholder/100/100" },
-    { id: 2, type: "text",  name: "Frase Motivacional", content: "Seja a mudança" },
-    { id: 3, type: "drawing", name: "Desenho Abstrato", preview: "/api/placeholder/100/100" },
-    { id: 4, type: "pattern", name: "Padrão Geométrico", preview: "/api/placeholder/100/100" },
-  ]);
 
   const formatShortDate = (iso: string | null | undefined) => {
     if (!iso) return "";
     const date = new Date(iso);
     if (Number.isNaN(date.getTime())) return "";
     return date.toLocaleDateString("pt-BR");
+  };
+
+  const formatGalleryDate = (sortKey: string | null | undefined) => {
+    if (!sortKey || sortKey.length < 14) return "";
+
+    const year = Number(sortKey.slice(0, 4));
+    const month = Number(sortKey.slice(4, 6)) - 1;
+    const day = Number(sortKey.slice(6, 8));
+    const hours = Number(sortKey.slice(8, 10));
+    const minutes = Number(sortKey.slice(10, 12));
+    const seconds = Number(sortKey.slice(12, 14));
+    const milliseconds = Number(sortKey.slice(14, 17) || "0");
+
+    const date = new Date(year, month, day, hours, minutes, seconds, milliseconds);
+    if (Number.isNaN(date.getTime())) return "";
+
+    return date.toLocaleDateString("pt-BR", {
+      day: "2-digit",
+      month: "2-digit",
+      year: "numeric",
+    });
+  };
+
+  const formatCurrency = (value: number | null | undefined) => {
+    const n = value == null || Number.isNaN(value) ? 0 : value;
+    return new Intl.NumberFormat("pt-BR", { style: "currency", currency: "BRL" }).format(n);
+  };
+
+  const toEditValueString = (value: number | null | undefined) =>
+    (value == null || Number.isNaN(value) ? 0 : value)
+      .toFixed(2)
+      .replace(".", ",");
+
+  const resolveDraftIsPublic = (row: { is_public?: unknown; data?: DraftData | null }) => {
+    if (typeof row.is_public === "boolean") return row.is_public;
+    return Boolean(row.data?.isPublic);
   };
 
   const resolveDraftDecals = (data: DraftData): ExternalDecalData[] => {
@@ -159,6 +272,7 @@ const Profile = () => {
           subtype: draft.data.subtype ?? null,
         },
         externalDecals: resolveDraftDecals(draft.data),
+        isPublic: draft.isPublic,
       } satisfies CreationItem;
     });
 
@@ -168,7 +282,13 @@ const Profile = () => {
   }, [drafts, piecesFilter]);
 
   useEffect(() => {
-    if (!authUser?.id) return;
+    if (!effectiveViewedUserId) {
+      setDrafts([]);
+      setDraftsLoading(false);
+      setDraftsError(null);
+      return;
+    }
+
     let cancelled = false;
 
     const fetchDrafts = async () => {
@@ -176,17 +296,72 @@ const Profile = () => {
       setDraftsError(null);
 
       try {
-        const { data, error } = await supabase
-          .from("project_drafts")
-          .select("id, project_key, data, updated_at")
-          .eq("user_id", authUser.id)
-          .order("updated_at", { ascending: false });
+        let data: any[] | null = null;
+        let error: any = null;
+        let publicPiecesBackendMissing = false;
+
+        if (isOwnProfile) {
+          // Limpeza server-side: exclui rascunhos efêmeros expirados antes de buscar
+          await supabase
+            .from("project_drafts")
+            .delete()
+            .eq("user_id", effectiveViewedUserId)
+            .not("ephemeral_expires_at", "is", null)
+            .lt("ephemeral_expires_at", new Date().toISOString());
+
+          const result = await supabase
+            .from("project_drafts")
+            .select("id, project_key, data, updated_at, is_public")
+            .eq("user_id", effectiveViewedUserId)
+            .order("updated_at", { ascending: false });
+          data = result.data;
+          error = result.error;
+
+          // Compatibilidade com schema antigo ou cache sem is_public.
+          if (error?.code === "42703" || error?.code === "PGRST204" || String(error?.message || "").includes("is_public")) {
+            const fallback = await supabase
+              .from("project_drafts")
+              .select("id, project_key, data, updated_at")
+              .eq("user_id", effectiveViewedUserId)
+              .order("updated_at", { ascending: false });
+            data = fallback.data;
+            error = fallback.error;
+          }
+        } else {
+          const rpcRows = await supabase.rpc("get_public_project_drafts", {
+            target_user_id: effectiveViewedUserId,
+            limit_count: 120,
+          });
+
+          data = (rpcRows.data as any[]) ?? null;
+          error = rpcRows.error;
+
+          // Fallback caso RPC não esteja criada no banco.
+          if (error && String(error.message || "").includes("get_public_project_drafts")) {
+            publicPiecesBackendMissing = true;
+            const fallback = await supabase
+              .from("project_drafts")
+              .select("id, project_key, data, updated_at, is_public")
+              .eq("user_id", effectiveViewedUserId)
+              .eq("is_public", true)
+              .order("updated_at", { ascending: false });
+            data = fallback.data;
+            error = fallback.error;
+          }
+
+          if (error?.code === "42703" || error?.code === "PGRST204" || String(error?.message || "").includes("is_public")) {
+            // Sem coluna de visibilidade, evita expor peças privadas.
+            publicPiecesBackendMissing = true;
+            data = [];
+            error = null;
+          }
+        }
 
         if (cancelled) return;
 
         if (error) {
-          console.error("Erro ao carregar rascunhos:", error);
-          setDraftsError("Erro ao carregar rascunhos.");
+          console.error("Erro ao carregar peças:", error);
+          setDraftsError("Erro ao carregar peças.");
           setDrafts([]);
           return;
         }
@@ -196,13 +371,17 @@ const Profile = () => {
           projectKey: String(row.project_key ?? ""),
           updatedAt: (row.updated_at ?? null) as string | null,
           data: (row.data ?? {}) as DraftData,
+          isPublic: resolveDraftIsPublic(row),
         }));
 
         setDrafts(mapped);
+        if (!isOwnProfile && publicPiecesBackendMissing) {
+          setDraftsError("Peças públicas ainda não estão configuradas no banco. Execute os SQLs social_search_profiles.sql e draft_visibility.sql no Supabase.");
+        }
       } catch (err) {
         if (!cancelled) {
-          console.error("Erro inesperado ao buscar rascunhos:", err);
-          setDraftsError("Erro inesperado ao carregar rascunhos.");
+          console.error("Erro inesperado ao buscar peças:", err);
+          setDraftsError("Erro inesperado ao carregar peças.");
           setDrafts([]);
         }
       } finally {
@@ -215,7 +394,174 @@ const Profile = () => {
     return () => {
       cancelled = true;
     };
-  }, [authUser?.id]);
+  }, [effectiveViewedUserId, isOwnProfile]);
+
+  useEffect(() => {
+    if (!effectiveViewedUserId) {
+      setGalleryItems([]);
+      setGalleryError(null);
+      setGalleryLoading(false);
+      return;
+    }
+
+    let cancelled = false;
+
+    const loadGallery = async () => {
+      setGalleryLoading(true);
+      setGalleryError(null);
+
+      try {
+        let visibilityRows: any[] | null = null;
+        let visibilityError: any = null;
+
+        if (!isOwnProfile && isLikelyUuid(effectiveViewedUserId)) {
+          const rpcRows = await supabase.rpc("get_public_gallery_items", {
+            target_user_id: effectiveViewedUserId,
+            limit_count: 120,
+          });
+          if (!rpcRows.error) {
+            visibilityRows = (rpcRows.data as any[]) ?? [];
+          } else {
+            visibilityError = rpcRows.error;
+          }
+        }
+
+        if (!visibilityRows) {
+          let visibilityQuery = supabase
+            .from("gallery_visibility")
+            .select("storage_path,is_public,design_value,design_name,updated_at")
+            .eq("user_id", effectiveViewedUserId)
+            .order("updated_at", { ascending: false });
+
+          if (!isOwnProfile) {
+            visibilityQuery = visibilityQuery.eq("is_public", true);
+          }
+
+          const result = await visibilityQuery;
+          visibilityRows = result.data;
+          visibilityError = result.error;
+
+          // Se design_name ainda não existe na tabela (42703), faz fallback sem ela
+          if (visibilityError?.code === "42703") {
+            let fallbackQuery = supabase
+              .from("gallery_visibility")
+              .select("storage_path,is_public,design_value,updated_at")
+              .eq("user_id", effectiveViewedUserId)
+              .order("updated_at", { ascending: false });
+            if (!isOwnProfile) {
+              fallbackQuery = fallbackQuery.eq("is_public", true);
+            }
+            const fallback = await fallbackQuery;
+            visibilityRows = fallback.data;
+            visibilityError = fallback.error;
+          }
+        }
+
+        if (cancelled) return;
+        if (visibilityError && visibilityError.code !== "42P01") throw visibilityError;
+
+        const visibilityMap = new Map<string, { isPublic: boolean; designValue: number; designName: string | null }>(
+          (visibilityRows || []).map((row: any) => [
+            String(row.storage_path),
+            {
+              isPublic: Boolean(row.is_public),
+              designValue: row.design_value != null ? Number(row.design_value) : 0,
+              designName: row.design_name ? String(row.design_name) : null,
+            },
+          ])
+        );
+
+        let items: GalleryItem[] = [];
+
+        if (isOwnProfile) {
+          const prefix = `${effectiveViewedUserId}/images`;
+          const { data: files, error } = await supabase.storage.from(STORAGE_BUCKET).list(prefix, {
+            limit: 100,
+          } as any);
+
+          if (cancelled) return;
+          if (error) throw error;
+
+          const ordered = (files || []).slice().sort((a, b) => (a.name < b.name ? 1 : a.name > b.name ? -1 : 0));
+
+          items = await Promise.all(
+            ordered.map(async (file) => {
+              const fullPath = `${prefix}/${file.name}`;
+              const { data: signed } = await supabase.storage
+                .from(STORAGE_BUCKET)
+                .createSignedUrl(fullPath, 60 * 60 * 24 * 7);
+
+              return {
+                id: fullPath,
+                previewUrl:
+                  signed?.signedUrl ||
+                  supabase.storage.from(STORAGE_BUCKET).getPublicUrl(fullPath).data.publicUrl ||
+                  "",
+                originalName: file.name.replace(/^(\d{17})-/, ""),
+                sortKey: file.name.slice(0, 17),
+                isPublic: visibilityMap.get(fullPath)?.isPublic ?? false,
+                designValue: visibilityMap.get(fullPath)?.designValue ?? 0,
+                displayName: visibilityMap.get(fullPath)?.designName || file.name.replace(/^(\d{17})-/, ""),
+              } satisfies GalleryItem;
+            })
+          );
+        } else {
+          const publicRows = (visibilityRows || []).filter((row: any) =>
+            row?.is_public == null ? true : Boolean(row.is_public)
+          );
+          const paths = publicRows.map((row: any) => String(row.storage_path || "")).filter(Boolean);
+
+          // Gera signed URLs em lote — funcionam mesmo em buckets privados
+          let signedMap: Record<string, string> = {};
+          if (paths.length > 0) {
+            const { data: signedData } = await supabase.storage
+              .from(STORAGE_BUCKET)
+              .createSignedUrls(paths, 60 * 60 * 24 * 7);
+            if (signedData) {
+              for (const entry of signedData) {
+                const signed = readSignedUrl(entry);
+                if (signed) signedMap[entry.path] = signed;
+              }
+            }
+          }
+
+          items = publicRows.map((row: any) => {
+            const path = String(row.storage_path || "");
+            const fileName = path.split("/").pop() || "design.png";
+            const previewUrl =
+              signedMap[path] ||
+              supabase.storage.from(STORAGE_BUCKET).getPublicUrl(path).data.publicUrl ||
+              "";
+            return {
+              id: path,
+              previewUrl,
+              originalName: fileName.replace(/^(\d{17})-/, ""),
+              sortKey: fileName.slice(0, 17),
+              isPublic: true,
+              designValue: row.design_value != null ? Number(row.design_value) : 0,
+              displayName: row.design_name ? String(row.design_name) : fileName.replace(/^(\d{17})-/, ""),
+            } satisfies GalleryItem;
+          });
+        }
+
+        if (!cancelled) setGalleryItems(items.filter((item) => Boolean(item.previewUrl)));
+      } catch (err) {
+        if (!cancelled) {
+          console.error("Erro ao carregar galeria do usuário:", err);
+          setGalleryError("Erro ao carregar a galeria.");
+          setGalleryItems([]);
+        }
+      } finally {
+        if (!cancelled) setGalleryLoading(false);
+      }
+    };
+
+    void loadGallery();
+
+    return () => {
+      cancelled = true;
+    };
+  }, [effectiveViewedUserId, isOwnProfile]);
 
   const persistDraftToLocal = (draft: DraftRecord) => {
     const data = draft.data ?? {};
@@ -264,36 +610,68 @@ const Profile = () => {
   // Carrega profile e converte avatar_path -> publicUrl (mantido)
   useEffect(() => {
     const load = async () => {
-      const createdAtStr = session?.user?.created_at
-        ? new Date(session.user.created_at).toLocaleDateString("pt-BR", { month: "long", year: "numeric" })
-        : "";
-
       let display: ViewUser = {
-        id: authUser?.id,
-        name:
-          (authUser?.user_metadata as any)?.nickname ??
-          (authUser?.user_metadata as any)?.name ??
-          (authUser?.user_metadata as any)?.full_name ??
-          "Usuário",
-        username: (authUser?.user_metadata as any)?.username || "",
+        id: effectiveViewedUserId,
+        name: isOwnProfile
+          ? ((authUser?.user_metadata as any)?.nickname ??
+            (authUser?.user_metadata as any)?.name ??
+            (authUser?.user_metadata as any)?.full_name ??
+            "Usuário")
+          : "Usuário",
+        username: isOwnProfile ? ((authUser?.user_metadata as any)?.username || "") : "",
         avatar: "",
       };
 
       try {
-        const prof = await getProfile();
+        let prof: (SocialProfileRow & { full_name?: string | null; email?: string | null }) | null = null;
+
+        if (isOwnProfile) {
+          prof = (await getProfile()) as (SocialProfileRow & { full_name?: string | null; email?: string | null }) | null;
+        } else {
+          if (isLikelyUuid(effectiveViewedUserId)) {
+            const rpcProfile = (await supabase
+              .rpc("get_social_profile", { target_user_id: effectiveViewedUserId })
+              .maybeSingle()).data as SocialProfileRow | null;
+            if (rpcProfile) prof = rpcProfile;
+          }
+
+          if (!prof && viewedUsername) {
+            const { data: rows } = await supabase.rpc("search_social_profiles", {
+              search_term: viewedUsername,
+              limit_count: 50,
+            });
+            const exact = ((rows ?? []) as SocialProfileRow[]).find(
+              (row) => normalizeUsername(row.username) === viewedUsername,
+            );
+            if (exact) prof = exact;
+          }
+
+          if (!prof && isLikelyUuid(effectiveViewedUserId)) {
+            const { data: rows } = await supabase.rpc("search_social_profiles", {
+              search_term: null,
+              limit_count: 200,
+            });
+            const byId = ((rows ?? []) as SocialProfileRow[]).find((row) => getSocialProfileId(row) === effectiveViewedUserId);
+            if (byId) prof = byId;
+          }
+        }
+
         if (prof) {
           let avatarUrl = "";
-          if (prof.avatar_path) {
+          if ((prof as any).avatar_path) {
             const { data } = supabase.storage.from(AVATAR_BUCKET).getPublicUrl(prof.avatar_path);
             avatarUrl = data.publicUrl;
           }
 
           display = {
             ...display,
-            name: (prof.nickname ?? prof.full_name ?? display.name),
+            id: getSocialProfileId(prof) || display.id,
+            name: (prof.nickname ?? (prof as any).full_name ?? display.name),
             username: prof.username || display.username,
-            email: prof.email ?? display.email,
+            email: isOwnProfile ? ((prof as any).email ?? display.email) : undefined,
             avatar: avatarUrl,
+            designsCount: Number((prof as any).designs_count ?? display.designsCount ?? 0),
+            piecesCount: Number((prof as any).pieces_count ?? display.piecesCount ?? 0),
           };
         }
       } catch {
@@ -301,15 +679,280 @@ const Profile = () => {
       }
 
       // Prepara os campos de edição com os valores atuais
-      setForm({
-        nickname: display.name || "",
-        username: display.username || "",
-      });
+      if (isOwnProfile) {
+        setForm({
+          nickname: display.name || "",
+          username: display.username || "",
+        });
+      }
 
       setUser(display);
     };
     load();
-  }, [authUser, session, getProfile]);
+  }, [authUser, getProfile, isOwnProfile, viewedUsername, effectiveViewedUserId]);
+
+  const togglePieceVisibility = async (itemId: string, nextIsPublic: boolean) => {
+    if (!authUser?.id || !isOwnProfile) return;
+
+    setTogglingPieceIds((prev) => ({ ...prev, [itemId]: true }));
+    const previousDraft = drafts.find((d) => d.id === itemId) ?? null;
+    setDrafts((prev) =>
+      prev.map((d) =>
+        d.id === itemId
+          ? { ...d, isPublic: nextIsPublic, data: { ...d.data, isPublic: nextIsPublic } }
+          : d
+      )
+    );
+
+    try {
+      let error: any = null;
+
+      const columnUpdate = await supabase
+        .from("project_drafts")
+        .update({ is_public: nextIsPublic })
+        .eq("id", itemId);
+      error = columnUpdate.error;
+
+      // Fallback para bancos sem a coluna is_public: salva dentro do JSON data.
+      if (error?.code === "PGRST204" || String(error?.message || "").includes("is_public")) {
+        const fallbackData = {
+          ...(previousDraft?.data ?? {}),
+          isPublic: nextIsPublic,
+        } satisfies DraftData;
+
+        const fallbackUpdate = await supabase
+          .from("project_drafts")
+          .update({ data: fallbackData })
+          .eq("id", itemId);
+        error = fallbackUpdate.error;
+      }
+
+      if (error) throw error;
+    } catch (err) {
+      console.error("Erro ao atualizar visibilidade da peça:", err);
+      if (previousDraft) {
+        setDrafts((prev) =>
+          prev.map((d) =>
+            d.id === itemId
+              ? {
+                ...d,
+                isPublic: previousDraft.isPublic,
+                data: { ...d.data, isPublic: previousDraft.data?.isPublic ?? previousDraft.isPublic },
+              }
+              : d
+          )
+        );
+      }
+    } finally {
+      setTogglingPieceIds((prev) => ({ ...prev, [itemId]: false }));
+    }
+  };
+
+  const toggleGalleryVisibility = async (itemId: string, nextIsPublic: boolean) => {
+    if (!authUser?.id || !isOwnProfile) return;
+
+    setTogglingGalleryIds((prev) => ({ ...prev, [itemId]: true }));
+    const previousItem = galleryItems.find((item) => item.id === itemId) ?? null;
+
+    updateDesignLocal(itemId, { isPublic: nextIsPublic });
+
+    try {
+      const { error } = await supabase.from("gallery_visibility").upsert(
+        {
+          user_id: authUser.id,
+          storage_path: itemId,
+          is_public: nextIsPublic,
+        },
+        { onConflict: "user_id,storage_path" }
+      );
+      if (error) throw error;
+    } catch (err) {
+      console.error("Erro ao atualizar visibilidade do design:", err);
+      if (previousItem) updateDesignLocal(itemId, { isPublic: previousItem.isPublic });
+      setGalleryError("Não foi possível atualizar a visibilidade deste design.");
+    } finally {
+      setTogglingGalleryIds((prev) => ({ ...prev, [itemId]: false }));
+    }
+  };
+
+  const closeSelectedDesign = () => {
+    setSelectedDesign(null);
+    setEditPanelOpen(false);
+    setEditNameInput("");
+    setEditValueInput("0,00");
+  };
+
+  const deleteAllProfileContent = async () => {
+    if (!authUser?.id || !isOwnProfile || deletingAllContent) return;
+
+    const pieceCount = drafts.length;
+    const designCount = galleryItems.length;
+    if (pieceCount === 0 && designCount === 0) {
+      setDeleteAllContentOpen(false);
+      return;
+    }
+
+    setDeletingAllContent(true);
+    try {
+      const designPaths = galleryItems.map((item) => item.id).filter(Boolean);
+
+      const { error: draftsError } = await supabase
+        .from("project_drafts")
+        .delete()
+        .eq("user_id", authUser.id);
+
+      if (draftsError) throw draftsError;
+
+      const storageErrors: string[] = [];
+      for (let index = 0; index < designPaths.length; index += 100) {
+        const chunk = designPaths.slice(index, index + 100);
+        if (chunk.length === 0) continue;
+        const { error: storageError } = await supabase.storage.from(STORAGE_BUCKET).remove(chunk);
+        if (storageError) {
+          storageErrors.push(storageError.message || "Falha ao remover arquivos do storage.");
+        }
+      }
+
+      const { error: visibilityError } = await supabase
+        .from("gallery_visibility")
+        .delete()
+        .eq("user_id", authUser.id);
+
+      if (visibilityError && visibilityError.code !== "42P01") throw visibilityError;
+
+      setDrafts([]);
+      setGalleryItems([]);
+      setDraftsError(null);
+      setGalleryError(null);
+      setTogglingPieceIds({});
+      setTogglingGalleryIds({});
+      closeSelectedDesign();
+      setUser((prev) => ({ ...prev, designsCount: 0, piecesCount: 0 }));
+      setDeleteAllContentOpen(false);
+
+      if (storageErrors.length > 0) {
+        toast.warning("As peças e designs foram removidos do perfil, mas alguns arquivos antigos não puderam ser apagados do storage.");
+      } else {
+        toast.success("Todas as peças e designs foram excluídos com sucesso.");
+      }
+    } catch (err: any) {
+      console.error("Erro ao excluir todo o conteúdo do perfil:", err);
+      toast.error(err?.message || "Não foi possível excluir todas as peças e designs.");
+    } finally {
+      setDeletingAllContent(false);
+    }
+  };
+
+  const deleteDesign = async () => {
+    if (!selectedDesign || !authUser?.id || !isOwnProfile) return;
+
+    setDeletingDesign(true);
+    try {
+      const { error: storageError } = await supabase.storage
+        .from(STORAGE_BUCKET)
+        .remove([selectedDesign.id]);
+
+      if (storageError) throw storageError;
+
+      const { error: dbError } = await supabase
+        .from("gallery_visibility")
+        .delete()
+        .eq("storage_path", selectedDesign.id)
+        .eq("user_id", authUser.id);
+
+      if (dbError && dbError.code !== "42P01") throw dbError;
+
+      setGalleryItems((prev) => prev.filter((item) => item.id !== selectedDesign.id));
+      closeSelectedDesign();
+      toast.success("Design excluído com sucesso");
+    } catch (err: any) {
+      console.error("Erro ao excluir design:", err);
+      setGalleryError(err?.message || "Não foi possível excluir o design.");
+    } finally {
+      setDeletingDesign(false);
+    }
+  };
+
+  const updateDesignLocal = (itemId: string, partial: Partial<GalleryItem>) => {
+    setGalleryItems((prev) => prev.map((item) => (item.id === itemId ? { ...item, ...partial } : item)));
+    setSelectedDesign((prev) => (prev && prev.id === itemId ? { ...prev, ...partial } : prev));
+  };
+
+  const handleReplaceDesignImage: React.ChangeEventHandler<HTMLInputElement> = async (event) => {
+    const file = event.target.files?.[0] ?? null;
+    if (!file || !selectedDesign || !authUser?.id || !isOwnProfile) return;
+
+    setReplacingDesign(true);
+    try {
+      const { error: uploadError } = await supabase.storage
+        .from(STORAGE_BUCKET)
+        .upload(selectedDesign.id, file, { upsert: true, contentType: file.type || "image/png" });
+
+      if (uploadError) throw uploadError;
+
+      const { data: signed } = await supabase.storage
+        .from(STORAGE_BUCKET)
+        .createSignedUrl(selectedDesign.id, 60 * 60 * 24 * 7);
+
+      const previewUrl =
+        signed?.signedUrl ||
+        supabase.storage.from(STORAGE_BUCKET).getPublicUrl(selectedDesign.id).data.publicUrl ||
+        selectedDesign.previewUrl;
+
+      updateDesignLocal(selectedDesign.id, { previewUrl });
+    } catch (err) {
+      console.error("Erro ao substituir imagem do design:", err);
+      setGalleryError("Não foi possível editar a imagem deste design.");
+    } finally {
+      setReplacingDesign(false);
+      event.target.value = "";
+    }
+  };
+
+  const openEditPanel = () => {
+    if (!selectedDesign) return;
+    setEditNameInput(selectedDesign.displayName);
+    setEditValueInput(toEditValueString(selectedDesign.designValue));
+    setEditPanelOpen(true);
+  };
+
+  const saveDesignEdit = async () => {
+    if (!selectedDesign || !authUser?.id || !isOwnProfile) return;
+
+    const normalized = editValueInput.replace(",", ".").trim();
+    const parsed = normalized ? Number(normalized) : 0;
+    if (normalized && (Number.isNaN(parsed) || parsed < 0)) {
+      setGalleryError("Informe um valor válido para o design.");
+      return;
+    }
+
+    setSavingDesignEdit(true);
+    try {
+      const { error } = await supabase.from("gallery_visibility").upsert(
+        {
+          user_id: authUser.id,
+          storage_path: selectedDesign.id,
+          is_public: selectedDesign.isPublic,
+          design_value: parsed,
+          design_name: editNameInput.trim() || null,
+        },
+        { onConflict: "user_id,storage_path" }
+      );
+
+      if (error) throw error;
+
+      updateDesignLocal(selectedDesign.id, {
+        designValue: parsed,
+        displayName: editNameInput.trim() || selectedDesign.originalName,
+      });
+      setEditPanelOpen(false);
+    } catch (err) {
+      console.error("Erro ao salvar edição do design:", err);
+      setGalleryError("Não foi possível salvar as alterações do design.");
+    } finally {
+      setSavingDesignEdit(false);
+    }
+  };
 
   const getStatusBadge = (status: "finalizada" | "rascunho" | "producao") => {
     switch (status) {
@@ -342,7 +985,7 @@ const Profile = () => {
 
     const path = `${authUser.id}/${Date.now()}_${file.name.replace(/\s+/g, "_")}`;
 
-  const { error: upErr } = await supabase.storage.from(AVATAR_BUCKET).upload(path, file, { upsert: true });
+    const { error: upErr } = await supabase.storage.from(AVATAR_BUCKET).upload(path, file, { upsert: true });
     if (upErr) throw upErr;
 
     const { error: updErr } = await supabase
@@ -351,7 +994,7 @@ const Profile = () => {
       .eq("id", authUser.id);
     if (updErr) throw updErr;
 
-  return supabase.storage.from(AVATAR_BUCKET).getPublicUrl(path).data.publicUrl;
+    return supabase.storage.from(AVATAR_BUCKET).getPublicUrl(path).data.publicUrl;
   };
 
   const handleSaveAvatar = async () => {
@@ -421,7 +1064,7 @@ const Profile = () => {
       if (error) throw error;
 
       // (opcional) atualiza metadados do usuário
-      try { await supabase.auth.updateUser({ data: { nickname: newNick } }); } catch {}
+      try { await supabase.auth.updateUser({ data: { nickname: newNick } }); } catch { }
 
       setUser((prev) => ({ ...prev, name: newNick }));
       setEditing((e) => ({ ...e, nickname: false }));
@@ -454,7 +1097,7 @@ const Profile = () => {
       if (error) throw error;
 
       // (opcional) atualiza metadados do usuário
-      try { await supabase.auth.updateUser({ data: { username: newUser } }); } catch {}
+      try { await supabase.auth.updateUser({ data: { username: newUser } }); } catch { }
 
       setUser((prev) => ({ ...prev, username: newUser }));
       setEditing((e) => ({ ...e, username: false }));
@@ -481,33 +1124,37 @@ const Profile = () => {
                     <AvatarImage src={user.avatar} alt={user.name} />
                     <AvatarFallback>{getAvatarFallback(user.name)}</AvatarFallback>
                   </Avatar>
-                  <button
-                    aria-label="Editar foto de perfil"
-                    onClick={() => setOpenUpload(true)}
-                    className="hidden group-hover:flex absolute inset-0 items-center justify-center rounded-full bg-black/40"
-                    title="Editar foto"
-                  >
-                    <Pencil className="w-5 h-5 text-white" />
-                  </button>
+                  {isOwnProfile && (
+                    <button
+                      aria-label="Editar foto de perfil"
+                      onClick={() => setOpenUpload(true)}
+                      className="hidden group-hover:flex absolute inset-0 items-center justify-center rounded-full bg-black/40"
+                      title="Editar foto"
+                    >
+                      <Pencil className="w-5 h-5 text-white" />
+                    </button>
+                  )}
                 </div>
 
                 <div>
                   {/* Linha do NICKNAME com lápis no hover */}
                   <div className="group flex items-center gap-2">
-                    {!editing.nickname ? (
+                    {!isOwnProfile || !editing.nickname ? (
                       <>
                         <h1 className="text-2xl font-semibold">{user.name}</h1>
-                        <button
-                          type="button"
-                          className="opacity-0 group-hover:opacity-100 transition"
-                          title="Editar nickname"
-                          onClick={() => {
-                            setForm((f) => ({ ...f, nickname: user.name || "" }));
-                            setEditing((e) => ({ ...e, nickname: true }));
-                          }}
-                        >
-                          <Pencil className="w-4 h-4 text-gray-500" />
-                        </button>
+                        {isOwnProfile && (
+                          <button
+                            type="button"
+                            className="opacity-0 group-hover:opacity-100 transition"
+                            title="Editar nickname"
+                            onClick={() => {
+                              setForm((f) => ({ ...f, nickname: user.name || "" }));
+                              setEditing((e) => ({ ...e, nickname: true }));
+                            }}
+                          >
+                            <Pencil className="w-4 h-4 text-gray-500" />
+                          </button>
+                        )}
                       </>
                     ) : (
                       <div className="flex items-center gap-2">
@@ -540,21 +1187,23 @@ const Profile = () => {
 
                   {/* Linha do USERNAME com lápis no hover */}
                   <div className="group flex items-center gap-2">
-                    {!editing.username ? (
+                    {!isOwnProfile || !editing.username ? (
                       <>
                         <p className="text-gray-600 mb-1">@{user.username || "defina um usuário"}</p>
-                        <button
-                          type="button"
-                          className="opacity-0 group-hover:opacity-100 transition"
-                          title="Editar username"
-                          onClick={() => {
-                            setUsernameTaken(null);
-                            setForm((f) => ({ ...f, username: user.username || "" }));
-                            setEditing((e) => ({ ...e, username: true }));
-                          }}
-                        >
-                          <Pencil className="w-4 h-4 text-gray-500" />
-                        </button>
+                        {isOwnProfile && (
+                          <button
+                            type="button"
+                            className="opacity-0 group-hover:opacity-100 transition"
+                            title="Editar username"
+                            onClick={() => {
+                              setUsernameTaken(null);
+                              setForm((f) => ({ ...f, username: user.username || "" }));
+                              setEditing((e) => ({ ...e, username: true }));
+                            }}
+                          >
+                            <Pencil className="w-4 h-4 text-gray-500" />
+                          </button>
+                        )}
                       </>
                     ) : (
                       <div className="flex items-center gap-2">
@@ -617,26 +1266,34 @@ const Profile = () => {
               <div className="flex items-center gap-3">
 
                 <div className="text-center">
-                  <div className="text-2xl font-bold text-purple-600">{creations.length}</div>
-                  <div className="text-xs text-gray-500">Criações</div>
+                  <div className="text-2xl font-bold text-purple-600">
+                    {isOwnProfile ? creations.length : (user.designsCount ?? galleryItems.length)}
+                  </div>
+                  <div className="text-xs text-gray-500">{isOwnProfile ? "Criações" : "Designs públicos"}</div>
                 </div>
+                {!isOwnProfile && (
+                  <div className="text-center">
+                    <div className="text-2xl font-bold text-purple-600">{user.piecesCount ?? 0}</div>
+                    <div className="text-xs text-gray-500">Peças públicas</div>
+                  </div>
+                )}
               </div>
             </div>
           </CardHeader>
         </Card>
 
         {/* ===== Seções abaixo do banner (RESTauradas) ===== */}
-        <Tabs defaultValue="creations" className="w-full">
-          <TabsList className="grid w-full grid-cols-2 max-w-md mx-auto">
-            <TabsTrigger value="creations">Minhas Peças</TabsTrigger>
-            <TabsTrigger value="elements">Elementos Salvos</TabsTrigger>
+        <Tabs defaultValue={isOwnProfile ? "creations" : "elements"} className="w-full">
+          <TabsList className="grid w-full max-w-md mx-auto grid-cols-2">
+            <TabsTrigger value="creations">{isOwnProfile ? "Minhas Peças" : "Peças"}</TabsTrigger>
+            <TabsTrigger value="elements">Designs</TabsTrigger>
           </TabsList>
 
           {/* Minhas Peças */}
           <TabsContent value="creations" className="mt-6">
             <div className="flex items-center justify-between mb-4">
-              <h2 className="text-xl font-semibold">Minhas Peças</h2>
-              <div className="flex gap-2">
+              <h2 className="text-xl font-semibold">{isOwnProfile ? "Minhas Peças" : "Peças públicas"}</h2>
+              {isOwnProfile && <div className="flex flex-wrap justify-end gap-2">
                 <Button
                   variant={piecesFilter === "todas" ? "default" : "outline"}
                   size="sm"
@@ -658,234 +1315,415 @@ const Profile = () => {
                 >
                   Rascunhos
                 </Button>
-              </div>
+                <Button
+                  variant="destructive"
+                  size="sm"
+                  onClick={() => setDeleteAllContentOpen(true)}
+                  disabled={deletingAllContent || (drafts.length === 0 && galleryItems.length === 0)}
+                >
+                  {deletingAllContent ? <Loader2 className="mr-2 h-4 w-4 animate-spin" /> : <Trash2 className="mr-2 h-4 w-4" />}
+                  Excluir tudo
+                </Button>
+              </div>}
             </div>
 
             {draftsLoading ? (
               <div className="grid grid-cols-2 md:grid-cols-3 lg:grid-cols-4 gap-4">
                 {Array.from({ length: 5 }).map((_, idx) => (
-                  <Card key={idx} className="shadow-md">
-                    <CardHeader className="p-3 pb-2">
-                      <div className="h-4 w-24 rounded bg-muted/60 animate-pulse" />
-                      <div className="mt-1 h-3 w-16 rounded bg-muted/60 animate-pulse" />
+                  <Card key={idx} className="border border-border bg-background shadow-none rounded-none">
+                    <CardHeader className="p-3 pb-2 border-b border-border">
+                      <div className="h-4 w-24 rounded-none bg-muted animate-pulse" />
+                      <div className="mt-1 h-3 w-16 rounded-none bg-muted animate-pulse" />
                     </CardHeader>
-                    <CardContent className="p-3 pt-0">
-                      <div className="aspect-[3/4] w-full overflow-hidden rounded-md bg-muted/60 mb-3 animate-pulse" />
+                    <CardContent className="p-3 pt-3">
+                      <div className="aspect-[3/4] w-full overflow-hidden rounded-none border border-border bg-muted mb-3 animate-pulse" />
                       <div className="flex gap-1.5">
-                        <div className="h-8 w-full rounded bg-muted/60 animate-pulse" />
-                        <div className="h-8 w-full rounded bg-muted/60 animate-pulse" />
+                        <div className="h-8 w-full rounded-none bg-muted animate-pulse" />
+                        <div className="h-8 w-full rounded-none bg-muted animate-pulse" />
                       </div>
                     </CardContent>
                   </Card>
                 ))}
               </div>
             ) : draftsError ? (
-              <div className="rounded-xl border border-destructive/40 bg-destructive/10 px-4 py-3 text-sm text-destructive">
+              <div className="rounded-none border border-destructive bg-destructive/10 px-4 py-3 text-sm text-destructive font-bold uppercase tracking-widest">
                 {draftsError}
               </div>
             ) : creations.length === 0 ? (
-              <div className="rounded-xl border border-dashed px-4 py-8 text-sm text-muted-foreground text-center">
-                Nenhum rascunho salvo ainda.
+              <div className="rounded-none border border-border bg-background px-4 py-8 text-sm text-muted-foreground text-center font-bold uppercase tracking-widest">
+                {isOwnProfile ? "Nenhum rascunho salvo ainda." : "Nenhuma peça pública encontrada."}
               </div>
             ) : (
               <div className="grid grid-cols-2 md:grid-cols-3 lg:grid-cols-4 gap-4">
-                {(() => {
-                  // Lógica de windowing: só renderiza 8 cards centrais
-                  const total = creations.length;
-                  if (total <= 8) {
-                    return creations.map((item) => (
-                      <Card key={item.id} className="shadow-md hover:shadow-lg transition-shadow">
-                        <CardHeader className="p-3 pb-2">
-                          <div className="flex items-center justify-between gap-1">
-                            <CardTitle className="text-sm font-medium truncate">{item.title}</CardTitle>
-                            {getStatusBadge(item.status)}
-                          </div>
-                          <p className="text-xs text-gray-500">
-                            {item.date ? `Criado em ${item.date}` : ""}
-                          </p>
-                        </CardHeader>
-                        <CardContent className="p-3 pt-0">
-                          <div className="aspect-[3/4] w-full overflow-hidden rounded-md bg-transparent mb-3">
-                            <Canvas3DViewer
-                              baseColor={item.baseColor || "#ffffff"}
-                              externalDecals={item.externalDecals || []}
-                              interactive={false}
-                              selectionOverride={item.selection}
-                              className="h-full w-full"
-                            />
-                          </div>
-                          <div className="flex gap-1.5">
-                            <Button
-                              variant="outline"
-                              size="sm"
-                              className="w-full text-xs"
-                              onClick={() => item.draft && handleEditDraft(item.draft)}
-                              disabled={!item.draft}
-                            >
-                              Editar
-                            </Button>
-                            <Button
-                              size="sm"
-                              className="w-full text-xs"
-                              onClick={() => item.draft && handleProduceDraft(item.draft)}
-                              disabled={!item.draft}
-                            >
-                              Produzir
-                            </Button>
-                          </div>
-                        </CardContent>
-                      </Card>
-                    ));
-                  }
-                  // Se houver mais de 8, só renderiza os 8 centrais
-                  // Calcula o centro da viewport (pode ser ajustado para scroll real)
-                  const [start, end] = (() => {
-                    // Para simplificação, centraliza na metade da lista
-                    const center = Math.floor(total / 2);
-                    let s = center - 4;
-                    let e = center + 4;
-                    if (s < 0) { s = 0; e = 8; }
-                    if (e > total) { e = total; s = total - 8; }
-                    return [s, e];
-                  })();
-                  return creations.map((item, idx) => {
-                    const isActive = idx >= start && idx < end;
-                    return (
-                      <Card key={item.id} className="shadow-md hover:shadow-lg transition-shadow">
-                        <CardHeader className="p-3 pb-2">
-                          <div className="flex items-center justify-between gap-1">
-                            <CardTitle className="text-sm font-medium truncate">{item.title}</CardTitle>
-                            {getStatusBadge(item.status)}
-                          </div>
-                          <p className="text-xs text-gray-500">
-                            {item.date ? `Criado em ${item.date}` : ""}
-                          </p>
-                        </CardHeader>
-                        <CardContent className="p-3 pt-0">
-                          <div className="aspect-[3/4] w-full overflow-hidden rounded-md bg-transparent mb-3">
-                            {isActive ? (
-                              <Canvas3DViewer
-                                baseColor={item.baseColor || "#ffffff"}
-                                externalDecals={item.externalDecals || []}
-                                interactive={false}
-                                selectionOverride={item.selection}
-                                className="h-full w-full"
-                              />
-                            ) : (
-                              <div className="h-full w-full bg-muted flex items-center justify-center text-xs text-muted-foreground select-none">
-                                Pré-visualização 3D
-                              </div>
-                            )}
-                          </div>
-                          <div className="flex gap-1.5">
-                            <Button
-                              variant="outline"
-                              size="sm"
-                              className="w-full text-xs"
-                              onClick={() => item.draft && handleEditDraft(item.draft)}
-                              disabled={!item.draft}
-                            >
-                              Editar
-                            </Button>
-                            <Button
-                              size="sm"
-                              className="w-full text-xs"
-                              onClick={() => item.draft && handleProduceDraft(item.draft)}
-                              disabled={!item.draft}
-                            >
-                              Produzir
-                            </Button>
-                          </div>
-                        </CardContent>
-                      </Card>
-                    );
-                  });
-                })()}
-              </div>
-            )}
-          </TabsContent>
-
-          {/* Elementos Salvos */}
-          <TabsContent value="elements" className="mt-6">
-            <div className="flex items-center justify-between mb-4">
-              <h2 className="text-xl font-semibold">Elementos Salvos</h2>
-              <div className="flex gap-2">
-                <Button variant="outline" size="sm">Todos</Button>
-                <Button variant="outline" size="sm">Imagens</Button>
-                <Button variant="outline" size="sm">Textos</Button>
-                <Button variant="outline" size="sm">Desenhos</Button>
-              </div>
-            </div>
-
-            <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-3 gap-6">
-              {savedElements.map((el: any) => (
-                <Card key={el.id} className="shadow-lg hover:shadow-xl transition-shadow">
-                  <CardHeader className="pb-2">
-                    <CardTitle className="text-lg">{el.name}</CardTitle>
-                    <p className="text-sm text-gray-500">Tipo: {el.type}</p>
-                  </CardHeader>
-                  <CardContent>
-                    {"preview" in el ? (
-                      <div className="aspect-square w-full overflow-hidden rounded-md bg-muted mb-4">
-                        <img
-                          src={el.preview}
-                          alt={el.name}
-                          className="h-full w-full object-cover"
+                {creations.map((item) => (
+                  <Card key={item.id} className="border border-border bg-background shadow-none transition-none hover:border-foreground rounded-none filter-none">
+                    <CardHeader className="p-3 pb-2 border-b border-border">
+                      <div className="flex items-center justify-between gap-1">
+                        <CardTitle className="text-sm font-bold uppercase tracking-widest truncate">{item.title}</CardTitle>
+                        {getStatusBadge(item.status)}
+                      </div>
+                      <p className="text-xs text-gray-500 font-bold uppercase tracking-widest">
+                        {item.date ? `Criado em ${item.date}` : ""}
+                      </p>
+                    </CardHeader>
+                    <CardContent className="p-3 pt-3">
+                      <div className="aspect-[3/4] w-full overflow-hidden rounded-none border border-border bg-background mb-3">
+                        <Canvas3DViewer
+                          baseColor={item.baseColor || "#ffffff"}
+                          externalDecals={item.externalDecals || []}
+                          interactive={false}
+                          selectionOverride={item.selection}
+                          className="h-full w-full"
                         />
                       </div>
-                    ) : (
-                      <div className="rounded-md border p-4 mb-4">
-                        <p className="text-gray-700">{el.content}</p>
+                      <div className="flex gap-1.5">
+                        {isOwnProfile ? (
+                          <>
+                        <Button
+                          variant="outline"
+                          size="sm"
+                          className="w-full text-xs rounded-none uppercase tracking-widest font-bold"
+                          onClick={() => item.draft && handleEditDraft(item.draft)}
+                          disabled={!item.draft}
+                        >
+                          Editar
+                        </Button>
+                        <Button
+                          size="sm"
+                          className="w-full text-xs rounded-none uppercase tracking-widest font-bold bg-foreground text-background"
+                          onClick={() => item.draft && handleProduceDraft(item.draft)}
+                          disabled={!item.draft}
+                        >
+                          Produzir
+                        </Button>
+                        <Button
+                          variant="outline"
+                          size="icon"
+                          className="flex-none rounded-none"
+                          onClick={() => void togglePieceVisibility(item.id, !item.isPublic)}
+                          disabled={Boolean(togglingPieceIds[item.id])}
+                          title={item.isPublic ? "Público" : "Não público"}
+                          aria-label={item.isPublic ? "Definir como não público" : "Definir como público"}
+                        >
+                          {togglingPieceIds[item.id] ? (
+                            <Loader2 className="h-4 w-4 animate-spin" />
+                          ) : (
+                            <span className={`relative inline-flex transition-transform duration-500 ${item.isPublic ? "rotate-180" : "rotate-0"}`}>
+                              <Earth className="h-4 w-4" />
+                              {!item.isPublic && (
+                                <span className="pointer-events-none absolute left-1/2 top-1/2 h-5 w-[2px] -translate-x-1/2 -translate-y-1/2 rotate-45 rounded-full bg-current" />
+                              )}
+                            </span>
+                          )}
+                        </Button>
+                          </>
+                        ) : (
+                          <div className="w-full text-center text-xs text-muted-foreground font-bold uppercase tracking-widest py-2 border border-border rounded-none">
+                            Peça pública
+                          </div>
+                        )}
                       </div>
-                    )}
-                    <div className="flex gap-2">
-                      <Button variant="outline" className="w-full">Editar</Button>
-                      <Button className="w-full">Adicionar à peça</Button>
-                    </div>
-                  </CardContent>
-                </Card>
-              ))}
+                    </CardContent>
+                  </Card>
+                ))}
+              </div>
+            )}
+            </TabsContent>
+
+          {/* Designs */}
+          <TabsContent value="elements" className="mt-6">
+            <div className="flex items-center justify-between mb-4">
+              <h2 className="text-xl font-semibold">{isOwnProfile ? "Designs" : "Designs públicos"}</h2>
             </div>
+
+            {galleryLoading ? (
+              <div className="rounded-xl border border-dashed border-border bg-card/40 p-10 text-center text-sm text-muted-foreground">
+                Carregando designs da galeria...
+              </div>
+            ) : galleryError ? (
+              <div className="rounded-xl border border-dashed border-destructive/30 bg-destructive/5 p-10 text-center text-sm text-destructive">
+                {galleryError}
+              </div>
+            ) : galleryItems.length === 0 ? (
+              <div className="rounded-xl border border-dashed border-border bg-card/40 p-10 text-center text-sm text-muted-foreground">
+                {isOwnProfile ? "Nenhum item encontrado na sua galeria." : "Nenhum design público encontrado."}
+              </div>
+            ) : (
+              <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-3 gap-6">
+                {galleryItems.map((item) => (
+                  <Card
+                    key={item.id}
+                    className="shadow-lg hover:shadow-xl transition-shadow overflow-hidden cursor-pointer"
+                    onClick={() => setSelectedDesign(item)}
+                  >
+                    <CardContent className="p-0">
+                      <div>
+                        <div className="aspect-square w-full overflow-hidden bg-muted">
+                          <img
+                            src={item.previewUrl}
+                            alt={item.originalName}
+                            className="h-full w-full object-cover"
+                            loading="lazy"
+                          />
+                        </div>
+
+                      </div>
+
+                      <div className="p-4">
+                        <CardTitle className="text-lg break-all">{item.originalName}</CardTitle>
+                        <p className="mt-2 text-sm text-muted-foreground">
+                          {formatGalleryDate(item.sortKey) ? `Adicionado em ${formatGalleryDate(item.sortKey)}` : "Item da galeria"}
+                        </p>
+                        {isOwnProfile && (
+                          <p className="mt-1 text-xs text-muted-foreground">
+                            {item.isPublic ? "Visível para todos" : "Somente você"}
+                          </p>
+                        )}
+                      </div>
+                      {isOwnProfile && (
+                        <div className="flex justify-end px-4 pb-4">
+                          <Button
+                            type="button"
+                            variant="secondary"
+                            size="icon"
+                            className="bg-background/90"
+                            onClick={(event) => {
+                              event.stopPropagation();
+                              void toggleGalleryVisibility(item.id, !item.isPublic);
+                            }}
+                            disabled={Boolean(togglingGalleryIds[item.id])}
+                            title={item.isPublic ? "Público" : "Não público"}
+                            aria-label={item.isPublic ? "Definir como não público" : "Definir como público"}
+                          >
+                            {togglingGalleryIds[item.id] ? (
+                              <Loader2 className="h-4 w-4 animate-spin" />
+                            ) : (
+                              <span className={`relative inline-flex transition-transform duration-500 ${item.isPublic ? "rotate-180" : "rotate-0"}`}>
+                                <Earth className="h-4 w-4" />
+                                {!item.isPublic && (
+                                  <span className="pointer-events-none absolute left-1/2 top-1/2 h-5 w-[2px] -translate-x-1/2 -translate-y-1/2 rotate-45 rounded-full bg-current" />
+                                )}
+                              </span>
+                            )}
+                          </Button>
+                        </div>
+                      )}
+                    </CardContent>
+                  </Card>
+                ))}
+              </div>
+            )}
           </TabsContent>
         </Tabs>
       </main>
 
-      {/* Dialog de upload (inalterado) */}
-      <Dialog open={openUpload} onOpenChange={setOpenUpload}>
-        <DialogContent>
+      <Dialog open={Boolean(selectedDesign)} onOpenChange={(open) => (!open ? closeSelectedDesign() : undefined)}>
+        <DialogContent className="max-w-6xl">
+          <DialogHeader className="sr-only">
+            <DialogTitle>Detalhes do design</DialogTitle>
+          </DialogHeader>
+
+          {selectedDesign && (
+            <div className="relative">
+              {isOwnProfile && (
+                <div className="absolute right-0 top-0 z-10 flex gap-1">
+                  <Button
+                    variant="ghost"
+                    size="icon"
+                    aria-label="Excluir design"
+                    onClick={deleteDesign}
+                    disabled={deletingDesign}
+                    className="text-red-500 hover:text-red-700 hover:bg-red-50"
+                  >
+                    {deletingDesign ? (
+                      <Loader2 className="h-4 w-4 animate-spin" />
+                    ) : (
+                      <Trash2 className="h-4 w-4" />
+                    )}
+                  </Button>
+                  <Button variant="ghost" size="icon" aria-label="Editar design" onClick={openEditPanel}>
+                    <MoreVertical className="h-4 w-4" />
+                  </Button>
+                </div>
+              )}
+
+              <input
+                ref={replaceDesignInputRef}
+                type="file"
+                accept="image/*"
+                className="hidden"
+                onChange={handleReplaceDesignImage}
+              />
+
+              <div className="grid grid-cols-1 gap-6 md:grid-cols-[minmax(0,2fr)_minmax(260px,1fr)]">
+                <div className="rounded-lg border bg-muted/20 p-2">
+                  <div className="max-h-[70vh] overflow-auto rounded-md bg-black/5 flex items-center justify-center">
+                    <img
+                      src={selectedDesign.previewUrl}
+                      alt={selectedDesign.displayName}
+                      className="max-h-[68vh] w-auto object-contain"
+                    />
+                  </div>
+                </div>
+
+                <div className="rounded-lg border p-4 space-y-4">
+                  <div>
+                    <p className="text-sm text-muted-foreground">Nome</p>
+                    <p className="font-semibold break-all">{selectedDesign.displayName}</p>
+                  </div>
+
+                  <div>
+                    <p className="text-sm text-muted-foreground">Data</p>
+                    <p className="font-medium">
+                      {formatGalleryDate(selectedDesign.sortKey) || "Data indisponível"}
+                    </p>
+                  </div>
+
+                  <div>
+                    <p className="text-sm text-muted-foreground">Valor</p>
+                    <p className="font-medium">{formatCurrency(selectedDesign.designValue)}</p>
+                  </div>
+
+                  <div className="pt-2">
+                    <p className="text-sm text-muted-foreground mb-2">Visibilidade</p>
+                    <Button
+                      type="button"
+                      variant="secondary"
+                      size="icon"
+                      className="bg-background/90"
+                      onClick={() => void toggleGalleryVisibility(selectedDesign.id, !selectedDesign.isPublic)}
+                      disabled={!isOwnProfile || Boolean(togglingGalleryIds[selectedDesign.id])}
+                      title={selectedDesign.isPublic ? "Público" : "Não público"}
+                      aria-label={selectedDesign.isPublic ? "Definir como não público" : "Definir como público"}
+                    >
+                      {togglingGalleryIds[selectedDesign.id] ? (
+                        <Loader2 className="h-4 w-4 animate-spin" />
+                      ) : (
+                        <span className={`relative inline-flex transition-transform duration-500 ${selectedDesign.isPublic ? "rotate-180" : "rotate-0"}`}>
+                          <Earth className="h-4 w-4" />
+                          {!selectedDesign.isPublic && (
+                            <span className="pointer-events-none absolute left-1/2 top-1/2 h-5 w-[2px] -translate-x-1/2 -translate-y-1/2 rotate-45 rounded-full bg-current" />
+                          )}
+                        </span>
+                      )}
+                    </Button>
+                  </div>
+
+                  {replacingDesign && (
+                    <div className="flex items-center gap-2 text-sm text-muted-foreground">
+                      <Loader2 className="h-4 w-4 animate-spin" />
+                      Atualizando imagem...
+                    </div>
+                  )}
+                </div>
+              </div>
+            </div>
+          )}
+        </DialogContent>
+      </Dialog>
+
+      <Dialog open={editPanelOpen} onOpenChange={(open) => { if (!open) setEditPanelOpen(false); }}>
+        <DialogContent className="max-w-md">
           <DialogHeader>
-            <DialogTitle>Atualizar foto de perfil</DialogTitle>
+            <DialogTitle>Editar design</DialogTitle>
           </DialogHeader>
 
           <div className="space-y-4">
-            {previewUrl ? (
-              <div className="flex items-center gap-4">
-                <Avatar className="h-16 w-16">
-                  <AvatarImage src={previewUrl} />
-                  <AvatarFallback>{getAvatarFallback(user.name)}</AvatarFallback>
-                </Avatar>
-                <div className="text-sm text-gray-600">Pré-visualização</div>
-              </div>
-            ) : (
-              <div className="text-sm text-gray-500">Selecione uma imagem (JPG/PNG até ~5MB).</div>
-            )}
-
-            <input
-              type="file"
-              accept="image/*"
-              onChange={onPickFile}
-              className="block w-full text-sm file:mr-4 file:rounded-md file:border file:px-4 file:py-2 file:text-sm file:font-medium file:bg-white file:hover:bg-gray-50"
-            />
+            <div className="space-y-1">
+              <label className="text-sm font-medium">Nome</label>
+              <Input
+                value={editNameInput}
+                onChange={(event) => setEditNameInput(event.target.value)}
+                placeholder="Nome do design"
+                disabled={savingDesignEdit}
+              />
+            </div>
+            <div className="space-y-1">
+              <label className="text-sm font-medium">Valor (R$)</label>
+              <Input
+                value={editValueInput}
+                onChange={(event) => setEditValueInput(event.target.value)}
+                placeholder="0,00"
+                inputMode="decimal"
+                disabled={savingDesignEdit}
+              />
+            </div>
           </div>
 
           <DialogFooter>
-            <Button variant="outline" onClick={() => setOpenUpload(false)}>Cancelar</Button>
-            <Button onClick={handleSaveAvatar} disabled={!selectedFile || saving}>
-              {saving ? "Salvando..." : "Salvar"}
+            <Button variant="outline" onClick={() => setEditPanelOpen(false)} disabled={savingDesignEdit}>
+              Cancelar
+            </Button>
+            <Button onClick={saveDesignEdit} disabled={savingDesignEdit}>
+              {savingDesignEdit ? "Salvando..." : "Salvar"}
             </Button>
           </DialogFooter>
         </DialogContent>
       </Dialog>
+
+      <AlertDialog open={deleteAllContentOpen} onOpenChange={setDeleteAllContentOpen}>
+        <AlertDialogContent>
+          <AlertDialogHeader>
+            <AlertDialogTitle>Excluir todas as peças e designs?</AlertDialogTitle>
+            <AlertDialogDescription>
+              Essa ação remove permanentemente todas as peças salvas em seu perfil e todos os designs da galeria.
+              O conteúdo também deixa de aparecer no feed e em outros perfis imediatamente.
+            </AlertDialogDescription>
+          </AlertDialogHeader>
+          <AlertDialogFooter>
+            <AlertDialogCancel disabled={deletingAllContent}>Cancelar</AlertDialogCancel>
+            <AlertDialogAction
+              onClick={(event) => {
+                event.preventDefault();
+                void deleteAllProfileContent();
+              }}
+              disabled={deletingAllContent}
+              className="bg-destructive text-destructive-foreground hover:bg-destructive/90"
+            >
+              {deletingAllContent ? "Excluindo..." : "Excluir tudo"}
+            </AlertDialogAction>
+          </AlertDialogFooter>
+        </AlertDialogContent>
+      </AlertDialog>
+
+      {/* Dialog de upload (inalterado) */}
+      {isOwnProfile && (
+        <Dialog open={openUpload} onOpenChange={setOpenUpload}>
+          <DialogContent>
+            <DialogHeader>
+              <DialogTitle>Atualizar foto de perfil</DialogTitle>
+            </DialogHeader>
+
+            <div className="space-y-4">
+              {previewUrl ? (
+                <div className="flex items-center gap-4">
+                  <Avatar className="h-16 w-16">
+                    <AvatarImage src={previewUrl} />
+                    <AvatarFallback>{getAvatarFallback(user.name)}</AvatarFallback>
+                  </Avatar>
+                  <div className="text-sm text-gray-600">Pré-visualização</div>
+                </div>
+              ) : (
+                <div className="text-sm text-gray-500">Selecione uma imagem (JPG/PNG até ~5MB).</div>
+              )}
+
+              <input
+                type="file"
+                accept="image/*"
+                onChange={onPickFile}
+                className="block w-full text-sm file:mr-4 file:rounded-md file:border file:px-4 file:py-2 file:text-sm file:font-medium file:bg-white file:hover:bg-gray-50"
+              />
+            </div>
+
+            <DialogFooter>
+              <Button variant="outline" onClick={() => setOpenUpload(false)}>Cancelar</Button>
+              <Button onClick={handleSaveAvatar} disabled={!selectedFile || saving}>
+                {saving ? "Salvando..." : "Salvar"}
+              </Button>
+            </DialogFooter>
+          </DialogContent>
+        </Dialog>
+      )}
     </div>
   );
 };

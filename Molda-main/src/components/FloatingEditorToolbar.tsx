@@ -1,6 +1,7 @@
 // src/components/FloatingEditorToolbar.tsx
 import React, { useEffect, useMemo, useRef, useState } from "react";
 import "./FloatingEditorToolbar.custom.css";
+import type { GradientFill } from "./Editor2D";
 import {
   Droplet,
   Trash2,
@@ -51,6 +52,9 @@ type Props = {
     deleteSelection?: () => void;
     historyCapture?: () => void;
   } | null;
+
+  /** Callback para aplicar gradiente à seleção atual */
+  onApplyGradient?: (gradient: GradientFill) => void;
 };
 
 /** ===== Utils ===== */
@@ -479,13 +483,13 @@ export default function FloatingEditorToolbar({
                 aria-label="Densidade do molde"
                 title={`Densidade: ${stampDensity}%`}
               />
-              <span className="text-xs text-gray-500 tabular-nums min-w-[2.5rem]">{stampDensity}%</span>
+              <span className="text-xs text-gray-500 dark:text-gray-400 tabular-nums min-w-[2.5rem]">{stampDensity}%</span>
             </div>
           )}
 
           {/* 3) Largura - aparece para lápis, linhas/curvas e ao selecionar formas */}
           {(tool === "brush" || tool === "line" || tool === "curve" || (tool === "select" && selectionKind !== "image")) && (
-            <div className="h-9 min-w-[min(220px,90vw)] px-3 flex items-center gap-2 bg-white/30 dark:bg-neutral-900/60 backdrop-blur-md border border-white/20 dark:border-black/20 shadow rounded-xl">
+            <div className="h-9 min-w-[min(220px,90vw)] px-3 flex items-center gap-2 shadow rounded-xl glass-strong">
               <div className="flex flex-col gap-0.5 opacity-60">
                 <Minus className="h-2 w-3" strokeWidth={1} />
                 <Minus className="h-2 w-3" strokeWidth={2} />
@@ -502,12 +506,12 @@ export default function FloatingEditorToolbar({
                 aria-label="Largura"
                 title={`Largura: ${strokeWidth}px`}
               />
-              <span className="text-xs text-gray-500 tabular-nums min-w-[2rem]">{strokeWidth}px</span>
+              <span className="text-xs text-gray-500 dark:text-gray-400 tabular-nums min-w-[2rem]">{strokeWidth}px</span>
             </div>
           )}
 
           {/* 4) Opacidade */}
-          <div className="h-9 min-w-[min(220px,90vw)] px-3 flex items-center gap-2 bg-white/30 dark:bg-neutral-900/60 backdrop-blur-md border border-white/20 dark:border-black/20 shadow rounded-xl">
+          <div className="h-9 min-w-[min(220px,90vw)] px-3 flex items-center gap-2 shadow rounded-xl glass-strong">
             <Eye className="h-4 w-4 opacity-60" />
             <input
               type="range"
@@ -521,7 +525,7 @@ export default function FloatingEditorToolbar({
               aria-label="Opacidade"
               title={`Opacidade: ${Math.round(opacity * 100)}%`}
             />
-            <span className="text-xs text-gray-500 tabular-nums min-w-[2.5rem]">{Math.round(opacity * 100)}%</span>
+            <span className="text-xs text-gray-500 dark:text-gray-400 tabular-nums min-w-[2.5rem]">{Math.round(opacity * 100)}%</span>
           </div>
 
           {/* Separador */}

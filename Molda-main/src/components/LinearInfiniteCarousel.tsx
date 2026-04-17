@@ -49,6 +49,7 @@ export default function LinearInfiniteCarousel({
   durationSec = 30,
 }: Props) {
   const viewportRef = useRef<HTMLDivElement | null>(null);
+  const visibleCount = Math.max(1, Math.min(items.length || 1, 3));
 
   const [viewportWidth, setViewportWidth] = useState(0);
   const viewportWidthRef = useRef(0);
@@ -254,10 +255,8 @@ export default function LinearInfiniteCarousel({
   }, [animateInertia]);
 
   // ===== Wheel → move horizontalmente
-  const onWheel = useCallback((e: React.WheelEvent) => {
-    const delta = Math.abs(e.deltaX) > Math.abs(e.deltaY) ? e.deltaX : e.deltaY;
+  const applyWheelDelta = useCallback((delta: number) => {
     if (!delta) return;
-    e.preventDefault();
     stopRaf();
     velocityRef.current = 0;
     didDragRef.current = true; // roda do mouse não deve contar como clique
@@ -311,6 +310,21 @@ export default function LinearInfiniteCarousel({
   useEffect(() => stopRaf, []);
 
   useEffect(() => {
+    const el = viewportRef.current;
+    if (!el) return;
+
+    const handleWheel = (event: WheelEvent) => {
+      const delta = Math.abs(event.deltaX) > Math.abs(event.deltaY) ? event.deltaX : event.deltaY;
+      if (!delta) return;
+      event.preventDefault();
+      applyWheelDelta(delta);
+    };
+
+    el.addEventListener("wheel", handleWheel, { passive: false });
+    return () => el.removeEventListener("wheel", handleWheel);
+  }, [applyWheelDelta]);
+
+  useEffect(() => {
     if (!viewportWidth || !items.length) return;
     snapToNearest();
   }, [viewportWidth, items.length, snapToNearest]);
@@ -325,6 +339,7 @@ export default function LinearInfiniteCarousel({
   const viewportStyle: React.CSSProperties = {
     ["--item-size" as any]: `${cardSize}px`,
     ["--gap" as any]: `${cardGapPx}px`,
+    ["--visible-items" as any]: String(visibleCount),
   };
 
   // Handler de clique que ignora quando houve arraste
@@ -400,7 +415,6 @@ export default function LinearInfiniteCarousel({
       aria-label={ariaLabel}
       tabIndex={0}
       onKeyDown={onKeyDown}
-      onWheel={onWheel}
       onPointerDown={onPointerDown}
       onPointerMove={onPointerMove}
       onPointerUp={onPointerUp}

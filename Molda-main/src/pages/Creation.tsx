@@ -5,11 +5,12 @@ import Header from "../components/Header";
 import Canvas3DViewer from "../components/Canvas3DViewer";
 import ExpandableSidebar from "../components/ExpandableSidebar";
 import { Button } from "../components/ui/button";
-import { Eye, EyeOff, Plus, X, Check } from "lucide-react";
+import { Plus, X, Check } from "lucide-react";
 import FloatingEditorToolbar from "../components/FloatingEditorToolbar";
 import TextToolbar from "../components/TextToolbar";
 import ImageToolbar from "../components/ImageToolbar";
 import { useRecentFonts } from "../hooks/use-recent-fonts";
+import { EyeTabDivider } from "../components/ui/EyeTabDivider";
 
 import Editor2D, {
   Editor2DHandle,
@@ -36,6 +37,7 @@ import { useAuth } from "../contexts/AuthContext";
 import type { ExternalDecalData, DecalTransform, DecalStateSnapshot } from "../types/decals";
 import { STORAGE_BUCKET } from "../lib/supabaseClient";
 import { toast } from "sonner";
+import { normalizeDbDecalZones, type ModelDecalZone } from "../lib/models";
 
 type CanvasTab = { id: string; name: string; type: "2d" | "3d" };
 type SelectionKind = "none" | "text" | "image" | "other";
@@ -53,6 +55,7 @@ type DraftPayload = {
   tabVisibility: Record<string, boolean>;
   tabDecalPreviews: Record<string, string>;
   tabDecalPlacements: Record<string, DecalTransform>;
+  tabPrintTypes?: Record<string, string>;
   activeCanvasTab: string;
   savedAt: string;
   draftKey: string;
@@ -68,6 +71,18 @@ type SaveDraftOptions = {
   markPermanent?: boolean;
 };
 
+type SubtypePrintConstraints = {
+  id: string;
+  print_area_width_cm?: number | null;
+  print_area_height_cm?: number | null;
+  min_decal_area_cm2?: number | null;
+  neck_zone_y_min?: number | null;
+  underarm_zone_y_min?: number | null;
+  underarm_zone_y_max?: number | null;
+  underarm_zone_abs_x_min?: number | null;
+  decal_zones_json?: unknown;
+};
+
 const TRANSPARENT_PNG =
   "data:image/png;base64,iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mP8/x8AAukB9p7i/ZkAAAAASUVORK5CYII=";
 
@@ -79,6 +94,13 @@ const nearlyEqual = (a?: number | null, b?: number | null) => {
 };
 
 const DRAFT_EPHEMERAL_TTL_MS = 5 * 60 * 1000;
+
+const VIABILITY_WARNING_LABELS: Record<string, string> = {
+  min_area_violation: "Decal abaixo da area minima recomendada para a peca.",
+  neck_zone_risk: "Decal proximo da gola (area de risco de producao).",
+  underarm_zone_risk: "Decal abaixo da manga/lateral (area de risco de producao).",
+  relief_overlap_risk: "Decal em regiao de relevo alto/sobreposicao.",
+};
 
 const slugify = (s: string) =>
   s
@@ -163,10 +185,15 @@ const Creation = () => {
   const [baseColor, setBaseColor] = useState("#ffffff");
   const [size, setSize] = useState("M");
   const [fabric, setFabric] = useState("Algodão");
+  const [fixedSubtypeFabric, setFixedSubtypeFabric] = useState<string | null>(null);
+  const [isSubtypeFabricLocked, setIsSubtypeFabricLocked] = useState(false);
+  const [subtypePrintConstraints, setSubtypePrintConstraints] = useState<SubtypePrintConstraints | null>(null);
+  const [subtypeDecalZonesOverride, setSubtypeDecalZonesOverride] = useState<ModelDecalZone[]>([]);
+  const [decalViabilityAlerts, setDecalViabilityAlerts] = useState<Record<string, string[]>>({});
   const [notes, setNotes] = useState("");
 
   const [canvasTabs, setCanvasTabs] = useState<CanvasTab[]>([
-    { id: "3d", name: "3D", type: "3d" },
+    { id: "3d", name: subtype || "3D", type: "3d" },
   ]);
   const [activeCanvasTab, setActiveCanvasTab] = useState("3d");
   const [tabTransitionDirection, setTabTransitionDirection] = useState<"left" | "right">("right");
@@ -180,6 +207,100 @@ const Creation = () => {
 
   const [canUndo, setCanUndo] = useState(false);
   const [canRedo, setCanRedo] = useState(false);
+
+  useEffect(() => {
+    let cancelled = false;
+
+    const resolveSubtypeFabric = async () => {
+      setFixedSubtypeFabric(null);
+      setIsSubtypeFabricLocked(false);
+      setSubtypePrintConstraints(null);
+      setSubtypeDecalZonesOverride([]);
+
+      if (!subtype) return;
+
+      try {
+        let typeId: string | null = null;
+        if (type) {
+          const { data: typeRow } = await supabase
+            .from("product_types")
+            .select("id")
+            .ilike("name", type)
+            .maybeSingle();
+          typeId = typeRow?.id ?? null;
+        }
+
+        let subtypeQuery = supabase
+          .from("product_subtypes")
+          .select("id, print_area_width_cm, print_area_height_cm, min_decal_area_cm2, neck_zone_y_min, underarm_zone_y_min, underarm_zone_y_max, underarm_zone_abs_x_min, decal_zones_json")
+          .ilike("name", subtype)
+          .limit(1);
+
+        if (typeId) {
+          subtypeQuery = supabase
+            .from("product_subtypes")
+            .select("id, print_area_width_cm, print_area_height_cm, min_decal_area_cm2, neck_zone_y_min, underarm_zone_y_min, underarm_zone_y_max, underarm_zone_abs_x_min, decal_zones_json")
+            .eq("type_id", typeId)
+            .ilike("name", subtype)
+            .limit(1);
+        }
+
+        const { data: subtypeRows, error: subtypeErr } = await subtypeQuery;
+        if (subtypeErr) throw subtypeErr;
+
+        const subtypeId = subtypeRows?.[0]?.id;
+        if (!subtypeId) return;
+
+        const subtypeMeta = subtypeRows?.[0] as SubtypePrintConstraints | undefined;
+        if (subtypeMeta) {
+          setSubtypePrintConstraints({
+            id: subtypeMeta.id,
+            print_area_width_cm: subtypeMeta.print_area_width_cm ?? null,
+            print_area_height_cm: subtypeMeta.print_area_height_cm ?? null,
+            min_decal_area_cm2: subtypeMeta.min_decal_area_cm2 ?? 5,
+            neck_zone_y_min: subtypeMeta.neck_zone_y_min ?? 0.82,
+            underarm_zone_y_min: subtypeMeta.underarm_zone_y_min ?? 0.45,
+            underarm_zone_y_max: subtypeMeta.underarm_zone_y_max ?? 0.72,
+            underarm_zone_abs_x_min: subtypeMeta.underarm_zone_abs_x_min ?? 0.55,
+            decal_zones_json: subtypeMeta.decal_zones_json,
+          });
+          setSubtypeDecalZonesOverride(normalizeDbDecalZones(subtypeMeta.decal_zones_json));
+        }
+
+        const { data: relRows, error: relErr } = await supabase
+          .from("subtype_materials")
+          .select("material_id")
+          .eq("subtype_id", subtypeId)
+          .limit(1);
+        if (relErr) throw relErr;
+
+        const materialId = relRows?.[0]?.material_id;
+        if (!materialId) return;
+
+        const { data: materialRow, error: materialErr } = await supabase
+          .from("materials")
+          .select("name")
+          .eq("id", materialId)
+          .maybeSingle();
+        if (materialErr) throw materialErr;
+
+        if (cancelled) return;
+        const resolvedFabric = materialRow?.name ?? null;
+        if (!resolvedFabric) return;
+
+        setFixedSubtypeFabric(resolvedFabric);
+        setFabric(resolvedFabric);
+        setIsSubtypeFabricLocked(true);
+      } catch (err) {
+        console.warn("[creation.resolveSubtypeFabric]", err);
+      }
+    };
+
+    void resolveSubtypeFabric();
+    return () => {
+      cancelled = true;
+    };
+  }, [subtype, type]);
 
   const [tool, setTool] = useState<Tool>("select");
   const [brushVariant, setBrushVariant] = useState<BrushVariant>("pencil");
@@ -279,6 +400,7 @@ const Creation = () => {
   const lastEditorTabRef = useRef<string | null>(null);
   // Mantém refs estáveis para evitar loops com callback ref inline
   const prevTabRef = useRef<string>(activeCanvasTab);
+  const prevSavedTabRef = useRef<string>(activeCanvasTab);
 
   useEffect(() => {
     const el = twoDViewportRef.current;
@@ -305,15 +427,15 @@ const Creation = () => {
       // Determina a direção da transição baseado na posição das tabs
       const prevIndex = canvasTabs.findIndex((t) => t.id === prevTab);
       const currentIndex = canvasTabs.findIndex((t) => t.id === activeCanvasTab);
-      
+
       setTabTransitionDirection(currentIndex > prevIndex ? "right" : "left");
       setIsTransitioning(true);
-      
+
       // Remove o estado de transição após a animação
       const timer = setTimeout(() => {
         setIsTransitioning(false);
       }, 400);
-      
+
       prevTabRef.current = activeCanvasTab;
       return () => clearTimeout(timer);
     }
@@ -349,8 +471,10 @@ const Creation = () => {
           setSelectionKind(kind);
           if (kind === "none") {
             setSelectionInfo(null);
+            setCanSaveSelectedImage(false);
           } else {
             setSelectionInfo(inst.getSelectionInfo?.() ?? null);
+            setCanSaveSelectedImage(canSaveSelectedImageFromEditor(inst, kind));
           }
         });
         selectionListenerGuard.current.add(inst);
@@ -367,18 +491,225 @@ const Creation = () => {
       try {
         requestAnimationFrame(() => inst.refresh?.());
         setTimeout(() => inst.refresh?.(), 30);
-      } catch {}
+      } catch { }
 
       // Removido: carregamento automático do snapshot para evitar bug de resetar posição dos objetos
     },
     [activeCanvasTab]
   );
   const [tabVisibility, setTabVisibility] = useState<Record<string, boolean>>({});
+  // ── Drag state consolidado para performance ──
+  type DragState = { tabId: string; pointerX: number; overSection: "visible" | "hidden" | null; insertIndex: number | null };
+  const [dragState, setDragState] = useState<DragState | null>(null);
+  const dragLiveRef = useRef<DragState | null>(null);
+  const dragRafRef = useRef<number>(0);
+  const tabContainerRef = useRef<HTMLDivElement | null>(null);
+  const visibleSectionRef = useRef<HTMLDivElement | null>(null);
+  const hiddenSectionRef = useRef<HTMLDivElement | null>(null);
+  const dragStartXRef = useRef(0);
+  const dragTabElRectRef = useRef<{ width: number; height: number }>({ width: 0, height: 0 });
+  const ensureTabHasDecalPreviewRef = useRef<((tabId: string) => Promise<void>) | null>(null);
+  const cachedTabRectsRef = useRef<{ id: string; left: number; right: number; midX: number }[]>([]);
+
+  // Derived values from consolidated drag state (avoids breaking JSX references)
+  const draggedTabId = dragState?.tabId ?? null;
+  const dragPointerX = dragState?.pointerX ?? 0;
+  const dragOverSection = dragState?.overSection ?? null;
+  const dragInsertIndex = dragState?.insertIndex ?? null;
+
+  /** Compute the insert index using cached rects (fast path) or DOM (fallback) */
+  const computeVisibleInsertIndex = useCallback((pointerX: number, draggedId: string, useCached = true) => {
+    // The 3D tab is always first; 2D tabs must have index >= 1
+    const minIdx = draggedId !== "3d" ? 1 : 0;
+
+    if (useCached && cachedTabRectsRef.current.length > 0) {
+      const others = cachedTabRectsRef.current.filter((r) => r.id !== draggedId);
+      for (let i = 0; i < others.length; i++) {
+        if (pointerX < others[i].midX) return Math.max(i, minIdx);
+      }
+      return Math.max(others.length, minIdx);
+    }
+    // Fallback: read from DOM (used only on drop for accuracy)
+    const section = visibleSectionRef.current;
+    if (!section) return minIdx;
+    const tabEls = Array.from(section.querySelectorAll<HTMLElement>("[data-tab-id]"));
+    const others = tabEls.filter((el) => el.dataset.tabId !== draggedId);
+    for (let i = 0; i < others.length; i++) {
+      const rect = others[i].getBoundingClientRect();
+      const midX = rect.left + rect.width / 2;
+      if (pointerX < midX) return Math.max(i, minIdx);
+    }
+    return Math.max(others.length, minIdx);
+  }, []);
+
+  /** Cache all visible tab rects at drag start for fast hit-testing during move */
+  const cacheVisibleTabRects = useCallback(() => {
+    const section = visibleSectionRef.current;
+    if (!section) { cachedTabRectsRef.current = []; return; }
+    const tabEls = Array.from(section.querySelectorAll<HTMLElement>("[data-tab-id]"));
+    cachedTabRectsRef.current = tabEls.map((el) => {
+      const rect = el.getBoundingClientRect();
+      return { id: el.dataset.tabId!, left: rect.left, right: rect.right, midX: rect.left + rect.width / 2 };
+    });
+  }, []);
+
+  /** Schedule a single RAF-batched state update from the live ref */
+  const scheduleDragUpdate = useCallback(() => {
+    if (dragRafRef.current) return; // already scheduled
+    dragRafRef.current = requestAnimationFrame(() => {
+      dragRafRef.current = 0;
+      const live = dragLiveRef.current;
+      if (live) setDragState({ ...live });
+    });
+  }, []);
+
+  const handleTabPointerDown = useCallback((e: React.PointerEvent, tabId: string) => {
+    // Only primary button
+    if (e.button !== 0) return;
+    const el = e.currentTarget as HTMLElement;
+    const rect = el.getBoundingClientRect();
+    dragTabElRectRef.current = { width: rect.width, height: rect.height };
+    dragStartXRef.current = e.clientX;
+    const pointerId = e.pointerId;
+    // Threshold to distinguish click from drag
+    const moveThreshold = 5;
+    let started = false;
+
+    const cleanup = () => {
+      document.removeEventListener("pointermove", wrappedOnMove);
+      document.removeEventListener("pointerup", onUp);
+      document.removeEventListener("pointercancel", onUp);
+      if (dragRafRef.current) { cancelAnimationFrame(dragRafRef.current); dragRafRef.current = 0; }
+      delete (window as any).__lastDragPointerClientX;
+    };
+
+    const onMove = (ev: PointerEvent) => {
+      if (ev.pointerId !== pointerId) return;
+      if (!started && Math.abs(ev.clientX - dragStartXRef.current) < moveThreshold) return;
+      if (!started) {
+        started = true;
+        cacheVisibleTabRects();
+        // Set initial drag state immediately for first paint
+        const initState = { tabId, pointerX: 0, overSection: null as "visible" | "hidden" | null, insertIndex: null as number | null };
+        dragLiveRef.current = initState;
+        setDragState(initState);
+      }
+
+      // Read container rect live (it changes as placeholders appear/disappear)
+      const containerRect = tabContainerRef.current?.getBoundingClientRect();
+      if (!containerRect) return;
+
+      // Compute position relative to tab container
+      const clampedX = Math.max(containerRect.left, Math.min(ev.clientX, containerRect.right - dragTabElRectRef.current.width));
+      const pointerX = clampedX - containerRect.left;
+
+      // Read section rects live (cheap, and they change as placeholders appear/disappear)
+      const visRect = visibleSectionRef.current?.getBoundingClientRect();
+      const hidRect = hiddenSectionRef.current?.getBoundingClientRect();
+
+      // Determine which section the pointer is over + insert index
+      let overSection: "visible" | "hidden" | null = null;
+      let insertIndex: number | null = null;
+      if (visRect && ev.clientX >= visRect.left && ev.clientX <= visRect.right) {
+        overSection = "visible";
+        insertIndex = computeVisibleInsertIndex(ev.clientX, tabId, true);
+      } else if (hidRect && ev.clientX >= hidRect.left && ev.clientX <= hidRect.right) {
+        overSection = "hidden";
+      }
+
+      // Update ref immediately (cheap), schedule batched state update
+      dragLiveRef.current = { tabId, pointerX, overSection, insertIndex };
+      scheduleDragUpdate();
+    };
+
+    const onUp = (ev?: PointerEvent) => {
+      if (ev && ev.pointerId !== pointerId) return;
+      // Read pointer position BEFORE cleanup deletes it
+      const pointerX = (window as any).__lastDragPointerClientX ?? dragStartXRef.current;
+      cleanup();
+      if (!started) return;
+
+      // Read section rects live for accurate drop detection
+      const visRect = visibleSectionRef.current?.getBoundingClientRect();
+      const hidRect = hiddenSectionRef.current?.getBoundingClientRect();
+      let targetSection: "visible" | "hidden" | null = null;
+      if (visRect && pointerX >= visRect.left && pointerX <= visRect.right) {
+        targetSection = "visible";
+      } else if (hidRect && pointerX >= hidRect.left && pointerX <= hidRect.right) {
+        targetSection = "hidden";
+      }
+
+      if (targetSection === "visible") {
+        // Ensure visibility for 2D tabs dropped in visible section
+        if (tabId !== "3d" && !tabVisibilityRef.current[tabId]) {
+          void (async () => { await ensureTabHasDecalPreviewRef.current?.(tabId); })();
+        }
+        if (tabId !== "3d") {
+          setTabVisibility((prev) => {
+            const next = { ...prev, [tabId]: true };
+            tabVisibilityRef.current = next;
+            return next;
+          });
+        }
+
+        // Reorder: compute final insert index from DOM (accurate, not cached)
+        const finalIdx = computeVisibleInsertIndex(pointerX, tabId, false);
+        setCanvasTabs((prev) => {
+          // Get list of visible tabs (3d + visible 2d) in current order
+          const visibleIds = prev
+            .filter((t) => t.type === "3d" || (t.type === "2d" && (tabVisibilityRef.current[t.id] || t.id === tabId)))
+            .map((t) => t.id);
+          const hiddenTabs = prev.filter(
+            (t) => t.type === "2d" && !tabVisibilityRef.current[t.id] && t.id !== tabId
+          );
+
+          // Remove the dragged tab from visible list
+          const withoutDragged = visibleIds.filter((id) => id !== tabId);
+          // Insert at the computed position
+          const insertAt = Math.min(finalIdx, withoutDragged.length);
+          withoutDragged.splice(insertAt, 0, tabId);
+
+          // Rebuild full tabs: visible (in new order) + hidden (preserving order)
+          const tabMap = new Map(prev.map((t) => [t.id, t]));
+          const next = [
+            ...withoutDragged.map((id) => tabMap.get(id)!),
+            ...hiddenTabs,
+          ];
+          canvasTabsRef.current = next;
+          return next;
+        });
+      } else if (targetSection === "hidden" && tabId !== "3d") {
+        setTabVisibility((prev) => {
+          const next = { ...prev, [tabId]: false };
+          tabVisibilityRef.current = next;
+          return next;
+        });
+      }
+
+      dragLiveRef.current = null;
+      cachedTabRectsRef.current = [];
+      setDragState(null);
+    };
+
+    const wrappedOnMove = (ev: PointerEvent) => {
+      (window as any).__lastDragPointerClientX = ev.clientX;
+      onMove(ev);
+    };
+
+    document.addEventListener("pointermove", wrappedOnMove);
+    document.addEventListener("pointerup", onUp);
+    document.addEventListener("pointercancel", onUp);
+  }, [computeVisibleInsertIndex, cacheVisibleTabRects, scheduleDragUpdate]);
   const [tabDecalPreviews, setTabDecalPreviews] = useState<Record<string, string>>({});
   const [tabDecalPlacements, setTabDecalPlacements] = useState<Record<string, DecalTransform>>({});
+  const [tabPrintTypes, setTabPrintTypes] = useState<Record<string, string>>({});
+  /** Automatic gizmo dimensions derived from canvas content bounds (fallback for tabs without explicit placement). */
+  const [tabDecalAutoSizes, setTabDecalAutoSizes] = useState<Record<string, { width: number; height: number }>>({});
+  const tabDecalAutoSizesRef = useRef<Record<string, { width: number; height: number }>>({});
   const tabVisibilityRef = useRef<Record<string, boolean>>(tabVisibility);
   const tabDecalPreviewsRef = useRef<Record<string, string>>(tabDecalPreviews);
   const tabDecalPlacementsRef = useRef<Record<string, DecalTransform>>(tabDecalPlacements);
+  const tabPrintTypesRef = useRef<Record<string, string>>(tabPrintTypes);
   useEffect(() => {
     tabVisibilityRef.current = tabVisibility;
   }, [tabVisibility]);
@@ -388,40 +719,165 @@ const Creation = () => {
   useEffect(() => {
     tabDecalPlacementsRef.current = tabDecalPlacements;
   }, [tabDecalPlacements]);
+  useEffect(() => {
+    tabPrintTypesRef.current = tabPrintTypes;
+  }, [tabPrintTypes]);
+  useEffect(() => {
+    tabDecalAutoSizesRef.current = tabDecalAutoSizes;
+  }, [tabDecalAutoSizes]);
 
   const captureTabImage = useCallback(async (tabId: string): Promise<string | null> => {
     const inst = editorRefs.current[tabId];
     if (!inst) return null;
     try {
       await inst.waitForIdle?.();
-    } catch {}
+    } catch { }
     try {
       inst.refresh?.();
-    } catch {}
-    const dataUrl = inst.exportPNG?.();
-    const current = tabDecalPreviewsRef.current;
-    if (dataUrl && current[tabId] !== dataUrl) {
-      const next = { ...current, [tabId]: dataUrl };
-      tabDecalPreviewsRef.current = next;
-      setTabDecalPreviews(next);
-      return dataUrl;
+    } catch { }
+
+    const fullDataUrl = inst.exportPNG?.() ?? null;
+    const bounds = inst.getContentBounds?.() ?? null;
+
+    let finalDataUrl: string | null = fullDataUrl;
+
+    if (fullDataUrl && bounds) {
+      // Crop the exported PNG to the actual content region so the 3D texture
+      // fills the gizmo box completely (no transparent padding around the design).
+      try {
+        const img = new Image();
+        img.src = fullDataUrl;
+        await img.decode();
+        const pw = img.naturalWidth;
+        const ph = img.naturalHeight;
+        const cropX = Math.round(bounds.ratioLeft * pw);
+        const cropY = Math.round(bounds.ratioTop * ph);
+        const cropW = Math.max(1, Math.round(bounds.ratioW * pw));
+        const cropH = Math.max(1, Math.round(bounds.ratioH * ph));
+        const offscreen = document.createElement("canvas");
+        offscreen.width = cropW;
+        offscreen.height = cropH;
+        const ctx = offscreen.getContext("2d");
+        if (ctx) {
+          ctx.drawImage(img, cropX, cropY, cropW, cropH, 0, 0, cropW, cropH);
+          finalDataUrl = offscreen.toDataURL("image/png");
+        }
+      } catch {
+        // fall back to full canvas PNG on any error
+      }
+
+      // --------------- Gizmo sizing ---------------
+      // DECAL_DOMINANT_SIZE is the single reference parameter that controls
+      // how large decals appear on the 3D model. It sets the world-unit size
+      // of the dominant axis (width or height, whichever is larger).
+      // The other axis is scaled proportionally to preserve the crop aspect ratio.
+      //
+      //   Increase DECAL_DOMINANT_SIZE → bigger decals on the model.
+      //   Decrease DECAL_DOMINANT_SIZE → smaller decals on the model.
+      //
+      const DECAL_DOMINANT_SIZE = 0.85; // world units — change ONLY this value to resize all decals
+
+      const cropAspect = bounds.ratioH > 0 ? bounds.ratioW / bounds.ratioH : 1; // W/H of crop
+      let autoW: number, autoH: number;
+      if (cropAspect >= 1) {
+        // wider than tall — dominant axis is width
+        autoW = DECAL_DOMINANT_SIZE;
+        autoH = DECAL_DOMINANT_SIZE / cropAspect;
+      } else {
+        // taller than wide — dominant axis is height
+        autoH = DECAL_DOMINANT_SIZE;
+        autoW = DECAL_DOMINANT_SIZE * cropAspect;
+      }
+      const clamp = (v: number, lo: number, hi: number) => Math.min(hi, Math.max(lo, v));
+      autoW = clamp(autoW, 0.10, 1.50);
+      autoH = clamp(autoH, 0.10, 1.50);
+
+      const prev = tabDecalAutoSizesRef.current;
+      if (!prev[tabId] || Math.abs(prev[tabId].width - autoW) > 0.001 || Math.abs(prev[tabId].height - autoH) > 0.001) {
+        const next = { ...prev, [tabId]: { width: autoW, height: autoH } };
+        tabDecalAutoSizesRef.current = next;
+        setTabDecalAutoSizes(next);
+      }
     }
-    return current[tabId] ?? null;
-  }, [setTabDecalPreviews]);
+
+    if (finalDataUrl) {
+      const current = tabDecalPreviewsRef.current;
+      if (current[tabId] !== finalDataUrl) {
+        const next = { ...current, [tabId]: finalDataUrl };
+        tabDecalPreviewsRef.current = next;
+        setTabDecalPreviews(next);
+      }
+    }
+
+    return tabDecalPreviewsRef.current[tabId] ?? null;
+  }, [setTabDecalPreviews, setTabDecalAutoSizes]);
+
+  const ensureTabHasDecalPreview = useCallback(async (tabId: string) => {
+    const result = await captureTabImage(tabId);
+    if (result) return;
+    setTabDecalPreviews((prev) => {
+      if (prev[tabId]) return prev;
+      const next = {
+        ...prev,
+        [tabId]: TRANSPARENT_PNG,
+      };
+      tabDecalPreviewsRef.current = next;
+      return next;
+    });
+  }, [captureTabImage]);
+
+  // Keep the ref in sync so handleTabPointerDown can use it
+  useEffect(() => {
+    ensureTabHasDecalPreviewRef.current = ensureTabHasDecalPreview;
+  }, [ensureTabHasDecalPreview]);
 
   const decalsFor3D = useMemo<ExternalDecalData[]>(() => {
     return canvasTabs
       .filter((tab) => tab.type === "2d" && tabVisibility[tab.id] && tabDecalPreviews[tab.id])
-      .map((tab) => ({
-        id: tab.id,
-        label: tab.name,
-        dataUrl: tabDecalPreviews[tab.id],
-        transform: tabDecalPlacements[tab.id] ?? null,
-      }));
-  }, [canvasTabs, tabDecalPreviews, tabVisibility, tabDecalPlacements]);
+      .map((tab) => {
+        const placement = tabDecalPlacements[tab.id] ?? null;
+        const autoSize = tabDecalAutoSizes[tab.id] ?? null;
+
+        // autoSize (derived from 2D canvas content bounds) ALWAYS controls width/height.
+        // placement only contributes position/normal/angle (where the user placed the decal in 3D).
+        // This prevents the engine's initial default size (0.3) from polluting tabDecalPlacements
+        // and permanently overriding the content-aware sizing.
+        let transform: DecalTransform | null = null;
+        if (autoSize) {
+          transform = {
+            width: autoSize.width,
+            height: autoSize.height,
+            position: placement?.position ?? null,
+            normal: placement?.normal ?? null,
+            angle: placement?.angle,
+            depth: placement?.depth,
+          };
+        } else if (placement) {
+          transform = placement;
+        }
+
+        return {
+          id: tab.id,
+          label: tab.name,
+          dataUrl: tabDecalPreviews[tab.id],
+          transform,
+        };
+      });
+  }, [canvasTabs, tabDecalPreviews, tabVisibility, tabDecalPlacements, tabDecalAutoSizes]);
+
+  const viabilityAlertItems = useMemo(() => {
+    return Object.entries(decalViabilityAlerts).map(([id, messages]) => {
+      const tab = canvasTabs.find((item) => item.id === id);
+      return {
+        id,
+        label: tab?.name ?? id,
+        messages,
+      };
+    });
+  }, [canvasTabs, decalViabilityAlerts]);
 
   // Referência estável para os parâmetros do projeto atual
-  const currentProjectRef = useRef<{part: string | null, type: string | null, subtype: string | null}>({
+  const currentProjectRef = useRef<{ part: string | null, type: string | null, subtype: string | null }>({
     part: null, type: null, subtype: null
   });
 
@@ -429,17 +885,17 @@ const Creation = () => {
   useEffect(() => {
     const current = { part, type, subtype };
     const previous = currentProjectRef.current;
-    
+
     // Só reseta se realmente mudou e não é a primeira carga
     const hasChanged = (previous.part !== null || previous.type !== null || previous.subtype !== null) &&
-                      (previous.part !== current.part || previous.type !== current.type || previous.subtype !== current.subtype);
-    
+      (previous.part !== current.part || previous.type !== current.type || previous.subtype !== current.subtype);
+
     if (hasChanged) {
       resetProject();
       tabDecalPlacementsRef.current = {};
       setTabDecalPlacements({});
     }
-    
+
     currentProjectRef.current = current;
   }, [part, type, subtype, resetProject]);
 
@@ -448,18 +904,20 @@ const Creation = () => {
     if (typeof payload.projectName === "string") setProjectName(payload.projectName);
     if (typeof payload.baseColor === "string") setBaseColor(payload.baseColor);
     if (typeof payload.size === "string") setSize(payload.size);
-    if (typeof payload.fabric === "string") setFabric(payload.fabric);
+    if (typeof payload.fabric === "string" && !isSubtypeFabricLocked) setFabric(payload.fabric);
     if (typeof payload.notes === "string") setNotes(payload.notes);
 
     let restoredTabs: CanvasTab[] = [];
     if (Array.isArray(payload.canvasTabs) && payload.canvasTabs.length) {
-      restoredTabs = payload.canvasTabs as CanvasTab[];
+      restoredTabs = (payload.canvasTabs as CanvasTab[]).map((t) =>
+        t.type === "3d" ? { ...t, name: subtype || t.name } : t
+      );
       canvasTabsRef.current = restoredTabs;
       setCanvasTabs(restoredTabs);
     } else if (payload.canvasSnapshots && typeof payload.canvasSnapshots === "object") {
       const keys = Object.keys(payload.canvasSnapshots as Record<string, unknown>);
       if (keys.length) {
-        restoredTabs = [{ id: "3d", name: "3D", type: "3d" }];
+        restoredTabs = [{ id: "3d", name: subtype || "3D", type: "3d" }];
         keys.forEach((k, i) => restoredTabs.push({ id: k, name: `2D - ${i + 1}`, type: "2d" }));
         canvasTabsRef.current = restoredTabs;
         setCanvasTabs(restoredTabs);
@@ -497,6 +955,11 @@ const Creation = () => {
       tabDecalPlacementsRef.current = placements;
       setTabDecalPlacements(placements);
     }
+    if (payload.tabPrintTypes && typeof payload.tabPrintTypes === "object") {
+      const ptypes = payload.tabPrintTypes as Record<string, string>;
+      tabPrintTypesRef.current = ptypes;
+      setTabPrintTypes(ptypes);
+    }
 
     if (typeof payload.isPermanent === "boolean") {
       isDraftPermanentRef.current = payload.isPermanent;
@@ -520,7 +983,7 @@ const Creation = () => {
       setIsDraftPermanent(false);
       try {
         localStorage.removeItem("currentProject");
-      } catch {}
+      } catch { }
       return;
     }
 
@@ -544,7 +1007,7 @@ const Creation = () => {
             setDraftId(String(parsed.draftId));
           }
         }
-      } catch {}
+      } catch { }
     };
 
     resolveMetadataFromLocal();
@@ -611,7 +1074,7 @@ const Creation = () => {
 
         try {
           localStorage.setItem("currentProject", JSON.stringify(payload));
-        } catch {}
+        } catch { }
       } catch (err) {
         // silencioso, fallback local será acionado
       }
@@ -678,10 +1141,12 @@ const Creation = () => {
 
   const [selectionKind, setSelectionKind] = useState<SelectionKind>("none");
   const [selectionInfo, setSelectionInfo] = useState<SelectionInfo | null>(null);
+  const [canSaveSelectedImage, setCanSaveSelectedImage] = useState(false);
   const prevSelectionKindRef = useRef<SelectionKind>("none");
   const [cropModeActive, setCropModeActive] = useState(false);
   const [colorCutModeActive, setColorCutModeActive] = useState(false);
   const [effectsEditModeActive, setEffectsEditModeActive] = useState(false);
+  const [bgRemovingTabId, setBgRemovingTabId] = useState<string | null>(null);
   const toolbarTransitionTimeoutRef = useRef<NodeJS.Timeout | null>(null);
 
   // Detecta mudança de toolbar ativa (não de seleção geral) e aplica transição flip
@@ -694,12 +1159,12 @@ const Creation = () => {
     const cropActive = cropModeActive;
 
     // Determina se há uma toolbar ativa (texto, imagem ou ferramentas especiais)
-    const hasActiveToolbar = 
-      selectionKind === "text" || 
-      selectionKind === "image" || 
-      effectToolActive || 
-      colorCutActive || 
-      cropActive || 
+    const hasActiveToolbar =
+      selectionKind === "text" ||
+      selectionKind === "image" ||
+      effectToolActive ||
+      colorCutActive ||
+      cropActive ||
       effectsEditModeActive;
 
     // Só faz transição se há uma mudança real de toolbar ativa
@@ -711,14 +1176,14 @@ const Creation = () => {
 
       setToolbarTransitionType("out");
       setIsToolbarTransitioning(true);
-      
+
       toolbarTransitionTimeoutRef.current = setTimeout(() => {
         setToolbarTransitionType("in");
         toolbarTransitionTimeoutRef.current = setTimeout(() => {
           setIsToolbarTransitioning(false);
         }, 600); // Duração da animação flip-in
       }, 400); // Duração da animação flip-out
-      
+
       prevSelectionKindRef.current = selectionKind;
     }
 
@@ -733,15 +1198,27 @@ const Creation = () => {
   const colorCutListenerGuard = useRef<WeakSet<Editor2DHandle>>(new WeakSet());
   const effectsListenerGuard = useRef<WeakSet<Editor2DHandle>>(new WeakSet());
 
+  const canSaveSelectedImageFromEditor = useCallback(
+    (inst: Editor2DHandle | null | undefined, kind?: SelectionKind) => {
+      if (!inst) return false;
+      const resolvedKind = kind ?? (inst.getSelectionKind?.() || "none");
+      if (resolvedKind !== "image") return false;
+      return !!inst.hasSelectedImageVisualChanges?.();
+    },
+    []
+  );
+
   const updateSelectionInfo = useCallback(() => {
     const inst = editorRefs.current[activeCanvasTab];
     if (!inst) {
       setSelectionInfo(null);
+      setCanSaveSelectedImage(false);
       return;
     }
     const info = inst.getSelectionInfo?.();
     setSelectionInfo(info ?? null);
-  }, [activeCanvasTab]);
+    setCanSaveSelectedImage(canSaveSelectedImageFromEditor(inst));
+  }, [activeCanvasTab, canSaveSelectedImageFromEditor]);
 
   const runWithActiveEditor = useCallback(
     async (fn: (editor: Editor2DHandle) => unknown | Promise<unknown>) => {
@@ -776,22 +1253,24 @@ const Creation = () => {
           containerWidth: rect.width,
           containerHeight: rect.height,
         });
-      } catch {}
+      } catch { }
 
       try {
         const k = inst.getSelectionKind?.();
         if (k) setSelectionKind(k);
-      } catch {}
+      } catch { }
 
       const info = inst.getSelectionInfo?.();
       if (!info || !info.hasSelection) {
         event.preventDefault();
         setSelectionInfo(null);
+        setCanSaveSelectedImage(false);
         return;
       }
       setSelectionInfo(info);
+      setCanSaveSelectedImage(canSaveSelectedImageFromEditor(inst));
     },
-    [activeCanvasTab]
+    [activeCanvasTab, canSaveSelectedImageFromEditor]
   );
 
   const saveSelectedImage = useCallback(async () => {
@@ -800,10 +1279,16 @@ const Creation = () => {
     await runWithActiveEditor(async (inst) => {
       try {
         await inst.waitForIdle?.();
-      } catch {}
+      } catch { }
       try {
         inst.refresh?.();
-      } catch {}
+      } catch { }
+
+      const hasVisualChanges = !!inst.hasSelectedImageVisualChanges?.();
+      if (!hasVisualChanges) {
+        toast.error("Nenhuma alteracao visual para salvar.");
+        return;
+      }
 
       const dataUrl = inst.exportSelectionPNG?.();
       if (!dataUrl) {
@@ -811,13 +1296,19 @@ const Creation = () => {
         return;
       }
 
+      const selectedMeta = inst.getSelectedImageGalleryMeta?.() || null;
+      const selectedGroupId =
+        typeof selectedMeta?.groupId === "string" && selectedMeta.groupId.length
+          ? selectedMeta.groupId
+          : null;
+
       // 1) Download local (PNG)
       try {
         const a = document.createElement("a");
         a.href = dataUrl;
         a.download = `${slugify(projectName || "imagem") || "imagem"}-${Date.now()}.png`;
         a.click();
-      } catch {}
+      } catch { }
 
       // 2) Salvar na galeria (Supabase Storage) para aparecer no UploadGallery
       if (!user?.id) {
@@ -827,14 +1318,30 @@ const Creation = () => {
 
       try {
         const blob = await (await fetch(dataUrl)).blob();
-        const base = slugify(projectName || "imagem") || "imagem";
-        const filename = `${tsPrefix()}-${base}.png`;
+        const rawBaseName =
+          (typeof selectedMeta?.originalName === "string" && selectedMeta.originalName.length
+            ? selectedMeta.originalName
+            : projectName || "imagem").replace(/\.[a-zA-Z0-9]+$/, "");
+        const base = slugify(rawBaseName) || "imagem";
+        const filename = selectedGroupId
+          ? `${tsPrefix()}-${base}__g-${selectedGroupId}__v.png`
+          : `${tsPrefix()}-${base}.png`;
         const path = `${user.id}/images/${filename}`;
 
         const { error: uploadErr } = await supabase.storage
           .from(STORAGE_BUCKET)
           .upload(path, blob, { upsert: false, contentType: "image/png" });
         if (uploadErr) throw uploadErr;
+
+        const { error: visibilityErr } = await supabase.from("gallery_visibility").upsert(
+          {
+            user_id: user.id,
+            storage_path: path,
+            is_public: false,
+          },
+          { onConflict: "user_id,storage_path" }
+        );
+        if (visibilityErr && visibilityErr.code !== "42P01") throw visibilityErr;
 
         const { data: signed, error: signErr } = await supabase.storage
           .from(STORAGE_BUCKET)
@@ -855,12 +1362,19 @@ const Creation = () => {
                 originalName: `${base}.png`,
                 sortKey: filename.slice(0, 17),
                 userId: user.id,
+                isPublic: false,
+                groupId: selectedGroupId || undefined,
+                isVariant: !!selectedGroupId,
               },
             })
           );
-        } catch {}
+        } catch { }
 
-        toast.success("Imagem salva na galeria e baixada em PNG.");
+        toast.success(
+          selectedGroupId
+            ? "Imagem salva na galeria como variacao da original."
+            : "Imagem salva na galeria e baixada em PNG."
+        );
       } catch (err: any) {
         console.error("[saveSelectedImage]", err);
         toast.error(err?.message || "Falha ao salvar na galeria.");
@@ -874,6 +1388,7 @@ const Creation = () => {
       setCanRedo(false);
       setSelectionKind("none");
       setSelectionInfo(null);
+      setCanSaveSelectedImage(false);
       setCropModeActive(false);
       setColorCutModeActive(false);
       return;
@@ -904,10 +1419,10 @@ const Creation = () => {
   const pendingScheduledTabRef = useRef<string | null>(null);
   const skipSnapshotReloadRef = useRef<Set<string>>(new Set());
   const saveActiveTabSnapshot = useCallback(async (tabId?: string): Promise<Record<string, string>> => {
-    const id = tabId || prevTabRef.current;
+    const id = tabId || activeCanvasTab;
     if (!id) return tabSnapshotsRef.current;
-  // Captura imagem para preview 3D
-  void captureTabImage(id);
+    // Captura imagem para preview 3D
+    void captureTabImage(id);
     // Salva JSON apenas para persistência (draft/export)
     const tabType = canvasTabs.find(t => t.id === id)?.type;
     if (tabType === "2d") {
@@ -915,7 +1430,7 @@ const Creation = () => {
       if (inst?.waitForIdle) {
         try {
           await inst.waitForIdle();
-        } catch {}
+        } catch { }
       }
       const json = inst?.toJSON?.();
       if (json && tabSnapshotsRef.current[id] !== json) {
@@ -927,7 +1442,7 @@ const Creation = () => {
       }
     }
     return tabSnapshotsRef.current;
-  }, [canvasTabs, editorRefs, captureTabImage]);
+  }, [activeCanvasTab, canvasTabs, editorRefs, captureTabImage]);
 
 
   const syncFontsFromEditor = useCallback(
@@ -939,7 +1454,7 @@ const Creation = () => {
       try {
         const fonts = editorInstance.listUsedFonts();
         fonts.forEach((family) => fn(family));
-      } catch {}
+      } catch { }
     },
     [activeCanvasTab]
   );
@@ -968,7 +1483,7 @@ const Creation = () => {
           await inst.loadFromJSON?.(snap);
           syncFontsFromEditor(inst);
           inst.refresh?.();
-        } catch {}
+        } catch { }
       })();
     }
   }, [activeIs2D, activeCanvasTab, tabSnapshots]);
@@ -1057,10 +1572,10 @@ const Creation = () => {
     if (!inst) return;
     try {
       await inst.waitForIdle?.();
-    } catch {}
+    } catch { }
     try {
       inst.refresh?.();
-    } catch {}
+    } catch { }
     const dataUrl = inst.exportPNG?.();
     if (!dataUrl) return;
     const a = document.createElement("a");
@@ -1084,6 +1599,7 @@ const Creation = () => {
         project_key: payload.draftKey,
         data: payload,
         updated_at: payload.savedAt,
+        ephemeral_expires_at: payload.ephemeralExpiresAt ?? null,
       } as const;
 
       const { data: upserted, error } = await supabase
@@ -1145,6 +1661,15 @@ const Creation = () => {
     pendingScheduledTabRef.current = null;
 
     const snapshotMap = await saveActiveTabSnapshot(options?.tabId);
+
+    // Se estiver na aba 3D (ou sem tab específica), garante preview das abas 2D visíveis.
+    if (!options?.tabId && activeCanvasTab === "3d") {
+      const visible2DTabs = canvasTabsRef.current.filter((t) => t.type === "2d" && tabVisibilityRef.current[t.id]);
+      if (visible2DTabs.length > 0) {
+        await Promise.all(visible2DTabs.map((t) => captureTabImage(t.id)));
+      }
+    }
+
     const canvasSnapshots = snapshotMap ?? tabSnapshotsRef.current;
     let draftKey = draftKeyRef.current;
     if (!draftKey) {
@@ -1177,6 +1702,7 @@ const Creation = () => {
       tabVisibility: tabVisibilityRef.current,
       tabDecalPreviews: tabDecalPreviewsRef.current,
       tabDecalPlacements: tabDecalPlacementsRef.current,
+      tabPrintTypes: tabPrintTypesRef.current,
       activeCanvasTab,
       savedAt: nowIso,
       draftKey,
@@ -1188,7 +1714,7 @@ const Creation = () => {
 
     try {
       localStorage.setItem("currentProject", JSON.stringify(payload));
-    } catch {}
+    } catch { }
 
     if (options?.immediateRemote) {
       await queueRemoteSave(payload, { immediate: true });
@@ -1197,7 +1723,7 @@ const Creation = () => {
     }
 
     return payload;
-  }, [activeCanvasTab, baseColor, fabric, notes, part, queueRemoteSave, saveActiveTabSnapshot, size, subtype, projectName, type]);
+  }, [activeCanvasTab, baseColor, captureTabImage, fabric, notes, part, queueRemoteSave, saveActiveTabSnapshot, size, subtype, projectName, type]);
 
   useEffect(() => {
     if (initialDraftSavedRef.current) return;
@@ -1236,6 +1762,42 @@ const Creation = () => {
 
   const handleDecalStateChange = useCallback(
     (snapshots: DecalStateSnapshot[]) => {
+      const nextAlerts: Record<string, string[]> = {};
+      const minArea = subtypePrintConstraints?.min_decal_area_cm2 ?? 5;
+      const neckYMin = subtypePrintConstraints?.neck_zone_y_min ?? 0.82;
+      const underarmYMin = subtypePrintConstraints?.underarm_zone_y_min ?? 0.45;
+      const underarmYMax = subtypePrintConstraints?.underarm_zone_y_max ?? 0.72;
+      const underarmAbsXMin = subtypePrintConstraints?.underarm_zone_abs_x_min ?? 0.55;
+
+      snapshots.forEach((snapshot) => {
+        const warnings = new Set<string>(snapshot.viability?.warnings ?? []);
+
+        const approxAreaCm2 = snapshot.viability?.approxAreaCm2;
+        if (typeof approxAreaCm2 === "number" && approxAreaCm2 > 0 && approxAreaCm2 < minArea) {
+          warnings.add("min_area_violation");
+        }
+
+        const np = snapshot.viability?.normalizedPosition;
+        if (np && typeof np.x === "number" && typeof np.y === "number") {
+          if (np.y >= neckYMin) {
+            warnings.add("neck_zone_risk");
+          }
+
+          const centerX = Math.abs((np.x - 0.5) * 2);
+          if (centerX >= underarmAbsXMin && np.y >= underarmYMin && np.y <= underarmYMax) {
+            warnings.add("underarm_zone_risk");
+          }
+        }
+
+        if (warnings.size > 0) {
+          nextAlerts[snapshot.id] = Array.from(warnings).map(
+            (code) => VIABILITY_WARNING_LABELS[code] ?? code
+          );
+        }
+      });
+
+      setDecalViabilityAlerts(nextAlerts);
+
       let placementsChanged = false;
       setTabDecalPlacements((prev) => {
         const snapshotIds = new Set(snapshots.map((s) => s.id));
@@ -1269,16 +1831,22 @@ const Creation = () => {
         scheduleDraftSave();
       }
     },
-    [scheduleDraftSave]
+    [scheduleDraftSave, subtypePrintConstraints]
   );
 
   useEffect(() => {
-    if (prevTabRef.current && prevTabRef.current !== activeCanvasTab) {
-      void saveActiveTabSnapshot(prevTabRef.current);
+    if (prevSavedTabRef.current && prevSavedTabRef.current !== activeCanvasTab) {
+      void saveActiveTabSnapshot(prevSavedTabRef.current);
+
+      if (activeCanvasTab === "3d") {
+        const visible2DTabs = canvasTabsRef.current.filter(t => t.type === "2d" && tabVisibilityRef.current[t.id]);
+        Promise.all(visible2DTabs.map(t => captureTabImage(t.id))).catch(() => { });
+      }
+
       void saveDraft();
     }
-    prevTabRef.current = activeCanvasTab;
-  }, [activeCanvasTab, saveActiveTabSnapshot, saveDraft]);
+    prevSavedTabRef.current = activeCanvasTab;
+  }, [activeCanvasTab, saveActiveTabSnapshot, saveDraft, captureTabImage]);
 
   useEffect(() => {
     if (user?.id && pendingRemotePayloadRef.current) {
@@ -1304,7 +1872,7 @@ const Creation = () => {
     const onUnload = () => {
       try {
         void saveDraft({ immediateRemote: true });
-      } catch {}
+      } catch { }
     };
     window.addEventListener("beforeunload", onUnload);
     return () => window.removeEventListener("beforeunload", onUnload);
@@ -1317,16 +1885,27 @@ const Creation = () => {
     })();
   };
 
+  const visibleTabsWithPreviews = useMemo(() => {
+    return canvasTabs
+      .filter((t) => t.type === "2d" && tabVisibility[t.id])
+      .map((t) => ({
+        id: t.id,
+        name: t.name,
+        type: t.type as "2d" | "3d",
+        dataUrl: tabDecalPreviews[t.id] ?? null,
+      }));
+  }, [canvasTabs, tabVisibility, tabDecalPreviews]);
+
   return (
-    <div className="h-[100dvh] overflow-hidden flex flex-col">
+    <div className="h-[100dvh] overflow-hidden flex flex-col bg-background">
       <Header />
 
-      <main className="flex-1 min-h-0 w-full mx-auto max-w-[1400px] 2xl:max-w-[1680px] px-3 sm:px-4 md:px-6 lg:px-8 xl:px-10 2xl:px-12 py-4">
-        {/* Layout responsivo: empilha no mobile, 2 colunas no desktop */}
-        <section className="grid h-full min-h-0 overflow-hidden gap-4 lg:gap-5 xl:gap-6 grid-cols-1 [grid-template-rows:auto_minmax(0,1fr)] lg:[grid-template-rows:1fr] lg:[grid-template-columns:max-content_minmax(0,1fr)]">
+      <main className="flex-1 min-h-0 w-full overflow-hidden">
+        {/* Layout responsivo: empilha no mobile, 2 colunas no desktop, sem espaços (brutalismo) */}
+        <section className="grid h-full w-full min-h-0 overflow-hidden grid-cols-1 [grid-template-rows:auto_minmax(0,1fr)] lg:[grid-template-rows:1fr] lg:[grid-template-columns:auto_minmax(0,1fr)] overflow-x-hidden">
 
-          {/* Sidebar toma 100% da altura do grid */}
-          <div className="h-auto lg:h-full min-h-0 min-w-0 max-h-[40dvh] lg:max-h-none overflow-y-hidden overflow-x-visible">
+          {/* Sidebar toma 100% da altura do grid. Borda a direita no lg */}
+          <div className="h-auto lg:h-full min-h-0 min-w-0 max-h-[40dvh] lg:max-h-none overflow-y-auto overflow-x-hidden border-b lg:border-b-0 lg:border-r border-border">
             <ExpandableSidebar
               projectId={draftId}
               projectName={projectName}
@@ -1337,7 +1916,13 @@ const Creation = () => {
               setSize={setSize}
               fabric={fabric}
               setFabric={setFabric}
-              onExpandChange={() => {}}
+              fabricLocked={isSubtypeFabricLocked || Boolean(fixedSubtypeFabric)}
+              tabPrintTypes={tabPrintTypes}
+              setTabPrintType={(tabId, value) => {
+                setTabPrintTypes((prev) => ({ ...prev, [tabId]: value }));
+              }}
+              visibleTabs={visibleTabsWithPreviews}
+              onExpandChange={() => { }}
               tool={tool}
               setTool={setTool}
               stampImageSrc={stampImageSrc}
@@ -1412,133 +1997,238 @@ const Creation = () => {
             />
           </div>
 
-          {/* Coluna direita: sem cabeçalho acima do canvas para alinhar o topo */}
-          <div className="flex flex-col h-full min-w-0 min-h-0">
-            {/* === ÁREA DO CANVAS (preenche toda altura) === */}
-            <div className="relative w-full flex-1 min-h-0 glass rounded-2xl border shadow-xl overflow-hidden min-w-0">
+          {/* Coluna direita: canvas e ferramentas */}
+          <div className="flex flex-col h-full min-w-0 min-h-0 bg-background relative">
+
+            {/* Abas do canvas — Docked no topo separadas por 1px */}
+            <div
+              ref={tabContainerRef}
+              className="w-full flex-none flex items-center border-b border-border bg-background p-2 z-20 overflow-x-auto overflow-y-hidden relative"
+            >
+              <div className="flex items-center w-full justify-between relative">
+                <div className="flex flex-nowrap items-stretch gap-0 whitespace-nowrap relative">
+                  {/* === Seção: Na peça (visível no 3D) === */}
+                  <div
+                    ref={visibleSectionRef}
+                    className={`flex flex-nowrap items-center gap-1 px-0.5 rounded-lg transition-colors duration-200 ${dragOverSection === "visible" ? "bg-blue-500/25 ring-2 ring-blue-400/60" : ""
+                      }`}
+                    title="Na peça"
+                  >
+                    {/* Unified rendering of all visible tabs (3D + visible 2D) in canvasTabs order */}
+                    {(() => {
+                      const visibleTabs = canvasTabs.filter(
+                        (t) => t.type === "3d" || (t.type === "2d" && !!tabVisibility[t.id])
+                      );
+                      const items: React.ReactNode[] = [];
+                      const withoutDragged = visibleTabs.filter((t) => t.id !== draggedTabId);
+                      const showPlaceholder = draggedTabId && dragOverSection === "visible" && dragInsertIndex !== null;
+
+                      withoutDragged.forEach((tab, idx) => {
+                        if (showPlaceholder && dragInsertIndex === idx) {
+                          items.push(
+                            <div
+                              key="drop-placeholder"
+                              className="w-14 h-8 rounded-lg bg-blue-400/10 shrink-0 transition-all duration-200"
+                            />
+                          );
+                        }
+
+                        const isDragging = draggedTabId === tab.id;
+                        const active = tab.id === activeCanvasTab;
+                        const is3D = tab.type === "3d";
+
+                        items.push(
+                          <div
+                            key={tab.id}
+                            data-tab-id={tab.id}
+                            onPointerDown={(e) => handleTabPointerDown(e, tab.id)}
+                            className={`shrink-0 flex items-center gap-1 rounded-lg px-2.5 h-8 text-xs font-medium border border-white/25 transition-colors duration-150 cursor-grab active:cursor-grabbing select-none ${isDragging ? "opacity-30" : ""
+                              } ${!isDragging && active
+                                ? is3D
+                                  ? "bg-gradient-to-r from-violet-600 to-purple-500 text-white shadow-md shadow-violet-500/25"
+                                  : "bg-white/20 shadow-sm"
+                                : !isDragging
+                                  ? is3D
+                                    ? "bg-violet-500/15 text-violet-200 hover:bg-violet-500/25"
+                                    : "hover:bg-white/10"
+                                  : ""
+                              } ${active && isTransitioning && !isDragging ? "bounce-in" : ""}`}
+                          >
+                            <span
+                              className="text-left focus:outline-none inline-flex items-center cursor-pointer min-w-0 max-w-[8rem] sm:max-w-[10rem] truncate"
+                              aria-pressed={active}
+                              tabIndex={0}
+                              role="button"
+                              onClick={() => {
+                                if (draggedTabId) return;
+                                setActiveCanvasTab(tab.id);
+                                void (async () => {
+                                  await saveActiveTabSnapshot();
+                                  await saveDraft();
+                                })();
+                              }}
+                              onKeyDown={e => {
+                                if (e.key === 'Enter' || e.key === ' ') {
+                                  setActiveCanvasTab(tab.id);
+                                  void (async () => {
+                                    await saveActiveTabSnapshot();
+                                    await saveDraft();
+                                  })();
+                                }
+                              }}
+                            >
+                              {tab.name}
+                            </span>
+                            {tab.type === "2d" && (
+                              <button
+                                type="button"
+                                onClick={(e) => { e.stopPropagation(); removeCanvasTab(tab.id); }}
+                                className="p-0.5 rounded-md hover:bg-white/20 transition-colors"
+                                aria-label="Fechar aba"
+                                title="Fechar aba"
+                              >
+                                <X className="w-3.5 h-3.5 opacity-50 hover:opacity-100" />
+                              </button>
+                            )}
+                          </div>
+                        );
+                      });
+
+                      if (showPlaceholder && dragInsertIndex! >= withoutDragged.length) {
+                        items.push(
+                          <div
+                            key="drop-placeholder"
+                            className="w-14 h-8 rounded-lg bg-blue-400/10 shrink-0 transition-all duration-200"
+                          />
+                        );
+                      }
+
+                      return items;
+                    })()}
+                  </div>
+
+                  {/* Divisor vertical animado (O Olho) */}
+                  <EyeTabDivider isDragging={!!draggedTabId} />
+
+                  {/* === Seção: Somente canvas (não projetado no 3D) === */}
+                  <div
+                    ref={hiddenSectionRef}
+                    className={`flex flex-nowrap items-center justify-center gap-1 px-0.5 min-w-[3rem] rounded-lg transition-colors duration-200 ${dragOverSection === "hidden" ? "bg-slate-400/25 ring-2 ring-slate-400/40" : ""
+                      }`}
+                    title="Somente canvas"
+                  >
+                    {draggedTabId && dragOverSection === "hidden" && !!tabVisibility[draggedTabId] && (
+                      <div className="w-14 h-8 rounded-lg bg-slate-400/10 shrink-0 transition-all duration-200" />
+                    )}
+                    {canvasTabs.filter((t) => t.type === "2d" && !tabVisibility[t.id]).map((tab) => {
+                      const isDragging = draggedTabId === tab.id;
+                      const active = tab.id === activeCanvasTab;
+                      return (
+                        <div key={tab.id} className="flex items-center">
+                          {isDragging && dragOverSection === "hidden" && (
+                            <div className="w-14 h-8 rounded-lg bg-slate-400/10 shrink-0 transition-all duration-200" />
+                          )}
+                          <div
+                            onPointerDown={(e) => handleTabPointerDown(e, tab.id)}
+                            className={`shrink-0 flex items-center gap-1 rounded-lg px-2.5 h-8 text-xs font-medium border border-white/25 transition-colors duration-150 cursor-grab active:cursor-grabbing select-none ${isDragging ? "opacity-30" : ""
+                              } ${!isDragging && active ? "bg-white/20 shadow-sm" : !isDragging ? "hover:bg-white/10" : ""
+                              } ${active && isTransitioning && !isDragging ? "bounce-in" : ""}`}
+                          >
+                            <span
+                              className="text-left focus:outline-none inline-flex items-center cursor-pointer min-w-0 max-w-[8rem] sm:max-w-[10rem] truncate"
+                              aria-pressed={active}
+                              tabIndex={0}
+                              role="button"
+                              onClick={() => {
+                                if (draggedTabId) return;
+                                setActiveCanvasTab(tab.id);
+                                void (async () => {
+                                  await saveActiveTabSnapshot();
+                                  await saveDraft();
+                                })();
+                              }}
+                              onKeyDown={e => {
+                                if (e.key === 'Enter' || e.key === ' ') {
+                                  setActiveCanvasTab(tab.id);
+                                  void (async () => {
+                                    await saveActiveTabSnapshot();
+                                    await saveDraft();
+                                  })();
+                                }
+                              }}
+                            >
+                              {tab.name}
+                            </span>
+                            <button
+                              type="button"
+                              onClick={(e) => { e.stopPropagation(); removeCanvasTab(tab.id); }}
+                              className="p-0.5 rounded-md hover:bg-white/20 transition-colors"
+                              aria-label="Fechar aba"
+                              title="Fechar aba"
+                            >
+                              <X className="w-3.5 h-3.5 opacity-50 hover:opacity-100" />
+                            </button>
+                          </div>
+                        </div>
+                      );
+                    })}
+                    <Button
+                      onClick={add2DTab}
+                      size="icon"
+                      variant="ghost"
+                      className="shrink-0 h-8 w-8 rounded-lg"
+                    >
+                      <Plus className="w-4 h-4" />
+                    </Button>
+                  </div>
+                </div>
+
+                {/* Floating drag preview — constrained within container */}
+                {draggedTabId && dragOverSection === "visible" && (() => {
+                  const draggedTab = canvasTabs.find((t) => t.id === draggedTabId);
+                  if (!draggedTab) return null;
+                  return (
+                    <div
+                      className="absolute top-0 h-full flex items-center pointer-events-none z-50"
+                      style={{
+                        left: `${dragPointerX}px`,
+                        transition: "none",
+                      }}
+                    >
+                      <div className="bg-white/15 backdrop-blur-xl rounded-lg px-2.5 h-8 text-xs font-medium flex items-center shadow-lg border border-white/30 opacity-90">
+                        {draggedTab.name}
+                      </div>
+                    </div>
+                  );
+                })()}
+              </div>
               {!isDraftPermanent && (
-                <div className="absolute right-4 top-4 z-30 flex">
+                <div className="flex-none ml-4 flex items-center gap-2 pr-2">
                   <Button
                     type="button"
                     variant="outline"
                     size="sm"
+                    className="rounded-none uppercase tracking-widest text-xs h-8 px-4"
                     onClick={() => {
                       void saveDraft({ immediateRemote: true, markPermanent: true });
                     }}
                   >
-                    Salvar rascunho
+                    Salvar
+                  </Button>
+                  <Button
+                    type="button"
+                    size="sm"
+                    className="rounded-none uppercase tracking-widest text-xs h-8 px-4"
+                    onClick={finish}
+                  >
+                    Produzir
                   </Button>
                 </div>
               )}
-              {/* Abas do canvas dentro da área */}
-              <div className="absolute left-4 top-4 z-20 glass rounded-lg border p-0 shadow-md carousel-item-enter inline-flex min-w-0 max-w-[calc(100%-2rem)] overflow-x-auto overflow-y-hidden">
-                <div className="flex flex-nowrap items-center gap-0 min-w-0 max-w-full whitespace-nowrap">
-                  {canvasTabs.map((tab) => {
-                    const active = tab.id === activeCanvasTab;
-                    const visibleIn3D = !!tabVisibility[tab.id];
-                    return (
-                      <div
-                        key={tab.id}
-                        className={`shrink-0 flex items-center gap-0.5 rounded-md px-1.5 sm:px-2 h-9 text-xs transition-all duration-300 ${
-                          active ? "glass-strong shadow-sm" : "hover:bg-white/20"
-                        } ${active && isTransitioning ? "bounce-in" : ""}`}
-                      >
-                        <span
-                          className="h-full px-0.5 text-left font-medium focus:outline-none inline-flex items-center cursor-pointer min-w-0 max-w-[8rem] sm:max-w-[10rem] truncate"
-                          aria-pressed={active}
-                          tabIndex={0}
-                          role="button"
-                          onClick={() => {
-                            void (async () => {
-                              await saveActiveTabSnapshot();
-                              await saveDraft();
-                              setActiveCanvasTab(tab.id);
-                            })();
-                          }}
-                          onKeyDown={e => {
-                            if (e.key === 'Enter' || e.key === ' ') {
-                              void (async () => {
-                                await saveActiveTabSnapshot();
-                                await saveDraft();
-                                setActiveCanvasTab(tab.id);
-                              })();
-                            }
-                          }}
-                        >
-                          {tab.name}
-                        </span>
-                        {tab.type === "2d" && (
-                          <div className="flex items-center gap-1">
-                            <button
-                              type="button"
-                              onClick={(e) => {
-                                e.stopPropagation();
-                                const currentlyVisible = !!tabVisibility[tab.id];
-                                if (!currentlyVisible) {
-                                  void (async () => {
-                                    const result = await captureTabImage(tab.id);
-                                    if (!result) {
-                                      setTabDecalPreviews((prev) => {
-                                        if (prev[tab.id]) return prev;
-                                        const next = {
-                                          ...prev,
-                                          [tab.id]: TRANSPARENT_PNG,
-                                        };
-                                        tabDecalPreviewsRef.current = next;
-                                        return next;
-                                      });
-                                    }
-                                  })();
-                                }
-                                setTabVisibility((prev) => {
-                                  const next = {
-                                    ...prev,
-                                    [tab.id]: !currentlyVisible,
-                                  };
-                                  tabVisibilityRef.current = next;
-                                  return next;
-                                });
-                              }}
-                              className="p-0.5 sm:p-1 lg:p-1.5 rounded-full hover:bg-white/20 transition"
-                              aria-label={visibleIn3D ? "Ocultar no 3D" : "Mostrar no 3D"}
-                              title={visibleIn3D ? "Ocultar no 3D" : "Mostrar no 3D"}
-                            >
-                              {visibleIn3D ? (
-                                <Eye className="w-3.5 h-3.5 sm:w-4 sm:h-4 lg:w-5 lg:h-5" />
-                              ) : (
-                                <EyeOff className="w-3.5 h-3.5 sm:w-4 sm:h-4 lg:w-5 lg:h-5" />
-                              )}
-                            </button>
-                            <button
-                              type="button"
-                              onClick={(e) => {
-                                e.stopPropagation();
-                                removeCanvasTab(tab.id);
-                              }}
-                              className="p-0.5 sm:p-1 lg:p-1.5 rounded-full hover:bg-white/20 transition"
-                              aria-label="Fechar aba"
-                              title="Fechar aba"
-                            >
-                              <X className="w-3.5 h-3.5 sm:w-4 sm:h-4 lg:w-5 lg:h-5 opacity-60 hover:opacity-100" />
-                            </button>
-                          </div>
-                        )}
-                      </div>
-                    );
-                  })}
-                  <Button
-                    onClick={add2DTab}
-                    size="icon"
-                    variant="ghost"
-                    className="shrink-0 h-7 w-7 sm:h-8 sm:w-8 lg:h-9 lg:w-9 ml-0.5 sm:ml-1"
-                  >
-                    <Plus className="w-3.5 h-3.5 sm:w-4 sm:h-4 lg:w-5 lg:h-5" />
-                  </Button>
-                </div>
-              </div>
+            </div>
 
-              {/* opcional: “chip” com part/subtype SEM deslocar o layout */}
-              {/* Canvas ocupa toda a área — manter 3D e 2D sempre montados */}
+            {/* === ÁREA DO CANVAS (preenche a altura RESTANTE) === */}
+            <div className="relative w-full flex-1 min-h-0 overflow-hidden min-w-0 bg-background">
               <div
                 className="absolute inset-0"
                 style={{
@@ -1548,21 +2238,40 @@ const Creation = () => {
                 }}
               >
                 <div
-                  className={`${
-                    activeCanvasTab === "3d" && isTransitioning
-                      ? tabTransitionDirection === "right"
-                        ? "slide-in-right"
-                        : "slide-in-left"
-                      : ""
-                  }`}
+                  className={`${activeCanvasTab === "3d" && isTransitioning
+                    ? tabTransitionDirection === "right"
+                      ? "slide-in-right"
+                      : "slide-in-left"
+                    : ""
+                    }`}
                   style={{ position: "absolute", inset: 0 }}
                 >
                   <Canvas3DViewer
                     baseColor={baseColor}
                     externalDecals={decalsFor3D}
                     onDecalsChange={handleDecalStateChange}
+                    decalZonesOverride={subtypeDecalZonesOverride}
                   />
-                  <div className="absolute bottom-3 left-3 text-xs text-gray-700 glass px-2 py-1 rounded">
+                  {subtypePrintConstraints && (
+                    <div className="absolute top-3 left-3 max-w-xs rounded border border-amber-300/70 bg-amber-50/85 px-2 py-1 text-[11px] text-amber-900">
+                      Area util: {subtypePrintConstraints.print_area_width_cm ?? "-"} x {subtypePrintConstraints.print_area_height_cm ?? "-"} cm
+                      <br />
+                      Minimo: {subtypePrintConstraints.min_decal_area_cm2 ?? 5} cm²
+                    </div>
+                  )}
+                  {viabilityAlertItems.length > 0 && (
+                    <div className="absolute top-3 right-3 z-10 max-w-sm space-y-2">
+                      {viabilityAlertItems.map((item) => (
+                        <div key={item.id} className="rounded border border-red-300 bg-red-50/95 px-3 py-2 text-xs text-red-900">
+                          <p className="font-semibold">{item.label}</p>
+                          {item.messages.map((message, index) => (
+                            <p key={`${item.id}-${index}`}>- {message}</p>
+                          ))}
+                        </div>
+                      ))}
+                    </div>
+                  )}
+                  <div className="absolute bottom-3 left-3 text-xs text-gray-700 dark:text-gray-300 glass px-2 py-1 rounded">
                     Arraste para rotacionar · Scroll para zoom
                   </div>
                 </div>
@@ -1590,6 +2299,7 @@ const Creation = () => {
                       onRedo={activeIs2D ? () => editorRefs.current[activeCanvasTab]?.redo?.() : undefined}
                       canUndo={canUndo}
                       canRedo={canRedo}
+                      onApplyGradient={(gradient) => editorRefs.current[activeCanvasTab]?.applyGradientToSelection?.(gradient)}
                     />
                   )}
                 </div>
@@ -1612,13 +2322,12 @@ const Creation = () => {
                     >
                       <div
                         ref={squareCanvasRef}
-                        className={`relative overflow-hidden ${
-                          activeCanvasTab !== "3d" && isTransitioning
-                            ? tabTransitionDirection === "left"
-                              ? "slide-in-left"
-                              : "slide-in-right"
-                            : ""
-                        }`}
+                        className={`relative overflow-hidden ${activeCanvasTab !== "3d" && isTransitioning
+                          ? tabTransitionDirection === "left"
+                            ? "slide-in-left"
+                            : "slide-in-right"
+                          : ""
+                          }`}
                         style={
                           squareViewportSize
                             ? { width: `${squareViewportSize}px`, height: `${squareViewportSize}px` }
@@ -1628,13 +2337,21 @@ const Creation = () => {
                         onDrop={(e) => {
                           e.preventDefault();
                           const src = e.dataTransfer.getData("text/plain");
+                          const rawMeta = e.dataTransfer.getData("application/x-molda-gallery-meta");
+                          let parsedMeta: Record<string, unknown> | undefined;
+                          if (rawMeta) {
+                            try {
+                              const parsed = JSON.parse(rawMeta);
+                              if (parsed && typeof parsed === "object") parsedMeta = parsed;
+                            } catch { }
+                          }
                           const rect = squareCanvasRef.current?.getBoundingClientRect();
                           if (!rect) return;
                           const x = e.clientX - rect.left;
                           const y = e.clientY - rect.top;
                           if (x < 0 || y < 0 || x > rect.width || y > rect.height) return;
                           if (src && activeIs2D) {
-                            editorRefs.current[activeCanvasTab]?.addImage(src, { x, y });
+                            editorRefs.current[activeCanvasTab]?.addImage(src, { x, y, meta: parsedMeta });
                           }
                         }}
                       >
@@ -1651,90 +2368,112 @@ const Creation = () => {
                                 zIndex: tab.id === activeCanvasTab ? 2 : 1,
                               }}
                             >
-                            <Editor2D
-                              ref={(inst) => {
-                                if (!inst) return;
+                              {/* Overlay de loading restrito à tab onde ocorre a remoção de fundo */}
+                              {bgRemovingTabId === tab.id && (
+                                <div className="absolute inset-0 z-[100] flex flex-col items-center justify-center gap-3 bg-white/60 dark:bg-black/50 backdrop-blur-sm">
+                                  <svg className="h-8 w-8 animate-spin text-foreground/70" viewBox="0 0 24 24" fill="none">
+                                    <circle className="opacity-25" cx="12" cy="12" r="10" stroke="currentColor" strokeWidth="4" />
+                                    <path className="opacity-75" fill="currentColor" d="M4 12a8 8 0 018-8v8z" />
+                                  </svg>
+                                </div>
+                              )}
+                              <div
+                                style={{
+                                  position: "absolute",
+                                  inset: 0,
+                                  visibility: "inherit",
+                                  pointerEvents: "inherit",
+                                }}
+                              >
+                                <Editor2D
+                                  ref={(inst) => {
+                                    if (!inst) return;
 
-                                // mantém a ref atualizada (mesmo que já exista)
-                                editorRefs.current[tab.id] = inst;
+                                    // mantém a ref atualizada (mesmo que já exista)
+                                    editorRefs.current[tab.id] = inst;
 
-                                if (!selectionListenerGuard.current.has(inst)) {
-                                  inst.onSelectionChange?.((kind) => {
-                                    if (tab.id === activeCanvasTab) {
-                                      setSelectionKind(kind);
-                                      if (kind === "none") {
-                                        setSelectionInfo(null);
-                                      } else {
-                                        setSelectionInfo(inst.getSelectionInfo?.() ?? null);
-                                      }
+                                    if (!selectionListenerGuard.current.has(inst)) {
+                                      inst.onSelectionChange?.((kind) => {
+                                        if (tab.id === activeCanvasTab) {
+                                          setSelectionKind(kind);
+                                          if (kind === "none") {
+                                            setSelectionInfo(null);
+                                            setCanSaveSelectedImage(false);
+                                          } else {
+                                            setSelectionInfo(inst.getSelectionInfo?.() ?? null);
+                                            setCanSaveSelectedImage(canSaveSelectedImageFromEditor(inst, kind));
+                                          }
+                                        }
+                                      });
+                                      selectionListenerGuard.current.add(inst);
                                     }
-                                  });
-                                  selectionListenerGuard.current.add(inst);
-                                }
 
-                                if (!cropListenerGuard.current.has(inst)) {
-                                  inst.onCropModeChange?.((active) => {
-                                    if (tab.id === activeCanvasTab) setCropModeActive(active);
-                                  });
-                                  cropListenerGuard.current.add(inst);
-                                }
+                                    if (!cropListenerGuard.current.has(inst)) {
+                                      inst.onCropModeChange?.((active) => {
+                                        if (tab.id === activeCanvasTab) setCropModeActive(active);
+                                      });
+                                      cropListenerGuard.current.add(inst);
+                                    }
 
-                                if (!colorCutListenerGuard.current.has(inst)) {
-                                  inst.onColorCutModeChange?.((active) => {
-                                    if (tab.id === activeCanvasTab) setColorCutModeActive(active);
-                                  });
-                                  colorCutListenerGuard.current.add(inst);
-                                }
+                                    if (!colorCutListenerGuard.current.has(inst)) {
+                                      inst.onColorCutModeChange?.((active) => {
+                                        if (tab.id === activeCanvasTab) setColorCutModeActive(active);
+                                      });
+                                      colorCutListenerGuard.current.add(inst);
+                                    }
 
-                                if (!effectsListenerGuard.current.has(inst)) {
-                                  inst.onEffectEditModeChange?.((active) => {
-                                    if (tab.id === activeCanvasTab) setEffectsEditModeActive(active);
-                                  });
-                                  effectsListenerGuard.current.add(inst);
-                                }
+                                    if (!effectsListenerGuard.current.has(inst)) {
+                                      inst.onEffectEditModeChange?.((active) => {
+                                        if (tab.id === activeCanvasTab) setEffectsEditModeActive(active);
+                                      });
+                                      effectsListenerGuard.current.add(inst);
+                                    }
 
-                                // sincroniza o estado imediatamente ao montar/reativar
-                                if (tab.id === activeCanvasTab) {
-                                  setCropModeActive(!!inst.isCropActive?.());
-                                  setEffectsEditModeActive(!!inst.isEffectBrushActive?.() || !!inst.isEffectLassoActive?.());
-                                  setColorCutModeActive(!!inst.isColorCutActive?.());
-                                }
-                              }}
-                              isActive={activeIs2D && tab.id === activeCanvasTab}
-                              tool={tool}
-                              stampSrc={stampSrc}
-                              stampDensity={stampDensity}
-                              brushVariant={brushVariant}
-                              continuousLineMode={continuousLineMode}
-                              onRequestToolChange={(nextTool) => {
-                                // Editor requests changing tool (e.g., auto-switch to select after finishing a curve)
-                                setTool(nextTool);
-                              }}
-                              onContinuousLineCancel={() => {
-                                setContinuousLineMode(false);
-                                runWithActiveEditor((inst) => inst.refresh?.());
-                              }}
-                              strokeColor={strokeColor}
-                              fillColor={fillColor}
-                              strokeWidth={strokeWidth}
-                              opacity={opacity}
-                              isTrashMode={isTrashMode}
-                              onTrashDelete={() => setTool("select")}
-                              onHistoryChange={(u, r) => {
-                                if (tab.id === activeCanvasTab) {
-                                  setCanUndo(u);
-                                  setCanRedo(r);
-                                  if (tabVisibility[tab.id]) {
-                                    void captureTabImage(tab.id);
-                                  }
-                                  // Salva o rascunho automaticamente a cada modificação
-                                  scheduleDraftSave({ tabId: tab.id });
-                                }
-                              }}
-                            />
-                          </div>
-                        ))}
+                                    // sincroniza o estado imediatamente ao montar/reativar
+                                    if (tab.id === activeCanvasTab) {
+                                      setCropModeActive(!!inst.isCropActive?.());
+                                      setEffectsEditModeActive(!!inst.isEffectBrushActive?.() || !!inst.isEffectLassoActive?.());
+                                      setColorCutModeActive(!!inst.isColorCutActive?.());
+                                    }
+                                  }}
+                                  isActive={activeIs2D && tab.id === activeCanvasTab}
+                                  tool={tool}
+                                  stampSrc={stampSrc}
+                                  stampDensity={stampDensity}
+                                  brushVariant={brushVariant}
+                                  continuousLineMode={continuousLineMode}
+                                  onRequestToolChange={(nextTool) => {
+                                    // Editor requests changing tool (e.g., auto-switch to select after finishing a curve)
+                                    setTool(nextTool);
+                                  }}
+                                  onContinuousLineCancel={() => {
+                                    setContinuousLineMode(false);
+                                    runWithActiveEditor((inst) => inst.refresh?.());
+                                  }}
+                                  strokeColor={strokeColor}
+                                  fillColor={fillColor}
+                                  strokeWidth={strokeWidth}
+                                  opacity={opacity}
+                                  isTrashMode={isTrashMode}
+                                  onTrashDelete={() => setTool("select")}
+                                  onHistoryChange={(u, r) => {
+                                    if (tab.id === activeCanvasTab) {
+                                      setCanUndo(u);
+                                      setCanRedo(r);
+                                      if (tabVisibility[tab.id]) {
+                                        void captureTabImage(tab.id);
+                                      }
+                                      // Salva o rascunho automaticamente a cada modificação
+                                      scheduleDraftSave({ tabId: tab.id });
+                                    }
+                                  }}
+                                />
+                              </div>
+                            </div>
+                          ))}
+                      </div>
 
+                      {/* Toolbars (fora do overflow-hidden) */}
                       {(() => {
                         const activeEditor = editorRefs.current[activeCanvasTab] as Editor2DHandle | undefined;
                         const effectBrushActive = !!activeEditor?.isEffectBrushActive?.();
@@ -1743,51 +2482,51 @@ const Creation = () => {
                         const showToolConfirm = cropModeActive || effectBrushActive || effectLassoActive || colorCutActive;
                         if (!showToolConfirm) return null;
                         return (
-                        <div className="absolute left-1/2 bottom-6 z-10 max-w-[95vw] -translate-x-1/2">
-                          <div
-                            className={[
-                              "relative",
-                              "flex items-center gap-2 p-2 rounded-2xl border shadow-lg bg-background",
-                              "backdrop-blur supports-[backdrop-filter]:bg-background/90",
-                            ].join(" ")}
-                            role="toolbar"
-                            aria-label={cropModeActive ? "Corte" : (colorCutActive ? "Corte por cor" : (effectBrushActive ? "Efeito (Pincel)" : "Efeito (Laço)"))}
-                          >
-                            <Button
-                              type="button"
-                              size="icon"
-                              onClick={() =>
-                                cropModeActive
-                                  ? editorRefs.current[activeCanvasTab]?.confirmCrop?.()
-                                  : (colorCutActive
-                                    ? editorRefs.current[activeCanvasTab]?.confirmColorCut?.()
-                                    : (effectLassoActive
-                                      ? editorRefs.current[activeCanvasTab]?.confirmEffectLasso?.()
-                                      : editorRefs.current[activeCanvasTab]?.confirmEffectBrush?.()))
-                              }
-                              title="Confirmar (Enter)"
+                          <div className="absolute left-1/2 bottom-6 z-50 max-w-[95vw] -translate-x-1/2">
+                            <div
+                              className={[
+                                "relative",
+                                "flex items-center gap-2 p-2 rounded-2xl border shadow-lg bg-background",
+                                "backdrop-blur supports-[backdrop-filter]:bg-background/90",
+                              ].join(" ")}
+                              role="toolbar"
+                              aria-label={cropModeActive ? "Corte" : (colorCutActive ? "Corte por cor" : (effectBrushActive ? "Efeito (Pincel)" : "Efeito (Laço)"))}
                             >
-                              <Check className="w-4 h-4" />
-                            </Button>
-                            <Button
-                              type="button"
-                              size="icon"
-                              variant="outline"
-                              onClick={() =>
-                                cropModeActive
-                                  ? editorRefs.current[activeCanvasTab]?.cancelCrop?.()
-                                  : (colorCutActive
-                                    ? editorRefs.current[activeCanvasTab]?.cancelColorCut?.()
-                                    : (effectLassoActive
-                                      ? editorRefs.current[activeCanvasTab]?.cancelEffectLasso?.()
-                                      : editorRefs.current[activeCanvasTab]?.cancelEffectBrush?.()))
-                              }
-                              title="Cancelar (Esc ou Delete)"
-                            >
-                              <X className="w-4 h-4" />
-                            </Button>
+                              <Button
+                                type="button"
+                                size="icon"
+                                onClick={() =>
+                                  cropModeActive
+                                    ? editorRefs.current[activeCanvasTab]?.confirmCrop?.()
+                                    : (colorCutActive
+                                      ? editorRefs.current[activeCanvasTab]?.confirmColorCut?.()
+                                      : (effectLassoActive
+                                        ? editorRefs.current[activeCanvasTab]?.confirmEffectLasso?.()
+                                        : editorRefs.current[activeCanvasTab]?.confirmEffectBrush?.()))
+                                }
+                                title="Confirmar (Enter)"
+                              >
+                                <Check className="w-4 h-4" />
+                              </Button>
+                              <Button
+                                type="button"
+                                size="icon"
+                                variant="outline"
+                                onClick={() =>
+                                  cropModeActive
+                                    ? editorRefs.current[activeCanvasTab]?.cancelCrop?.()
+                                    : (colorCutActive
+                                      ? editorRefs.current[activeCanvasTab]?.cancelColorCut?.()
+                                      : (effectLassoActive
+                                        ? editorRefs.current[activeCanvasTab]?.cancelEffectLasso?.()
+                                        : editorRefs.current[activeCanvasTab]?.cancelEffectBrush?.()))
+                                }
+                                title="Cancelar (Esc)"
+                              >
+                                <X className="w-4 h-4" />
+                              </Button>
+                            </div>
                           </div>
-                        </div>
                         );
                       })()}
 
@@ -1799,16 +2538,16 @@ const Creation = () => {
                         const colorCutActive = colorCutModeActive || !!activeEditor?.isColorCutActive?.();
                         return (!cropModeActive && !effectToolActive && !effectsEditModeActive && !colorCutActive && selectionKind === "text");
                       })() && (
-                        <div className="absolute left-1/2 bottom-6 z-10 max-w-[95vw] -translate-x-1/2">
-                          <div className={isToolbarTransitioning ? (toolbarTransitionType === "in" ? "flip-in" : "flip-out") : ""}>
-                            <TextToolbar
-                              editor={{ current: editorRefs.current[activeCanvasTab] as Editor2DHandle }}
-                              visible={activeIs2D && selectionKind === "text"}
-                              position="inline"
-                            />
+                          <div className="absolute left-1/2 bottom-6 z-50 max-w-[95vw] -translate-x-1/2">
+                            <div className={isToolbarTransitioning ? (toolbarTransitionType === "in" ? "flip-in" : "flip-out") : ""}>
+                              <TextToolbar
+                                editor={{ current: editorRefs.current[activeCanvasTab] as Editor2DHandle }}
+                                visible={activeIs2D && selectionKind === "text"}
+                                position="inline"
+                              />
+                            </div>
                           </div>
-                        </div>
-                      )}
+                        )}
 
                       {(() => {
                         const activeEditor = editorRefs.current[activeCanvasTab] as Editor2DHandle | undefined;
@@ -1818,16 +2557,17 @@ const Creation = () => {
                         const colorCutActive = colorCutModeActive || !!activeEditor?.isColorCutActive?.();
                         return (!cropModeActive && !effectToolActive && !colorCutActive && (effectsEditModeActive || selectionKind === "image"));
                       })() && (
-                        <div className="absolute left-1/2 bottom-6 z-10 max-w-[95vw] -translate-x-1/2">
-                          <div className={isToolbarTransitioning ? (toolbarTransitionType === "in" ? "flip-in" : "flip-out") : ""}>
-                            <ImageToolbar
-                              editor={{ current: editorRefs.current[activeCanvasTab] as Editor2DHandle }}
-                              visible={activeIs2D && (effectsEditModeActive || selectionKind === "image")}
-                              position="inline"
-                            />
+                          <div className="absolute left-1/2 bottom-6 z-50 max-w-[95vw] -translate-x-1/2">
+                            <div className={isToolbarTransitioning ? (toolbarTransitionType === "in" ? "flip-in" : "flip-out") : ""}>
+                              <ImageToolbar
+                                editor={{ current: editorRefs.current[activeCanvasTab] as Editor2DHandle }}
+                                visible={activeIs2D && (effectsEditModeActive || selectionKind === "image")}
+                                position="inline"
+                                onBgRemoveLoadingChange={(loading) => setBgRemovingTabId(loading ? activeCanvasTab : null)}
+                              />
+                            </div>
                           </div>
-                        </div>
-                      )}
+                        )}
 
                       {(() => {
                         const activeEditor = editorRefs.current[activeCanvasTab] as Editor2DHandle | undefined;
@@ -1837,34 +2577,35 @@ const Creation = () => {
                         const colorCutActive = colorCutModeActive || !!activeEditor?.isColorCutActive?.();
                         return (!cropModeActive && !effectToolActive && !effectsEditModeActive && !colorCutActive && selectionKind !== "text" && selectionKind !== "image");
                       })() && (
-                        <div className="absolute left-1/2 bottom-6 z-10 max-w-[95vw] -translate-x-1/2">
-                          <div className={isToolbarTransitioning ? (toolbarTransitionType === "in" ? "flip-in" : "flip-out") : ""}>
-                            <FloatingEditorToolbar
-                              strokeColor={strokeColor}
-                              setStrokeColor={setStrokeColor}
-                              stampColor={stampColor}
-                              setStampColor={setStampColor}
-                              stampDensity={stampDensity}
-                              setStampDensity={setStampDensity}
-                              strokeWidth={strokeWidth}
-                              setStrokeWidth={setStrokeWidth}
-                              opacity={opacity}
-                              setOpacity={setOpacity}
-                              tool={tool}
-                              setTool={setTool}
-                              isTrashMode={isTrashMode}
-                              setTrashMode={setTrashMode}
-                              selectionKind={selectionKind}
-                              editor2DRef={editorRefs.current[activeCanvasTab] as Editor2DHandle}
-                              onUndo={activeIs2D ? () => editorRefs.current[activeCanvasTab]?.undo?.() : undefined}
-                              onRedo={activeIs2D ? () => editorRefs.current[activeCanvasTab]?.redo?.() : undefined}
-                              canUndo={canUndo}
-                              canRedo={canRedo}
-                            />
+                          <div className="absolute left-1/2 bottom-6 z-50 max-w-[95vw] -translate-x-1/2">
+                            <div className={isToolbarTransitioning ? (toolbarTransitionType === "in" ? "flip-in" : "flip-out") : ""}>
+                              <FloatingEditorToolbar
+                                strokeColor={strokeColor}
+                                setStrokeColor={setStrokeColor}
+                                stampColor={stampColor}
+                                setStampColor={setStampColor}
+                                stampDensity={stampDensity}
+                                setStampDensity={setStampDensity}
+                                strokeWidth={strokeWidth}
+                                setStrokeWidth={setStrokeWidth}
+                                opacity={opacity}
+                                setOpacity={setOpacity}
+                                tool={tool}
+                                setTool={setTool}
+                                isTrashMode={isTrashMode}
+                                setTrashMode={setTrashMode}
+                                selectionKind={selectionKind}
+                                editor2DRef={editorRefs.current[activeCanvasTab] as Editor2DHandle}
+                                onUndo={activeIs2D ? () => editorRefs.current[activeCanvasTab]?.undo?.() : undefined}
+                                onRedo={activeIs2D ? () => editorRefs.current[activeCanvasTab]?.redo?.() : undefined}
+                                canUndo={canUndo}
+                                canRedo={canRedo}
+                                onApplyGradient={(gradient) => editorRefs.current[activeCanvasTab]?.applyGradientToSelection?.(gradient)}
+                              />
+                            </div>
                           </div>
-                        </div>
-                      )}
-                    </div>
+                        )}
+
                     </div>
                   </ContextMenuTrigger>
                   <ContextMenuContent className="w-56">
@@ -1891,7 +2632,7 @@ const Creation = () => {
                     </ContextMenuItem>
 
                     <ContextMenuItem
-                      disabled={!selectionInfo?.hasSelection || selectionKind !== "image"}
+                      disabled={!selectionInfo?.hasSelection || selectionKind !== "image" || !canSaveSelectedImage}
                       onSelect={() => void saveSelectedImage()}
                     >
                       Salvar
@@ -1952,15 +2693,14 @@ const Creation = () => {
                       <ContextMenuSubContent className="w-80">
                         <PatternSubmenu
                           onSelectPattern={(pattern: PatternDefinition) => {
-                            runWithActiveEditor((inst) =>
-                              {
-                                inst.previewPatternEnd?.();
-                                inst.applyPatternToSelection?.(
-                                  pattern.source,
-                                  pattern.repeat,
-                                  pattern.defaultScale ?? 0.5
-                                );
-                              }
+                            runWithActiveEditor((inst) => {
+                              inst.previewPatternEnd?.();
+                              inst.applyPatternToSelection?.(
+                                pattern.source,
+                                pattern.repeat,
+                                pattern.defaultScale ?? 0.5
+                              );
+                            }
                             );
                           }}
                           onPreviewStart={(pattern: PatternDefinition) => {
@@ -1999,7 +2739,7 @@ const Creation = () => {
           </div>
         </section>
       </main>
-    </div>
+    </div >
   );
 };
 

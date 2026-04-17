@@ -52,6 +52,9 @@ type CatalogSubtype = {
   name: string;
   description?: string | null;
   card_image_path?: string | null;
+  print_area_width_cm?: number | null;
+  print_area_height_cm?: number | null;
+  min_decal_area_cm2?: number | null;
   sort_order?: number | null;
   is_active?: boolean | null;
 };
@@ -194,11 +197,35 @@ const Create = () => {
       }
 
       try {
-        const [partsRes, typesRes, subtypesRes] = await Promise.all([
+        const [partsRes, typesRes] = await Promise.all([
           supabase.from("parts").select("id, slug, name, description, sort_order, is_active").order("sort_order", { ascending: true }),
           supabase.from("product_types").select("id, part_id, name, description, card_image_path, sort_order, is_active").order("sort_order", { ascending: true }),
-          supabase.from("product_subtypes").select("id, type_id, name, description, card_image_path, sort_order, is_active").order("sort_order", { ascending: true }),
         ]);
+
+        const subtypeBaseSelect = "id, type_id, name, description, card_image_path, sort_order, is_active";
+        const subtypeExtendedSelect = `${subtypeBaseSelect}, print_area_width_cm, print_area_height_cm, min_decal_area_cm2`;
+
+        let subtypesRes = await supabase
+          .from("product_subtypes")
+          .select(subtypeExtendedSelect)
+          .order("sort_order", { ascending: true });
+
+        if (subtypesRes.error) {
+          const message = `${subtypesRes.error.message || ""} ${subtypesRes.error.details || ""}`.toLowerCase();
+          const hasMissingNewColumns =
+            message.includes("print_area_width_cm") ||
+            message.includes("print_area_height_cm") ||
+            message.includes("min_decal_area_cm2") ||
+            (message.includes("column") && message.includes("does not exist"));
+
+          if (hasMissingNewColumns) {
+            console.warn("[Create] Fallback para consulta legada de subtipos: colunas de restricao de estampa nao encontradas.");
+            subtypesRes = await supabase
+              .from("product_subtypes")
+              .select(subtypeBaseSelect)
+              .order("sort_order", { ascending: true });
+          }
+        }
 
         if (partsRes.error) throw partsRes.error;
         if (typesRes.error) throw typesRes.error;
@@ -259,6 +286,14 @@ const Create = () => {
           }
           return;
         }
+
+        // Limpeza server-side: exclui rascunhos efêmeros expirados antes de buscar
+        await supabase
+          .from("project_drafts")
+          .delete()
+          .eq("user_id", user.id)
+          .not("ephemeral_expires_at", "is", null)
+          .lt("ephemeral_expires_at", new Date().toISOString());
 
         const { data, error } = await supabase
           .from("project_drafts")
@@ -691,6 +726,16 @@ const Create = () => {
   }, [searchMatch]);
 
   const requiresSubtype = selectedType ? (specificModels[selectedType]?.length ?? 0) > 0 : false;
+  const selectedSubtypeConfig = useMemo(() => {
+    if (!selectedType || !selectedSubtype) return null;
+    const typeMatch = catalogTypes.find((item) => item.name === selectedType);
+    if (!typeMatch) return null;
+    return (
+      catalogSubtypes.find(
+        (item) => item.type_id === typeMatch.id && item.name === selectedSubtype
+      ) ?? null
+    );
+  }, [catalogSubtypes, catalogTypes, selectedSubtype, selectedType]);
   const canContinue =
     !!selectedPart && !!selectedType && (requiresSubtype ? !!selectedSubtype : true);
 
@@ -758,8 +803,8 @@ const Create = () => {
 
   const CARD_SIZE = 400;
   const CARD_GAP = 40;
-  const STATIC_CARD_SIZE = 420;
-  const STATIC_CARD_GAP = 24;
+  const STATIC_CARD_SIZE = CARD_SIZE;
+  const STATIC_CARD_GAP = CARD_GAP;
 
   const renderStaticCards = (
     items: { id: string; label: string; description?: string; imageUrl?: string }[],
@@ -872,7 +917,7 @@ const Create = () => {
                   aria-label="Pesquisar modelos"
                 />
               </div>
-              <TabsList className="w-fit md:ml-auto">
+              <TabsList className="w-fit md:ml-auto glass-strong">
                 <TabsTrigger
                   value="create"
                   className={`transition-all duration-300 origin-center transform-gpu data-[state=active]:shadow-lg ${
@@ -980,18 +1025,34 @@ const Create = () => {
                           (id) => handleSelectSubtype(id)
                         )
                       : subtypeCarouselItems.length <= 3
-                        ? renderStaticCards(subtypeCarouselItems, selectedSubtype, (id) => handleSelectSubtype(id))
-                        : (
-                          <LinearInfiniteCarousel
-                            className="wizard-carousel"
-                            items={subtypeCarouselItems}
-                            selectedId={selectedSubtype}
-                            onSelect={(id: string) => handleSelectSubtype(id)}
-                            autoCenterSelected={searchActive}
-                            cardSize={CARD_SIZE}
-                            cardGapPx={CARD_GAP}
-                          />
-                        )}
+                      ? renderStaticCards(
+                          subtypeCarouselItems,
+                          selectedSubtype,
+                          (id) => handleSelectSubtype(id)
+                        )
+                      : (
+                        <LinearInfiniteCarousel
+                          className="wizard-carousel"
+                          items={subtypeCarouselItems}
+                          selectedId={selectedSubtype}
+                          onSelect={(id: string) => handleSelectSubtype(id)}
+                          autoCenterSelected={searchActive}
+                          cardSize={CARD_SIZE}
+                          cardGapPx={CARD_GAP}
+                        />
+                      )}
+
+                    {selectedSubtypeConfig && (
+                      <div className="mt-4 rounded-xl border border-amber-300/50 bg-amber-50/70 px-4 py-3 text-xs text-amber-900">
+                        <p className="font-semibold">Referencia de estampa da peca</p>
+                        <p className="mt-1">
+                          Area util: {selectedSubtypeConfig.print_area_width_cm ?? "-"} x {selectedSubtypeConfig.print_area_height_cm ?? "-"} cm
+                        </p>
+                        <p>
+                          Area minima recomendada: {selectedSubtypeConfig.min_decal_area_cm2 ?? 5} cm²
+                        </p>
+                      </div>
+                    )}
                   </div>
                 )}
               </div>

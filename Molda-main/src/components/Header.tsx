@@ -1,8 +1,9 @@
 import { useEffect, useState } from "react";
 import { Link, useNavigate } from "react-router-dom";
 import { Button } from "../components/ui/button";
-import { User, LogOut } from "lucide-react";
+import { Building2, Moon, Shield, Sun, User, LogOut } from "lucide-react";
 import { useAuth } from "../contexts/AuthContext";
+import { useTheme } from "../contexts/ThemeContext";
 import { Avatar, AvatarFallback, AvatarImage } from "../components/ui/avatar";
 import { supabase } from "../integrations/supabase/client";
 import { AVATAR_BUCKET } from "../lib/constants/storage";
@@ -17,7 +18,9 @@ import SparkleButton from "./SparkleButton";
 
 const Header = () => {
   const { user, signOut, loading, getProfile } = useAuth();
+  const { theme, toggleTheme } = useTheme();
   const [avatarUrl, setAvatarUrl] = useState<string | null>(null);
+  const [role, setRole] = useState<string | null>(null);
   const navigate = useNavigate();
 
   useEffect(() => {
@@ -35,6 +38,7 @@ const Header = () => {
       try {
         const profile = await getProfile();
         if (!mounted) return;
+        setRole(profile?.role ?? null);
         if (profile?.avatar_path) {
           const { data } = supabase.storage.from(AVATAR_BUCKET).getPublicUrl(profile.avatar_path);
           if (data?.publicUrl) {
@@ -74,7 +78,7 @@ const Header = () => {
 
   return (
     <header className="sticky top-0 z-40 w-full border-b glass-strong">
-      <div className="container mx-auto px-6 h-16 flex items-center justify-between">
+      <div className="mx-auto w-full max-w-7xl px-4 sm:px-6 lg:px-10 xl:px-16 2xl:px-24 h-16 flex items-center justify-between">
         <Link to="/" className="inline-flex items-center gap-2">
           <div className="h-7 w-7 rounded-lg bg-[linear-gradient(135deg,hsl(var(--primary))_0%,hsl(var(--brand-keppel))_100%)]" />
           <span className="font-semibold tracking-tight">Molda</span>
@@ -87,6 +91,19 @@ const Header = () => {
         </nav>
 
         <div className="flex items-center gap-4">
+          <Button
+            variant="ghost"
+            size="icon"
+            onClick={toggleTheme}
+            aria-label={theme === "dark" ? "Ativar modo claro" : "Ativar modo escuro"}
+            className="rounded-full"
+          >
+            {theme === "dark" ? (
+              <Sun className="h-4 w-4" />
+            ) : (
+              <Moon className="h-4 w-4" />
+            )}
+          </Button>
           {loading ? (
             <div className="w-8 h-8 animate-pulse bg-gray-200 rounded-full" />
           ) : !user?.id ? (
@@ -127,6 +144,18 @@ const Header = () => {
                   <User className="mr-2 h-4 w-4" />
                   Perfil
                 </DropdownMenuItem>
+                {role === "factory" || role === "admin" ? (
+                  <DropdownMenuItem onClick={() => navigate("/factory")}>
+                    <Building2 className="mr-2 h-4 w-4" />
+                    Painel da fábrica
+                  </DropdownMenuItem>
+                ) : null}
+                {role === "admin" ? (
+                  <DropdownMenuItem onClick={() => navigate("/admin")}>
+                    <Shield className="mr-2 h-4 w-4" />
+                    Administração
+                  </DropdownMenuItem>
+                ) : null}
                 <DropdownMenuItem onClick={handleSignOut}>
                   <LogOut className="mr-2 h-4 w-4" />
                   Sair

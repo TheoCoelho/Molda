@@ -65,5 +65,8 @@
   "watch": {
     "interval": 30000,
     "metrics": ["bundleSize", "performance", "lighthouse"]
+  },
+  "brandAgent": {
+    "reportsPath": "reports/brand-agent"
   }
 }

@@ -6,6 +6,7 @@ import { TooltipProvider } from "@/components/ui/tooltip";
 import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
 import { BrowserRouter, Routes, Route } from "react-router-dom";
 import { AuthProvider } from "@/contexts/AuthContext";
+import { ThemeProvider } from "@/contexts/ThemeContext";
 import Index from "./pages/Index";
 import NotFound from "./pages/NotFound";
 import Create from "./pages/Create";
@@ -15,8 +16,10 @@ import Profile from "./pages/Profile";
 import Login from "./pages/Login";
 import Register from "./pages/Register";
 import Admin from "./pages/Admin";
+import FactoryDashboard from "./pages/FactoryDashboard";
 import TransitionsPlayground from "./pages/TransitionsPlayground";
 import RequireAdmin from "@/components/RequireAdmin";
+import RequireRole from "@/components/RequireRole";
 // import ShaderBackground from "@/components/ShaderBackground"; // temporariamente desabilitado
 // ⬇️ Barra de progresso no topo
 import TopProgressBar from "@/components/TopProgressBar";
@@ -40,18 +43,16 @@ const App = () => {
   }, []);
 
   return (
+    <ThemeProvider>
     <QueryClientProvider client={queryClient}>
       <TooltipProvider>
         <AuthProvider>
           {/* Canvas do fundo (fixo e atrás de tudo) */}
           {/* <ShaderBackground /> */}
-          {/* Fundo cinza escuro */}
-          <div
-            className="fixed inset-0 z-0 pointer-events-none vscode-background"
-          />
+          <div className="fixed inset-0 z-0 pointer-events-none bg-background" />
 
           {/* Conteúdo do app acima do fundo */}
-          <div className="relative z-10 min-h-screen is-glassy">
+          <div className="relative z-10 min-h-screen">
             <BrowserRouter>
               <TopProgressBar />
               <Routes>
@@ -63,6 +64,14 @@ const App = () => {
                 <Route path="/login" element={<Login />} />
                 <Route path="/register" element={<Register />} />
                 <Route path="/transitions-test" element={<TransitionsPlayground />} />
+                <Route
+                  path="/factory"
+                  element={
+                    <RequireRole allowedRoles={["factory", "admin"]}>
+                      <FactoryDashboard />
+                    </RequireRole>
+                  }
+                />
                 <Route
                   path="/admin"
                   element={
@@ -82,6 +91,7 @@ const App = () => {
         </AuthProvider>
       </TooltipProvider>
     </QueryClientProvider>
+    </ThemeProvider>
   );
 };
 

@@ -9,7 +9,7 @@ export type Profile = {
   phone?: string | null;
   birth_date?: string | null; // yyyy-mm-dd
   cpf?: string | null;
-  role?: "admin" | "editor" | "viewer" | null;
+  role?: "admin" | "editor" | "viewer" | "factory" | null;
   created_at?: string | null;
   updated_at?: string | null;
   avatar_path?: string | null;
@@ -39,6 +39,20 @@ type AuthContextType = {
 
 const AuthContext = createContext<AuthContextType>({} as any);
 
+const isInvalidRefreshTokenError = (error: unknown) => {
+  const message = String((error as any)?.message ?? error ?? "").toLowerCase();
+  return message.includes("invalid refresh token") || message.includes("refresh token not found");
+};
+
+const recoverInvalidSession = async (error: unknown) => {
+  if (!isInvalidRefreshTokenError(error)) return;
+  try {
+    await supabase.auth.signOut({ scope: "local" });
+  } catch {
+    // silencioso: objetivo é limpar sessão local corrompida
+  }
+};
+
 // Persistência de seed entre registro -> confirmação de e-mail -> primeiro login
 const SEED_KEY = "cc_register_seed";
 
@@ -67,7 +81,19 @@ export const AuthProvider: React.FC<{ children: React.ReactNode }> = ({ children
   const [loading, setLoading] = useState(true);
 
   const ensureProfile = async (seed?: Partial<Profile>) => {
-    const { data: sessData } = await supabase.auth.getSession();
+    let sessData: any = null;
+    try {
+      const { data, error } = await supabase.auth.getSession();
+      if (error) {
+        await recoverInvalidSession(error);
+        return;
+      }
+      sessData = data;
+    } catch (error) {
+      await recoverInvalidSession(error);
+      return;
+    }
+
     const currentUser = sessData.session?.user;
     if (!currentUser) return;
 
@@ -149,11 +175,28 @@ export const AuthProvider: React.FC<{ children: React.ReactNode }> = ({ children
     let mounted = true;
 
     (async () => {
-      const { data } = await supabase.auth.getSession();
-      if (!mounted) return;
-      setSession(data.session);
-      setUser(data.session?.user ?? null);
-      setLoading(false);
+      try {
+        const { data, error } = await supabase.auth.getSession();
+        if (error) {
+          await recoverInvalidSession(error);
+          if (!mounted) return;
+          setSession(null);
+          setUser(null);
+          setLoading(false);
+          return;
+        }
+
+        if (!mounted) return;
+        setSession(data.session);
+        setUser(data.session?.user ?? null);
+        setLoading(false);
+      } catch (error) {
+        await recoverInvalidSession(error);
+        if (!mounted) return;
+        setSession(null);
+        setUser(null);
+        setLoading(false);
+      }
     })();
 
     const { data: sub } = supabase.auth.onAuthStateChange((event, sess) => {
@@ -209,7 +252,19 @@ export const AuthProvider: React.FC<{ children: React.ReactNode }> = ({ children
   };
 
   const getProfile = async (): Promise<Profile | null> => {
-    const { data: sess } = await supabase.auth.getSession();
+    let sess: any = null;
+    try {
+      const { data, error } = await supabase.auth.getSession();
+      if (error) {
+        await recoverInvalidSession(error);
+        return null;
+      }
+      sess = data;
+    } catch (error) {
+      await recoverInvalidSession(error);
+      return null;
+    }
+
     const uid = sess.session?.user?.id;
     if (!uid) return null;
 
@@ -227,7 +282,19 @@ export const AuthProvider: React.FC<{ children: React.ReactNode }> = ({ children
   };
 
   const updateOwnProfile: AuthContextType["updateOwnProfile"] = async (payload) => {
-    const { data: sess } = await supabase.auth.getSession();
+    let sess: any = null;
+    try {
+      const { data, error } = await supabase.auth.getSession();
+      if (error) {
+        await recoverInvalidSession(error);
+        return { error };
+      }
+      sess = data;
+    } catch (error: any) {
+      await recoverInvalidSession(error);
+      return { error };
+    }
+
     const uid = sess.session?.user?.id;
     if (!uid) return { error: new Error("Sem sessão") };
     const { error } = await supabase.from("profiles").update(payload).eq("id", uid);

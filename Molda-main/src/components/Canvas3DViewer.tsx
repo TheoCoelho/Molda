@@ -4,7 +4,7 @@ import { useLocation, useSearchParams } from "react-router-dom";
 import DecalEngineHost from "./DecalEngineHost";
 // import Model3D from "./Model3D";
 // import TShirt3D from "./TShirt3D";               // ✅ caminho corrigido (mesma pasta)
-import { getModelConfigFromSelection } from "../lib/models";
+import { getModelConfigFromSelection, type ModelDecalZone } from "../lib/models";
 import type { DecalStateSnapshot, ExternalDecalData } from "../types/decals";
 
 type Props = {
@@ -13,6 +13,7 @@ type Props = {
   externalDecals?: ExternalDecalData[];
   onDecalsChange?: (state: DecalStateSnapshot[]) => void;
   interactive?: boolean;
+  decalZonesOverride?: ModelDecalZone[];
   selectionOverride?: {
     part?: string | null;
     type?: string | null;
@@ -26,6 +27,7 @@ export default function Canvas3DViewer({
   externalDecals = [],
   onDecalsChange,
   interactive = true,
+  decalZonesOverride,
   selectionOverride,
 }: Props) {
   const [searchParams] = useSearchParams();
@@ -49,6 +51,7 @@ export default function Canvas3DViewer({
       <DecalEngineHost
         className="w-full h-full"
         selection={{ part, type, subtype }}
+        decalZonesOverride={decalZonesOverride}
         decals={externalDecals}
         onDecalsChange={onDecalsChange}
         interactive={interactive}

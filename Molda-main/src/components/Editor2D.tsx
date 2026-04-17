@@ -13,7 +13,7 @@ import { applyGizmoThemeToFabric, DEFAULT_GIZMO_THEME } from "../../../gizmo-the
 // Tipos alinhados com ExpandableSidebar
 export type Tool = "select" | "brush" | "line" | "curve" | "text" | "stamp";
 export type BrushVariant = "pencil" | "spray" | "marker" | "calligraphy" | "eraser";
-export type ShapeKind = "rect" | "triangle" | "ellipse" | "polygon" | "star";
+export type ShapeKind = "rect" | "triangle" | "ellipse" | "polygon" | "star" | "diamond" | "pentagon" | "octagon" | "cross" | "heart" | "arrow" | "lightning" | "drop" | "moon" | "star6";
 
 type LinePoint = { x: number; y: number };
 type LineMeta = {
@@ -42,6 +42,19 @@ type CurveMeta = {
   opacity: number;
   fill: string | null;
 };
+
+/** Um ponto de cor em um degradê */
+export type GradientStop = { offset: number; color: string };
+
+/** Configuração de preenchimento com degradê */
+export type GradientFill = {
+  type: 'gradient';
+  gradientType: 'linear' | 'radial';
+  angle: number;          // 0-360
+  colorStops: GradientStop[];
+  radius?: number;        // 0-1 (fraction of max(w,h)/2), default 1.0
+};
+
 export type TextStyle = Partial<{
   fontFamily: string;
   fontSize: number;
@@ -52,7 +65,7 @@ export type TextStyle = Partial<{
   charSpacing: number;
   underline: boolean;
   linethrough: boolean;
-  fill: string;
+  fill: string | GradientFill;
   stroke: string;
   strokeWidth: number;
   shadow: { color: string; blur: number; offsetX: number; offsetY: number } | null;
@@ -155,8 +168,15 @@ export type Editor2DHandle = {
   ) => void;
   addImage: (
     src: string,
-    opts?: { x?: number; y?: number; scale?: number }
+    opts?: { x?: number; y?: number; scale?: number; meta?: Record<string, unknown> }
   ) => void;
+  getSelectedImageGalleryMeta?: () => {
+    itemId?: string;
+    groupId?: string;
+    originalName?: string;
+    isVariant?: boolean;
+  } | null;
+  hasSelectedImageVisualChanges?: () => boolean;
 
   // ==== Imagem (níveis) ====
   getActiveImageAdjustments?: () => ImageAdjustments | null;
@@ -212,6 +232,9 @@ export type Editor2DHandle = {
   isColorCutActive?: () => boolean;
   onColorCutModeChange?: (cb: (active: boolean) => void) => void;
 
+  // ==== Remoção de fundo por IA ====
+  removeBackground?: () => Promise<void>;
+
   toJSON: () => string;
   loadFromJSON: (json: string) => Promise<void>;
   deleteSelection: () => void;
@@ -219,7 +242,7 @@ export type Editor2DHandle = {
   // ==== Texto ====
   addText: (value?: string, opts?: { x?: number; y?: number }) => void;
   getActiveTextStyle: () => TextStyle | null;
-  setActiveTextStyle: (patch: TextStyle & { from?: "font-picker" | "inspector" }) => Promise<void>;
+  setActiveTextStyle: (patch: TextStyle & { from?: "font-picker" | "inspector" | "gradient-live" }) => Promise<void>;
   applyTextStyle: (patch: TextStyle) => void;
   onSelectionChange?: (cb: (k: "none" | "text" | "image" | "other") => void) => void;
 
@@ -249,6 +272,15 @@ export type Editor2DHandle = {
   refresh: () => void;
   listUsedFonts: () => string[];
   waitForIdle: () => Promise<void>;
+  /** Aplica um degradê (GradientFill) como fill do objeto selecionado. */
+  applyGradientToSelection?: (gradient: GradientFill) => void;
+  /**
+   * Retorna o bounding box de todos os objetos presentes no canvas, como
+   * proporção do tamanho do canvas (0–1 em cada eixo), incluindo a origem do
+   * crop (ratioLeft/ratioTop). Retorna null se não houver objetos.
+   * Útil para recortar o PNG exportado ao conteúdo real e redimensionar o gizmo.
+   */
+  getContentBounds?: () => { ratioLeft: number; ratioTop: number; ratioW: number; ratioH: number } | null;
 };
 
 type Props = {
@@ -380,7 +412,7 @@ async function reviveCanvasErasers(canvas: any, fabricLib: any) {
   }
   try {
     canvas.requestRenderAll?.();
-  } catch {}
+  } catch { }
 }
 
 // ---- Loader em runtime do Fabric (sem import local) ----
@@ -390,7 +422,7 @@ function loadFabricRuntime(): Promise<any> {
     console.log("[Editor2D] Fabric already loaded, returning");
     return Promise.resolve((window as any).fabric);
   }
-  
+
   if ((window as any).__fabricLoadingPromise) {
     console.log("[Editor2D] Fabric loading in progress, waiting");
     return (window as any).__fabricLoadingPromise;
@@ -398,7 +430,7 @@ function loadFabricRuntime(): Promise<any> {
 
   console.log("[Editor2D] Starting Fabric load");
   const cdns = [
-    "https://unpkg.com/fabric@5.3.0/dist/fabric.min.js", 
+    "https://unpkg.com/fabric@5.3.0/dist/fabric.min.js",
     "https://cdn.jsdelivr.net/npm/fabric@5.3.0/dist/fabric.min.js",
     "https://unpkg.com/fabric@4.6.0/dist/fabric.min.js",
   ];
@@ -409,15 +441,15 @@ function loadFabricRuntime(): Promise<any> {
         reject(new Error("Falha ao carregar Fabric de CDNs."));
         return;
       }
-      
+
       console.log(`[Editor2D] Trying CDN ${i}: ${cdns[i]}`);
       const script = document.createElement("script");
       script.src = cdns[i];
       script.async = true;
-      
+
       script.onload = () => {
         console.log(`[Editor2D] Script loaded from CDN ${i}`);
-        
+
         // Aguarda Fabric estar completamente disponível
         const checkFabric = () => {
           const fabric = (window as any).fabric;
@@ -429,16 +461,16 @@ function loadFabricRuntime(): Promise<any> {
             setTimeout(checkFabric, 50);
           }
         };
-        
+
         setTimeout(checkFabric, 10);
       };
-      
+
       script.onerror = () => {
         console.log(`[Editor2D] Failed to load from CDN ${i}, trying next`);
         document.head.removeChild(script);
         loadFrom(i + 1).then(resolve).catch(reject);
       };
-      
+
       document.head.appendChild(script);
     });
   }
@@ -446,6 +478,66 @@ function loadFabricRuntime(): Promise<any> {
   (window as any).__fabricLoadingPromise = loadFrom(0);
   return (window as any).__fabricLoadingPromise;
 }
+
+// Cross-canvas clipboard shared by all Editor2D instances on the page.
+// Storing it at module level allows Ctrl+C on one canvas tab and Ctrl+V on another.
+let _globalFabricClipboard: any = null;
+
+// ── Background-removal Web Worker ───────────────────────────────────────────
+// The singleton worker is created on first use and reused for subsequent calls.
+// Running inference in a Worker ensures the main thread / UI stays responsive.
+let _bgWorker: Worker | null = null;
+let _bgWorkerReqId = 0;
+const _bgWorkerCallbacks = new Map<
+  number,
+  { resolve: (b: Blob) => void; reject: (e: Error) => void }
+>();
+
+function _getOrCreateBgWorker(): Worker {
+  if (!_bgWorker) {
+    _bgWorker = new Worker(
+      new URL("../workers/bg-removal.worker.ts", import.meta.url),
+      { type: "module" }
+    );
+    _bgWorker.onmessage = (e: MessageEvent) => {
+      const { id, ok, buffer, error } = e.data as {
+        id: number;
+        ok: boolean;
+        buffer?: ArrayBuffer;
+        error?: string;
+      };
+      const cb = _bgWorkerCallbacks.get(id);
+      if (!cb) return;
+      _bgWorkerCallbacks.delete(id);
+      if (ok && buffer) {
+        cb.resolve(new Blob([buffer], { type: "image/png" }));
+      } else {
+        cb.reject(new Error(error ?? "unknown worker error"));
+      }
+    };
+    _bgWorker.onerror = () => {
+      for (const cb of _bgWorkerCallbacks.values()) {
+        cb.reject(new Error("bg-removal worker crashed"));
+      }
+      _bgWorkerCallbacks.clear();
+      _bgWorker = null; // allow recreation on next attempt
+    };
+  }
+  return _bgWorker;
+}
+
+function _removeBackgroundInWorker(blob: Blob): Promise<Blob> {
+  return new Promise((resolve, reject) => {
+    const id = ++_bgWorkerReqId;
+    _bgWorkerCallbacks.set(id, { resolve, reject });
+    const worker = _getOrCreateBgWorker();
+    blob
+      .arrayBuffer()
+      .then((buffer) => worker.postMessage({ id, buffer }, [buffer]))
+      .catch(reject);
+  });
+}
+// ────────────────────────────────────────────────────────────────────────────
 
 const Editor2D = forwardRef<Editor2DHandle, Props>(function Editor2D(
   {
@@ -492,6 +584,7 @@ const Editor2D = forwardRef<Editor2DHandle, Props>(function Editor2D(
   });
   const toolRef = useRef(tool);
   const stampSrcRef = useRef<string | null>(stampSrc ?? null);
+  const pendingFontFamilyRef = useRef<string>("Inter");
   const selectionListenersRef = useRef(new Set<(k: "none" | "text" | "image" | "other") => void>());
   const erasingCountRef = useRef(0);
   const idleResolversRef = useRef<Set<() => void>>(new Set());
@@ -576,17 +669,17 @@ const Editor2D = forwardRef<Editor2DHandle, Props>(function Editor2D(
   const emitCropMode = (active: boolean) => {
     try {
       cropModeListenersRef.current.forEach((cb) => {
-        try { cb(active); } catch {}
+        try { cb(active); } catch { }
       });
-    } catch {}
+    } catch { }
   };
 
   const emitEffectEditMode = (active: boolean) => {
     try {
       effectEditModeListenersRef.current.forEach((cb) => {
-        try { cb(active); } catch {}
+        try { cb(active); } catch { }
       });
-    } catch {}
+    } catch { }
   };
   const curveStateRef = useRef({
     isDrawing: false,
@@ -675,13 +768,41 @@ const Editor2D = forwardRef<Editor2DHandle, Props>(function Editor2D(
       idleResolversRef.current.add(wrapped);
     });
   }, []);
-  
+
   // Refs para controle de ferramentas
   const listenersRef = useRef<{ down?: any; move?: any; up?: any; dbl?: any; keydown?: any }>({});
   const [canvasReady, setCanvasReady] = useState(false);
 
   React.useEffect(() => {
     strokeColorRef.current = strokeColor;
+
+    // Aplica a cor ao objeto ativo (formas, linhas, curvas etc.) quando strokeColor muda
+    const c = canvasRef.current as any;
+    if (!c) return;
+    const active = c.getActiveObject?.();
+    if (!active) return;
+    const kind = computeSelectionKind();
+    if (kind !== "other") return;
+    // Aplica a cor ao objeto e a seus filhos (spray = Group de Rects)
+    const applyColor = (obj: any) => {
+      const curStroke = obj.get("stroke");
+      if (curStroke && curStroke !== "transparent") {
+        obj.set("stroke", strokeColor);
+      }
+      const curFill = obj.get("fill");
+      if (curFill && curFill !== "transparent" && curFill !== "rgba(0,0,0,0)") {
+        obj.set("fill", strokeColor);
+      }
+      obj.dirty = true;
+    };
+
+    applyColor(active);
+    // Se for grupo (spray, etc.), aplica a cor em cada filho
+    if (Array.isArray(active._objects)) {
+      active._objects.forEach((child: any) => applyColor(child));
+    }
+    active.dirty = true;
+    c.requestRenderAll?.();
   }, [strokeColor]);
 
   React.useEffect(() => {
@@ -691,6 +812,40 @@ const Editor2D = forwardRef<Editor2DHandle, Props>(function Editor2D(
       opacity,
     };
   }, [brushVariant, strokeWidth, opacity]);
+
+  // Apply strokeWidth changes to the currently selected non-image/text object
+  React.useEffect(() => {
+    const c = canvasRef.current as any;
+    if (!c) return;
+    const active = c.getActiveObject?.();
+    if (!active) return;
+    const kind = computeSelectionKind();
+    if (kind !== "other") return;
+    const applyWidth = (obj: any) => {
+      obj.set("strokeWidth", strokeWidth);
+      obj.dirty = true;
+    };
+    applyWidth(active);
+    if (Array.isArray(active._objects)) {
+      active._objects.forEach((child: any) => applyWidth(child));
+    }
+    active.dirty = true;
+    active.setCoords?.();
+    c.requestRenderAll?.();
+  }, [strokeWidth]);
+
+  // Apply opacity changes to the currently selected non-image/text object
+  React.useEffect(() => {
+    const c = canvasRef.current as any;
+    if (!c) return;
+    const active = c.getActiveObject?.();
+    if (!active) return;
+    const kind = computeSelectionKind();
+    if (kind !== "other") return;
+    active.set("opacity", opacity);
+    active.dirty = true;
+    c.requestRenderAll?.();
+  }, [opacity]);
 
   React.useEffect(() => {
     toolRef.current = tool;
@@ -779,24 +934,24 @@ const Editor2D = forwardRef<Editor2DHandle, Props>(function Editor2D(
         const isCtrlOrMeta = evt.ctrlKey || evt.metaKey;
         if (evt.key === "Enter") {
           evt.preventDefault();
-          try { confirmEffectLasso(); } catch {}
+          try { confirmEffectLasso(); } catch { }
           return;
         }
         if (evt.key === "Escape" || evt.key === "Delete" || evt.key === "Backspace") {
           evt.preventDefault();
-          try { cancelEffectLasso(); } catch {}
+          try { cancelEffectLasso(); } catch { }
           return;
         }
         if (isCtrlOrMeta && evt.key.toLowerCase() === "z" && !evt.shiftKey) {
           evt.preventDefault();
           evt.stopPropagation();
-          try { undoEffectLassoPoint(); } catch {}
+          try { undoEffectLassoPoint(); } catch { }
           return;
         }
         if (isCtrlOrMeta && (evt.key.toLowerCase() === "y" || (evt.key.toLowerCase() === "z" && evt.shiftKey))) {
           evt.preventDefault();
           evt.stopPropagation();
-          try { redoEffectLassoPoint(); } catch {}
+          try { redoEffectLassoPoint(); } catch { }
           return;
         }
       }
@@ -805,27 +960,27 @@ const Editor2D = forwardRef<Editor2DHandle, Props>(function Editor2D(
       if (effectBrushSession?.active) {
         if (evt.key === "Enter") {
           evt.preventDefault();
-          try { confirmEffectBrush(); } catch {}
+          try { confirmEffectBrush(); } catch { }
           return;
         }
         if (evt.key === "Escape" || evt.key === "Delete" || evt.key === "Backspace") {
           evt.preventDefault();
-          try { cancelEffectBrush(); } catch {}
+          try { cancelEffectBrush(); } catch { }
           return;
         }
       }
       if (cropSession?.active || lassoSession?.active) {
         if (evt.key === "Enter") {
           evt.preventDefault();
-          try { confirmCrop(); } catch {}
+          try { confirmCrop(); } catch { }
           return;
         }
         if (evt.key === "Escape" || evt.key === "Delete" || evt.key === "Backspace") {
           evt.preventDefault();
-          try { cancelCrop(); } catch {}
+          try { cancelCrop(); } catch { }
           return;
         }
-        
+
         const isCtrlOrMeta = evt.ctrlKey || evt.metaKey;
 
         // Durante o modo laço, Ctrl+Z desfaz ponto a ponto e Ctrl+Y refaz
@@ -833,13 +988,13 @@ const Editor2D = forwardRef<Editor2DHandle, Props>(function Editor2D(
           if (isCtrlOrMeta && evt.key.toLowerCase() === "z" && !evt.shiftKey) {
             evt.preventDefault();
             evt.stopPropagation();
-            try { undoLassoPoint(); } catch {}
+            try { undoLassoPoint(); } catch { }
             return;
           }
           if (isCtrlOrMeta && (evt.key.toLowerCase() === "y" || (evt.key.toLowerCase() === "z" && evt.shiftKey))) {
             evt.preventDefault();
             evt.stopPropagation();
-            try { redoLassoPoint(); } catch {}
+            try { redoLassoPoint(); } catch { }
             return;
           }
         }
@@ -849,21 +1004,50 @@ const Editor2D = forwardRef<Editor2DHandle, Props>(function Editor2D(
           if (isCtrlOrMeta && evt.key.toLowerCase() === "z" && !evt.shiftKey) {
             evt.preventDefault();
             evt.stopPropagation();
-            try { undoSquareCropStep(); } catch {}
+            try { undoSquareCropStep(); } catch { }
             return;
           }
           if (isCtrlOrMeta && (evt.key.toLowerCase() === "y" || (evt.key.toLowerCase() === "z" && evt.shiftKey))) {
             evt.preventDefault();
             evt.stopPropagation();
-            try { redoSquareCropStep(); } catch {}
+            try { redoSquareCropStep(); } catch { }
             return;
           }
         }
       }
 
-      // Delete behavior:
-      // - If on select/text tools: delete current selection
-      // - If any other tool is active: cancel tool usage and return to select
+      // ── Cross-canvas Ctrl+C / Ctrl+V / Ctrl+D ──────────────────────────
+      const isCtrlOrMeta = evt.ctrlKey || evt.metaKey;
+
+      // Ctrl+C — copy active selection to global clipboard
+      if (isCtrlOrMeta && evt.key.toLowerCase() === "c") {
+        const activeObj = c.getActiveObject?.();
+        if (activeObj) {
+          evt.preventDefault();
+          try { copySelection(); } catch { }
+        }
+        return;
+      }
+
+      // Ctrl+V — paste from global clipboard into the active canvas
+      if (isCtrlOrMeta && evt.key.toLowerCase() === "v") {
+        evt.preventDefault();
+        try { pasteSelection(); } catch { }
+        return;
+      }
+
+      // Ctrl+D — duplicate active selection
+      if (isCtrlOrMeta && evt.key.toLowerCase() === "d") {
+        const activeObj = c.getActiveObject?.();
+        if (activeObj) {
+          evt.preventDefault();
+          try { duplicateSelection(); } catch { }
+        }
+        return;
+      }
+      // ────────────────────────────────────────────────────────────────────
+
+      // Delete behavior: if on select/text tools delete selection; else cancel tool and return to select.
       if (evt.key === "Delete" || evt.key === "Backspace") {
         const activeTool = toolRef.current;
 
@@ -875,16 +1059,16 @@ const Editor2D = forwardRef<Editor2DHandle, Props>(function Editor2D(
           (evt as any).stopImmediatePropagation?.();
           try {
             clearCurvePreview(c);
-          } catch {}
+          } catch { }
           try {
             resetCurveState(null);
-          } catch {}
+          } catch { }
           try {
             c.requestRenderAll?.();
-          } catch {}
+          } catch { }
           try {
             onRequestToolChangeRef.current?.("select");
-          } catch {}
+          } catch { }
           return;
         }
 
@@ -900,10 +1084,10 @@ const Editor2D = forwardRef<Editor2DHandle, Props>(function Editor2D(
           (evt as any).stopImmediatePropagation?.();
           try {
             onContinuousLineCancelRef.current?.();
-          } catch {}
+          } catch { }
           try {
             onRequestToolChangeRef.current?.("select");
-          } catch {}
+          } catch { }
           return;
         }
 
@@ -913,7 +1097,7 @@ const Editor2D = forwardRef<Editor2DHandle, Props>(function Editor2D(
         (evt as any).stopImmediatePropagation?.();
         try {
           deleteSelection();
-        } catch {}
+        } catch { }
         return;
       }
 
@@ -926,7 +1110,7 @@ const Editor2D = forwardRef<Editor2DHandle, Props>(function Editor2D(
         try {
           c.setActiveObject(last);
           c.requestRenderAll?.();
-        } catch {}
+        } catch { }
 
         // Also switch to selection tool, as requested.
         // Defer one tick to avoid any tool-switch side-effects racing with Fabric selection.
@@ -934,12 +1118,12 @@ const Editor2D = forwardRef<Editor2DHandle, Props>(function Editor2D(
           setTimeout(() => {
             try {
               onRequestToolChangeRef.current?.("select");
-            } catch {}
+            } catch { }
           }, 0);
         } catch {
           try {
             onRequestToolChangeRef.current?.("select");
-          } catch {}
+          } catch { }
         }
       }
     };
@@ -1014,26 +1198,26 @@ const Editor2D = forwardRef<Editor2DHandle, Props>(function Editor2D(
       try {
         s.img.set({ scaleX: normalized.img.scaleX, scaleY: normalized.img.scaleY });
         s.img.setCoords?.();
-      } catch {}
+      } catch { }
 
       // Mantém o comportamento do modo de corte: imagem centralizada
-      try { centerImageInCanvas(s.img); } catch {}
+      try { centerImageInCanvas(s.img); } catch { }
 
-      try { s.imageRect = getImageRect(s.img); } catch {}
+      try { s.imageRect = getImageRect(s.img); } catch { }
 
       try {
         s.cropBox.set({ left: normalized.cropBox.left, top: normalized.cropBox.top, width: normalized.cropBox.width, height: normalized.cropBox.height });
         s.cropBox.setCoords?.();
-      } catch {}
+      } catch { }
     });
 
     updateSquareCropPreview();
-    try { c.requestRenderAll?.(); } catch {}
+    try { c.requestRenderAll?.(); } catch { }
 
     // updateSquareCropPreview faz clamp e pode ajustar cropBox; grave o estado real final.
     try {
       s.lastRecorded = normalizeSquareCropSnapshot(getSquareCropSnapshot(s));
-    } catch {}
+    } catch { }
 
     squareCropRecordGuardRef.current = Math.max(0, squareCropRecordGuardRef.current - 1);
     return true;
@@ -1260,7 +1444,7 @@ const Editor2D = forwardRef<Editor2DHandle, Props>(function Editor2D(
     for (const cb of Array.from(colorCutModeListenersRef.current)) {
       try {
         cb(active);
-      } catch {}
+      } catch { }
     }
   };
 
@@ -1371,9 +1555,9 @@ const Editor2D = forwardRef<Editor2DHandle, Props>(function Editor2D(
       runSilently(() => {
         try {
           (s.pointMarkers ?? []).forEach((m) => {
-            try { c.remove(m); } catch {}
+            try { c.remove(m); } catch { }
           });
-        } catch {}
+        } catch { }
         s.pointMarkers = [];
 
         const markerStroke = withAlpha(GIZMO_THEME.stroke, 0.9);
@@ -1424,7 +1608,7 @@ const Editor2D = forwardRef<Editor2DHandle, Props>(function Editor2D(
             objectCaching: false,
             excludeFromExport: true,
           });
-          try { (m as any).__moldaLassoPointIndex = i; } catch {}
+          try { (m as any).__moldaLassoPointIndex = i; } catch { }
 
           m.on?.("mousedown", (ev: any) => {
             const ss = effectLassoRef.current;
@@ -1439,8 +1623,8 @@ const Editor2D = forwardRef<Editor2DHandle, Props>(function Editor2D(
               ss.dragPoint = undefined;
               ss.downPoint = undefined;
               ss.lastSample = undefined;
-              try { ev?.e?.preventDefault?.(); } catch {}
-              try { ev?.e?.stopPropagation?.(); } catch {}
+              try { ev?.e?.preventDefault?.(); } catch { }
+              try { ev?.e?.stopPropagation?.(); } catch { }
               updateEffectLassoGraphics();
               scheduleEffectLassoPreviewUpdate();
               return;
@@ -1448,16 +1632,16 @@ const Editor2D = forwardRef<Editor2DHandle, Props>(function Editor2D(
 
             // Só permite edição de pontos depois de fechado.
             if (!ss.closed) {
-              try { ev?.e?.preventDefault?.(); } catch {}
-              try { ev?.e?.stopPropagation?.(); } catch {}
+              try { ev?.e?.preventDefault?.(); } catch { }
+              try { ev?.e?.stopPropagation?.(); } catch { }
               return;
             }
 
             pushEffectLassoSnapshot();
             ss.isEditingPoint = true;
             ss.editingIndex = i;
-            try { ev?.e?.preventDefault?.(); } catch {}
-            try { ev?.e?.stopPropagation?.(); } catch {}
+            try { ev?.e?.preventDefault?.(); } catch { }
+            try { ev?.e?.stopPropagation?.(); } catch { }
           });
 
           m.on?.("moving", () => {
@@ -1468,8 +1652,8 @@ const Editor2D = forwardRef<Editor2DHandle, Props>(function Editor2D(
             ss.editingIndex = i;
             const pp = m.getCenterPoint?.() ?? { x: Number(m.left ?? 0), y: Number(m.top ?? 0) };
             const cl = clampPointToRect({ x: Number(pp.x ?? 0), y: Number(pp.y ?? 0) }, ss.imageRect);
-            try { m.set({ left: cl.x, top: cl.y }); } catch {}
-            try { m.setCoords?.(); } catch {}
+            try { m.set({ left: cl.x, top: cl.y }); } catch { }
+            try { m.setCoords?.(); } catch { }
             const cur = ss.points[i];
             if (cur) {
               const norm = canvasPointToLasso(ss, cl);
@@ -1489,7 +1673,7 @@ const Editor2D = forwardRef<Editor2DHandle, Props>(function Editor2D(
           });
 
           s.pointMarkers.push(m);
-          try { c.add(m); } catch {}
+          try { c.add(m); } catch { }
           lastShown = { x: pc.x, y: pc.y };
         }
       });
@@ -1497,7 +1681,7 @@ const Editor2D = forwardRef<Editor2DHandle, Props>(function Editor2D(
 
     // Overlay sempre escurece o canvas inteiro. Quando houver forma suficiente, cria “buraco”.
     runSilently(() => {
-      try { (s.overlay as any).clipPath = null; } catch {}
+      try { (s.overlay as any).clipPath = null; } catch { }
     });
 
     if (strokePts.length >= 2) {
@@ -1520,7 +1704,7 @@ const Editor2D = forwardRef<Editor2DHandle, Props>(function Editor2D(
         try {
           s.stroke.set({ left: minX, top: minY, points: norm });
           s.stroke.setCoords?.();
-        } catch {}
+        } catch { }
       });
 
       // Se já temos uma área fechável (>=3 pontos), aplica clip invertido no overlay
@@ -1551,9 +1735,9 @@ const Editor2D = forwardRef<Editor2DHandle, Props>(function Editor2D(
             absolutePositioned: true,
             excludeFromExport: true,
           });
-          try { (poly as any).inverted = true; } catch {}
+          try { (poly as any).inverted = true; } catch { }
           runSilently(() => {
-            try { (s.overlay as any).clipPath = poly; } catch {}
+            try { (s.overlay as any).clipPath = poly; } catch { }
           });
         }
       }
@@ -1562,13 +1746,13 @@ const Editor2D = forwardRef<Editor2DHandle, Props>(function Editor2D(
         try {
           s.stroke.set({ left: 0, top: 0, points: [] });
           s.stroke.setCoords?.();
-        } catch {}
+        } catch { }
       });
     }
 
-    try { s.stroke.bringToFront?.(); } catch {}
-    try { (s.pointMarkers ?? []).forEach((m) => m.bringToFront?.()); } catch {}
-    try { c.requestRenderAll?.(); } catch {}
+    try { s.stroke.bringToFront?.(); } catch { }
+    try { (s.pointMarkers ?? []).forEach((m) => m.bringToFront?.()); } catch { }
+    try { c.requestRenderAll?.(); } catch { }
   };
 
   const pushEffectLassoSnapshot = () => {
@@ -1681,7 +1865,7 @@ const Editor2D = forwardRef<Editor2DHandle, Props>(function Editor2D(
         s.img.setSrc(
           dataUrl,
           () => {
-            try { c.requestRenderAll?.(); } catch {}
+            try { c.requestRenderAll?.(); } catch { }
             resolve();
           },
           { crossOrigin: "anonymous" }
@@ -1689,8 +1873,8 @@ const Editor2D = forwardRef<Editor2DHandle, Props>(function Editor2D(
       });
 
       s.previewSrc = dataUrl;
-      try { delete (s.img as any).__moldaImageEffects; } catch {}
-    } catch {}
+      try { delete (s.img as any).__moldaImageEffects; } catch { }
+    } catch { }
   };
 
   const scheduleEffectLassoPreviewUpdate = () => {
@@ -1702,7 +1886,7 @@ const Editor2D = forwardRef<Editor2DHandle, Props>(function Editor2D(
     s.previewOpId = nextOpId;
 
     if (s.previewTimer != null) {
-      try { window.clearTimeout(s.previewTimer); } catch {}
+      try { window.clearTimeout(s.previewTimer); } catch { }
     }
 
     s.previewTimer = window.setTimeout(async () => {
@@ -1743,8 +1927,9 @@ const Editor2D = forwardRef<Editor2DHandle, Props>(function Editor2D(
 
       const finalSrc = s.previewSrc;
       if (finalSrc) {
-        try { (s.img as any).__moldaOriginalSrc = finalSrc; } catch {}
-        try { delete (s.img as any).__moldaImageEffects; } catch {}
+        try { (s.img as any).__moldaOriginalSrc = finalSrc; } catch { }
+        try { delete (s.img as any).__moldaImageEffects; } catch { }
+        try { (s.img as any).__moldaHasBakedModification = true; } catch { }
       }
 
       if (shouldRecordHistory() && finalSrc) {
@@ -1806,7 +1991,7 @@ const Editor2D = forwardRef<Editor2DHandle, Props>(function Editor2D(
             `sepia(${adj.sepia}%) grayscale(${adj.grayscale}%) hue-rotate(${adj.hue}deg)`;
           try {
             (ctx as any).filter = filterCss;
-          } catch {}
+          } catch { }
           ctx.drawImage(imgEl, 0, 0);
 
           const kind = fx.kind ?? "none";
@@ -1859,7 +2044,7 @@ const Editor2D = forwardRef<Editor2DHandle, Props>(function Editor2D(
         const p = new fabric.Point(c.getWidth() / 2, c.getHeight() / 2);
         img.setPositionByOrigin?.(p, "center", "center");
         img.setCoords?.();
-      } catch {}
+      } catch { }
     });
   };
 
@@ -1869,7 +2054,7 @@ const Editor2D = forwardRef<Editor2DHandle, Props>(function Editor2D(
     try {
       const r = img.getBoundingRect?.(true, true);
       if (r && typeof r.left === "number") return { left: r.left, top: r.top, width: r.width, height: r.height };
-    } catch {}
+    } catch { }
     const left = Number(img.left ?? 0);
     const top = Number(img.top ?? 0);
     const w = Number(img.width ?? 0) * Number(img.scaleX ?? 1);
@@ -1882,7 +2067,7 @@ const Editor2D = forwardRef<Editor2DHandle, Props>(function Editor2D(
     try {
       const p = obj.getCenterPoint?.();
       if (p && typeof p.x === "number" && typeof p.y === "number") return { x: p.x, y: p.y };
-    } catch {}
+    } catch { }
     const r = getImageRect(obj);
     return { x: r.left + r.width / 2, y: r.top + r.height / 2 };
   };
@@ -1907,7 +2092,7 @@ const Editor2D = forwardRef<Editor2DHandle, Props>(function Editor2D(
           hasBorders: false,
         });
         img.setCoords?.();
-      } catch {}
+      } catch { }
     });
     return prev;
   };
@@ -1925,7 +2110,7 @@ const Editor2D = forwardRef<Editor2DHandle, Props>(function Editor2D(
           hasBorders: prev?.hasBorders,
         });
         img.setCoords?.();
-      } catch {}
+      } catch { }
     });
   };
 
@@ -1938,7 +2123,7 @@ const Editor2D = forwardRef<Editor2DHandle, Props>(function Editor2D(
     try {
       const got = c.getObjects?.();
       if (Array.isArray(got)) objs = got;
-    } catch {}
+    } catch { }
 
     runSilently(() => {
       for (const obj of objs) {
@@ -1963,7 +2148,7 @@ const Editor2D = forwardRef<Editor2DHandle, Props>(function Editor2D(
             lockMovementY: true,
           });
           obj.setCoords?.();
-        } catch {}
+        } catch { }
       }
     });
 
@@ -1986,7 +2171,7 @@ const Editor2D = forwardRef<Editor2DHandle, Props>(function Editor2D(
             lockMovementY: item.lockMovementY,
           });
           obj.setCoords?.();
-        } catch {}
+        } catch { }
       }
     });
   };
@@ -2017,7 +2202,7 @@ const Editor2D = forwardRef<Editor2DHandle, Props>(function Editor2D(
         hoverCursor: "nwse-resize",
         excludeFromExport: true,
       });
-      try { (h as any).__moldaImageScaleCorner = corner; } catch {}
+      try { (h as any).__moldaImageScaleCorner = corner; } catch { }
       return h;
     };
     const l = rect.left;
@@ -2040,7 +2225,7 @@ const Editor2D = forwardRef<Editor2DHandle, Props>(function Editor2D(
       try {
         const arr = c.getObjects?.();
         if (Array.isArray(arr)) return arr.indexOf(original);
-      } catch {}
+      } catch { }
       return -1;
     })();
 
@@ -2052,15 +2237,15 @@ const Editor2D = forwardRef<Editor2DHandle, Props>(function Editor2D(
         if (idx >= 0 && typeof c.insertAt === "function") c.insertAt(next, idx, false);
         else c.add(next);
       } catch {
-        try { c.add(next); } catch {}
+        try { c.add(next); } catch { }
       }
-      try { c.remove(original); } catch {}
+      try { c.remove(original); } catch { }
     });
 
     // força gizmo novo
-    try { c.discardActiveObject?.(); } catch {}
-    try { c.setActiveObject?.(next); } catch {}
-    try { c.requestRenderAll?.(); } catch {}
+    try { c.discardActiveObject?.(); } catch { }
+    try { c.setActiveObject?.(next); } catch { }
+    try { c.requestRenderAll?.(); } catch { }
     return next;
   };
 
@@ -2095,24 +2280,40 @@ const Editor2D = forwardRef<Editor2DHandle, Props>(function Editor2D(
       try { to.set?.(props); } catch {
         try {
           Object.keys(props).forEach((k) => {
-            try { to[k] = props[k]; } catch {}
+            try { to[k] = props[k]; } catch { }
           });
-        } catch {}
+        } catch { }
       }
-      try { to.setCoords?.(); } catch {}
+      try { to.setCoords?.(); } catch { }
     });
 
     try {
       const src = (from as any).__moldaOriginalSrc;
       if (src) (to as any).__moldaOriginalSrc = src;
-    } catch {}
+    } catch { }
+
+    try {
+      if ((from as any).__moldaHasBakedModification) (to as any).__moldaHasBakedModification = true;
+    } catch { }
+
+    try {
+      const galleryItemId = (from as any).__moldaGalleryItemId;
+      if (galleryItemId) (to as any).__moldaGalleryItemId = galleryItemId;
+      const galleryGroupId = (from as any).__moldaGalleryGroupId;
+      if (galleryGroupId) (to as any).__moldaGalleryGroupId = galleryGroupId;
+      const galleryOriginalName = (from as any).__moldaGalleryOriginalName;
+      if (galleryOriginalName) (to as any).__moldaGalleryOriginalName = galleryOriginalName;
+      if ((from as any).__moldaGalleryIsVariant != null) {
+        (to as any).__moldaGalleryIsVariant = !!(from as any).__moldaGalleryIsVariant;
+      }
+    } catch { }
 
     try {
       if (Array.isArray(from.filters)) {
         (to as any).filters = from.filters;
-        try { (to as any).applyFilters?.(); } catch {}
+        try { (to as any).applyFilters?.(); } catch { }
       }
-    } catch {}
+    } catch { }
   };
 
   const cleanupLassoCropPreview = (opts?: { restoreImage?: boolean }) => {
@@ -2125,35 +2326,35 @@ const Editor2D = forwardRef<Editor2DHandle, Props>(function Editor2D(
       if (s.onMouseDown) c.off?.("mouse:down", s.onMouseDown);
       if (s.onMouseMove) c.off?.("mouse:move", s.onMouseMove);
       if (s.onMouseUp) c.off?.("mouse:up", s.onMouseUp);
-    } catch {}
+    } catch { }
 
     runSilently(() => {
-      try { c.remove(s.imgHandles?.tl); } catch {}
-      try { c.remove(s.imgHandles?.tr); } catch {}
-      try { c.remove(s.imgHandles?.bl); } catch {}
-      try { c.remove(s.imgHandles?.br); } catch {}
+      try { c.remove(s.imgHandles?.tl); } catch { }
+      try { c.remove(s.imgHandles?.tr); } catch { }
+      try { c.remove(s.imgHandles?.bl); } catch { }
+      try { c.remove(s.imgHandles?.br); } catch { }
       try {
         (s.pointMarkers ?? []).forEach((m) => {
-          try { c.remove(m); } catch {}
+          try { c.remove(m); } catch { }
         });
-      } catch {}
-      try { c.remove(s.stroke); } catch {}
-      try { c.remove(s.overlay); } catch {}
-      try { c.remove(s.highlight); } catch {}
+      } catch { }
+      try { c.remove(s.stroke); } catch { }
+      try { c.remove(s.overlay); } catch { }
+      try { c.remove(s.highlight); } catch { }
 
       try {
         const prev = (s as any).canvasPrev;
         if (prev && typeof prev.selection === "boolean") c.selection = prev.selection;
         if (prev && typeof prev.defaultCursor === "string") c.defaultCursor = prev.defaultCursor;
-      } catch {}
+      } catch { }
 
       try {
         restoreOtherCanvasObjectsAfterCrop(s.othersPrev);
-      } catch {}
+      } catch { }
 
       try {
         restoreImageAfterCrop(s.img, (s as any).imgPrev);
-      } catch {}
+      } catch { }
 
       if (opts?.restoreImage !== false) {
         try {
@@ -2161,13 +2362,13 @@ const Editor2D = forwardRef<Editor2DHandle, Props>(function Editor2D(
           s.img.setPositionByOrigin?.(p, "center", "center");
           s.img.set({ angle: s.imgOriginalAngle });
           s.img.setCoords?.();
-        } catch {}
+        } catch { }
       }
     });
 
     lassoCropRef.current = null;
     emitCropMode(false);
-    try { c.requestRenderAll?.(); } catch {}
+    try { c.requestRenderAll?.(); } catch { }
   };
 
   // ========== Effect Brush Mode ==========
@@ -2198,17 +2399,17 @@ const Editor2D = forwardRef<Editor2DHandle, Props>(function Editor2D(
 
     try {
       if (s.onWindowMouseUp) window.removeEventListener("mouseup", s.onWindowMouseUp);
-    } catch {}
+    } catch { }
 
     try {
       if (s.previewTimer != null) window.clearTimeout(s.previewTimer);
-    } catch {}
+    } catch { }
 
     try {
       if ((s as any).onMouseDown) c.off?.("mouse:down", (s as any).onMouseDown);
       if ((s as any).onMouseMove) c.off?.("mouse:move", (s as any).onMouseMove);
       if ((s as any).onMouseUp) c.off?.("mouse:up", (s as any).onMouseUp);
-    } catch {}
+    } catch { }
 
     runSilently(() => {
       // Persistência do resultado final do pincel: salva como nova origem só quando solicitado.
@@ -2217,9 +2418,10 @@ const Editor2D = forwardRef<Editor2DHandle, Props>(function Editor2D(
         try {
           if (s.lastBakedSrc) {
             (s.img as any).__moldaOriginalSrc = s.lastBakedSrc;
-            try { delete (s.img as any).__moldaImageEffects; } catch {}
+            try { delete (s.img as any).__moldaImageEffects; } catch { }
+            try { (s.img as any).__moldaHasBakedModification = true; } catch { }
           }
-        } catch {}
+        } catch { }
       } else {
         const revertSrc = s.prevVisibleSrc || s.baseSrc;
         if (revertSrc) {
@@ -2227,34 +2429,34 @@ const Editor2D = forwardRef<Editor2DHandle, Props>(function Editor2D(
             s.img.setSrc(
               revertSrc,
               () => {
-                try { c.requestRenderAll?.(); } catch {}
+                try { c.requestRenderAll?.(); } catch { }
               },
               { crossOrigin: "anonymous" }
             );
-          } catch {}
+          } catch { }
         }
       }
 
-      try { c.remove(s.imgHandles?.tl); } catch {}
-      try { c.remove(s.imgHandles?.tr); } catch {}
-      try { c.remove(s.imgHandles?.bl); } catch {}
-      try { c.remove(s.imgHandles?.br); } catch {}
-      try { c.remove(s.overlay); } catch {}
-      try { c.remove(s.highlight); } catch {}
+      try { c.remove(s.imgHandles?.tl); } catch { }
+      try { c.remove(s.imgHandles?.tr); } catch { }
+      try { c.remove(s.imgHandles?.bl); } catch { }
+      try { c.remove(s.imgHandles?.br); } catch { }
+      try { c.remove(s.overlay); } catch { }
+      try { c.remove(s.highlight); } catch { }
 
       try {
         const prev = s.canvasPrev;
         if (prev && typeof prev.selection === "boolean") c.selection = prev.selection;
         if (prev && typeof prev.defaultCursor === "string") c.defaultCursor = prev.defaultCursor;
-      } catch {}
+      } catch { }
 
       try {
         restoreOtherCanvasObjectsAfterCrop(s.othersPrev);
-      } catch {}
+      } catch { }
 
       try {
         restoreImageAfterCrop(s.img, s.imgPrev);
-      } catch {}
+      } catch { }
 
       if (opts?.restoreImage !== false) {
         try {
@@ -2262,7 +2464,7 @@ const Editor2D = forwardRef<Editor2DHandle, Props>(function Editor2D(
           s.img.setPositionByOrigin?.(p, "center", "center");
           s.img.set({ angle: s.imgOriginalAngle });
           s.img.setCoords?.();
-        } catch {}
+        } catch { }
       }
     });
 
@@ -2270,8 +2472,8 @@ const Editor2D = forwardRef<Editor2DHandle, Props>(function Editor2D(
     effectBrushRef.current = null;
     try {
       emitEffectEditMode(lassoActive);
-    } catch {}
-    try { c.requestRenderAll?.(); } catch {}
+    } catch { }
+    try { c.requestRenderAll?.(); } catch { }
   };
 
   const cleanupEffectLasso = (opts?: { restoreImage?: boolean }) => {
@@ -2284,35 +2486,35 @@ const Editor2D = forwardRef<Editor2DHandle, Props>(function Editor2D(
       if (s.onMouseDown) c.off?.("mouse:down", s.onMouseDown);
       if (s.onMouseMove) c.off?.("mouse:move", s.onMouseMove);
       if (s.onMouseUp) c.off?.("mouse:up", s.onMouseUp);
-    } catch {}
+    } catch { }
 
     runSilently(() => {
-      try { c.remove(s.imgHandles?.tl); } catch {}
-      try { c.remove(s.imgHandles?.tr); } catch {}
-      try { c.remove(s.imgHandles?.bl); } catch {}
-      try { c.remove(s.imgHandles?.br); } catch {}
+      try { c.remove(s.imgHandles?.tl); } catch { }
+      try { c.remove(s.imgHandles?.tr); } catch { }
+      try { c.remove(s.imgHandles?.bl); } catch { }
+      try { c.remove(s.imgHandles?.br); } catch { }
       try {
         (s.pointMarkers ?? []).forEach((m) => {
-          try { c.remove(m); } catch {}
+          try { c.remove(m); } catch { }
         });
-      } catch {}
-      try { c.remove(s.stroke); } catch {}
-      try { c.remove(s.overlay); } catch {}
-      try { c.remove(s.highlight); } catch {}
+      } catch { }
+      try { c.remove(s.stroke); } catch { }
+      try { c.remove(s.overlay); } catch { }
+      try { c.remove(s.highlight); } catch { }
 
       try {
         const prev = s.canvasPrev;
         if (prev && typeof prev.selection === "boolean") c.selection = prev.selection;
         if (prev && typeof prev.defaultCursor === "string") c.defaultCursor = prev.defaultCursor;
-      } catch {}
+      } catch { }
 
       try {
         restoreOtherCanvasObjectsAfterCrop(s.othersPrev);
-      } catch {}
+      } catch { }
 
       try {
         restoreImageAfterCrop(s.img, s.imgPrev);
-      } catch {}
+      } catch { }
 
       if (opts?.restoreImage !== false) {
         try {
@@ -2320,7 +2522,7 @@ const Editor2D = forwardRef<Editor2DHandle, Props>(function Editor2D(
           s.img.setPositionByOrigin?.(p, "center", "center");
           s.img.set({ angle: s.imgOriginalAngle });
           s.img.setCoords?.();
-        } catch {}
+        } catch { }
       }
     });
 
@@ -2328,8 +2530,8 @@ const Editor2D = forwardRef<Editor2DHandle, Props>(function Editor2D(
     effectLassoRef.current = null;
     try {
       emitEffectEditMode(brushActive);
-    } catch {}
-    try { c.requestRenderAll?.(); } catch {}
+    } catch { }
+    try { c.requestRenderAll?.(); } catch { }
   };
 
   const startEffectBrush = (effectKind: ImageEffectKind, effectAmount: number, brushSize: number) => {
@@ -2352,7 +2554,7 @@ const Editor2D = forwardRef<Editor2DHandle, Props>(function Editor2D(
       try {
         const s: any = effectBrushRef.current;
         if (s?.baseSrc) return String(s.baseSrc);
-      } catch {}
+      } catch { }
       return (
         (img as any).__moldaOriginalSrc ||
         (typeof img?.getSrc === "function" ? img.getSrc() : undefined) ||
@@ -2367,7 +2569,7 @@ const Editor2D = forwardRef<Editor2DHandle, Props>(function Editor2D(
     const visibleSrc = (() => {
       try {
         if (typeof img?.getSrc === "function") return img.getSrc();
-      } catch {}
+      } catch { }
       return img?._element?.src || img?._originalElement?.src || originalSrc;
     })();
 
@@ -2380,7 +2582,7 @@ const Editor2D = forwardRef<Editor2DHandle, Props>(function Editor2D(
       try {
         const p = img.getCenterPoint?.();
         if (p && typeof p.x === "number" && typeof p.y === "number") return { x: p.x, y: p.y };
-      } catch {}
+      } catch { }
       return { x: (c.getWidth?.() ?? 0) / 2, y: (c.getHeight?.() ?? 0) / 2 };
     })();
     const originalAngle = Number(img.angle ?? 0);
@@ -2390,11 +2592,11 @@ const Editor2D = forwardRef<Editor2DHandle, Props>(function Editor2D(
 
     // Evita o retângulo de seleção do Fabric enquanto pinta.
     const canvasPrev = { selection: !!c.selection, defaultCursor: String(c.defaultCursor ?? "") };
-    try { c.selection = false; } catch {}
+    try { c.selection = false; } catch { }
     try {
       c.defaultCursor = buildCircularCursor(brushSize);
     } catch {
-      try { c.defaultCursor = "crosshair"; } catch {}
+      try { c.defaultCursor = "crosshair"; } catch { }
     }
 
     // Centraliza temporariamente a imagem no canvas.
@@ -2403,14 +2605,14 @@ const Editor2D = forwardRef<Editor2DHandle, Props>(function Editor2D(
         const p = new fabric.Point(c.getWidth() / 2, c.getHeight() / 2);
         img.setPositionByOrigin?.(p, "center", "center");
         img.setCoords?.();
-      } catch {}
+      } catch { }
     });
 
     const imageRect = (() => {
       try {
         const r = img.getBoundingRect?.(true, true);
         if (r && typeof r.left === "number") return { left: r.left, top: r.top, width: r.width, height: r.height };
-      } catch {}
+      } catch { }
       const left = Number(img.left ?? 0);
       const top = Number(img.top ?? 0);
       const w = Number(img.width ?? 0) * Number(img.scaleX ?? 1);
@@ -2447,16 +2649,16 @@ const Editor2D = forwardRef<Editor2DHandle, Props>(function Editor2D(
     });
 
     runSilently(() => {
-      try { c.add(overlay); } catch {}
-      try { c.add(highlight); } catch {}
-      try { c.add(imgHandles.tl, imgHandles.tr, imgHandles.bl, imgHandles.br); } catch {}
+      try { c.add(overlay); } catch { }
+      try { c.add(highlight); } catch { }
+      try { c.add(imgHandles.tl, imgHandles.tr, imgHandles.bl, imgHandles.br); } catch { }
       try {
         highlight.bringToFront?.();
         imgHandles.tl.bringToFront?.();
         imgHandles.tr.bringToFront?.();
         imgHandles.bl.bringToFront?.();
         imgHandles.br.bringToFront?.();
-      } catch {}
+      } catch { }
     });
 
     const session: EffectBrushSession = {
@@ -2485,11 +2687,11 @@ const Editor2D = forwardRef<Editor2DHandle, Props>(function Editor2D(
     try {
       const exclude = new Set<any>([img, overlay, highlight, imgHandles.tl, imgHandles.tr, imgHandles.bl, imgHandles.br]);
       session.othersPrev = freezeOtherCanvasObjectsForCrop(exclude);
-    } catch {}
+    } catch { }
 
     effectBrushRef.current = session;
 
-    try { emitEffectEditMode(true); } catch {}
+    try { emitEffectEditMode(true); } catch { }
 
     // mask canvas (image pixel space)
     try {
@@ -2504,7 +2706,7 @@ const Editor2D = forwardRef<Editor2DHandle, Props>(function Editor2D(
         (session as any).maskCanvas = mc;
         (session as any).maskCtx = mctx;
       }
-    } catch {}
+    } catch { }
 
     const preparePreviewOnce = async () => {
       const s = effectBrushRef.current;
@@ -2545,7 +2747,7 @@ const Editor2D = forwardRef<Editor2DHandle, Props>(function Editor2D(
               s2.maskCtx = nextCtx;
             }
           }
-        } catch {}
+        } catch { }
 
         const canvas = document.createElement("canvas");
         canvas.width = w;
@@ -2558,7 +2760,7 @@ const Editor2D = forwardRef<Editor2DHandle, Props>(function Editor2D(
           `sepia(${adjLocal.sepia}%) grayscale(${adjLocal.grayscale}%) hue-rotate(${adjLocal.hue}deg)`;
         try {
           (ctx as any).filter = filterCss;
-        } catch {}
+        } catch { }
         ctx.drawImage(loaded, 0, 0);
 
         // Base pixels (ajustes aplicados)
@@ -2673,7 +2875,7 @@ const Editor2D = forwardRef<Editor2DHandle, Props>(function Editor2D(
             cur.img.setSrc(
               dataUrl,
               () => {
-                try { c.requestRenderAll?.(); } catch {}
+                try { c.requestRenderAll?.(); } catch { }
                 resolve();
               },
               { crossOrigin: "anonymous" }
@@ -2711,7 +2913,7 @@ const Editor2D = forwardRef<Editor2DHandle, Props>(function Editor2D(
         try {
           s.highlight.set({ left: s.imageRect.left, top: s.imageRect.top, width: s.imageRect.width, height: s.imageRect.height });
           s.highlight.setCoords?.();
-        } catch {}
+        } catch { }
         try {
           const l = s.imageRect.left;
           const t = s.imageRect.top;
@@ -2725,9 +2927,9 @@ const Editor2D = forwardRef<Editor2DHandle, Props>(function Editor2D(
           s.imgHandles.tr.setCoords?.();
           s.imgHandles.bl.setCoords?.();
           s.imgHandles.br.setCoords?.();
-        } catch {}
+        } catch { }
       });
-      try { c.requestRenderAll?.(); } catch {}
+      try { c.requestRenderAll?.(); } catch { }
     };
 
     const onImgHandleMoving = (h: any) => {
@@ -2749,7 +2951,7 @@ const Editor2D = forwardRef<Editor2DHandle, Props>(function Editor2D(
           s.img.set({ scaleX: nextScale, scaleY: nextScale });
           centerImageInCanvas(s.img);
           s.img.setCoords?.();
-        } catch {}
+        } catch { }
       });
       refreshFromImage();
     };
@@ -2763,7 +2965,7 @@ const Editor2D = forwardRef<Editor2DHandle, Props>(function Editor2D(
       try {
         const p = c.getPointer?.(opt.e);
         if (p && typeof p.x === "number" && typeof p.y === "number") return { x: p.x, y: p.y };
-      } catch {}
+      } catch { }
       return { x: 0, y: 0 };
     };
 
@@ -2780,7 +2982,7 @@ const Editor2D = forwardRef<Editor2DHandle, Props>(function Editor2D(
           // Fabric's object plane is centered at (0,0). Convert to top-left pixel space.
           return { x: Number(local.x ?? 0) + w / 2, y: Number(local.y ?? 0) + h / 2 };
         }
-      } catch {}
+      } catch { }
 
       // Fallback: normalize within bounding rect (works best when not rotated)
       const r = getImageRect(img);
@@ -2995,7 +3197,7 @@ const Editor2D = forwardRef<Editor2DHandle, Props>(function Editor2D(
               cur.img.setSrc(
                 dataUrl,
                 () => {
-                  try { c.requestRenderAll?.(); } catch {}
+                  try { c.requestRenderAll?.(); } catch { }
                   resolve();
                 },
                 { crossOrigin: "anonymous" }
@@ -3010,7 +3212,7 @@ const Editor2D = forwardRef<Editor2DHandle, Props>(function Editor2D(
               // limpa a máscara para que o próximo stroke não re-aplique áreas antigas
               try {
                 cur.maskCtx?.clearRect(0, 0, cur.maskCanvas?.width ?? 0, cur.maskCanvas?.height ?? 0);
-              } catch {}
+              } catch { }
               resetEffectBrushPreviewCache(cur);
             }
           } catch {
@@ -3020,7 +3222,7 @@ const Editor2D = forwardRef<Editor2DHandle, Props>(function Editor2D(
         } else {
           schedulePreviewUpdate();
         }
-      } catch {}
+      } catch { }
 
       if (shouldRecordHistory()) {
         historyRef.current?.push("image-effect-brush");
@@ -3033,17 +3235,17 @@ const Editor2D = forwardRef<Editor2DHandle, Props>(function Editor2D(
       if (!s?.active) return;
       const t = (opt as any)?.target;
       if (t && (t as any).__moldaImageScaleCorner != null) return;
-      try { opt?.e?.preventDefault?.(); } catch {}
-      try { opt?.e?.stopPropagation?.(); } catch {}
+      try { opt?.e?.preventDefault?.(); } catch { }
+      try { opt?.e?.stopPropagation?.(); } catch { }
       s.isPointerDown = true;
       const p = getPointer(opt);
       s.lastPoint = p;
       const deformBrush = shouldAccumulateEffectBrush(s.effectKind);
       if (!deformBrush) drawBrush(p);
       // começa a preparar o preview o quanto antes
-      try { void preparePreviewOnce(); } catch {}
+      try { void preparePreviewOnce(); } catch { }
       schedulePreviewUpdate();
-      try { c.requestRenderAll?.(); } catch {}
+      try { c.requestRenderAll?.(); } catch { }
     };
 
     (session as any).onMouseMove = (opt: any) => {
@@ -3051,14 +3253,14 @@ const Editor2D = forwardRef<Editor2DHandle, Props>(function Editor2D(
       if (!s?.active || !s.isPointerDown) return;
       const t = (opt as any)?.target;
       if (t && (t as any).__moldaImageScaleCorner != null) return;
-      try { opt?.e?.preventDefault?.(); } catch {}
-      try { opt?.e?.stopPropagation?.(); } catch {}
+      try { opt?.e?.preventDefault?.(); } catch { }
+      try { opt?.e?.stopPropagation?.(); } catch { }
       const p = getPointer(opt);
       const last = s.lastPoint;
       const deformBrush = shouldAccumulateEffectBrush(s.effectKind);
       if (deformBrush) {
         if (!s.previewPrepared) {
-          try { void preparePreviewOnce(); } catch {}
+          try { void preparePreviewOnce(); } catch { }
         } else if (last) {
           applyLocalDeformSegment(last, p);
         }
@@ -3074,8 +3276,8 @@ const Editor2D = forwardRef<Editor2DHandle, Props>(function Editor2D(
       if (!s?.active) return;
       const t = (opt as any)?.target;
       if (t && (t as any).__moldaImageScaleCorner != null) return;
-      try { opt?.e?.preventDefault?.(); } catch {}
-      try { opt?.e?.stopPropagation?.(); } catch {}
+      try { opt?.e?.preventDefault?.(); } catch { }
+      try { opt?.e?.stopPropagation?.(); } catch { }
       if (!s.isPointerDown) return;
       s.isPointerDown = false;
       s.lastPoint = undefined;
@@ -3086,7 +3288,7 @@ const Editor2D = forwardRef<Editor2DHandle, Props>(function Editor2D(
       c.on?.("mouse:down", (session as any).onMouseDown);
       c.on?.("mouse:move", (session as any).onMouseMove);
       c.on?.("mouse:up", (session as any).onMouseUp);
-    } catch {}
+    } catch { }
 
     // Garante commit mesmo se soltar o mouse fora do canvas.
     try {
@@ -3099,9 +3301,9 @@ const Editor2D = forwardRef<Editor2DHandle, Props>(function Editor2D(
       };
       session.onWindowMouseUp = onWindowMouseUp;
       window.addEventListener("mouseup", onWindowMouseUp);
-    } catch {}
+    } catch { }
 
-    try { c.requestRenderAll?.(); } catch {}
+    try { c.requestRenderAll?.(); } catch { }
   };
 
   const cancelEffectBrush = () => {
@@ -3139,22 +3341,22 @@ const Editor2D = forwardRef<Editor2DHandle, Props>(function Editor2D(
       try {
         const p = img.getCenterPoint?.();
         if (p && typeof p.x === "number" && typeof p.y === "number") return { x: p.x, y: p.y };
-      } catch {}
+      } catch { }
       return { x: (c.getWidth?.() ?? 0) / 2, y: (c.getHeight?.() ?? 0) / 2 };
     })();
     const originalAngle = Number(img.angle ?? 0);
 
     const imgPrev = freezeImageForCrop(img);
     const canvasPrev = { selection: !!c.selection, defaultCursor: String(c.defaultCursor ?? "") };
-    try { c.selection = false; } catch {}
-    try { c.defaultCursor = "crosshair"; } catch {}
+    try { c.selection = false; } catch { }
+    try { c.defaultCursor = "crosshair"; } catch { }
 
     runSilently(() => {
       try {
         const p = new fabric.Point(c.getWidth() / 2, c.getHeight() / 2);
         img.setPositionByOrigin?.(p, "center", "center");
         img.setCoords?.();
-      } catch {}
+      } catch { }
     });
 
     const imageRect = getImageRect(img);
@@ -3201,10 +3403,10 @@ const Editor2D = forwardRef<Editor2DHandle, Props>(function Editor2D(
     });
 
     runSilently(() => {
-      try { c.add(overlay); } catch {}
-      try { c.add(highlight); } catch {}
-      try { c.add(imgHandles.tl, imgHandles.tr, imgHandles.bl, imgHandles.br); } catch {}
-      try { c.add(stroke); } catch {}
+      try { c.add(overlay); } catch { }
+      try { c.add(highlight); } catch { }
+      try { c.add(imgHandles.tl, imgHandles.tr, imgHandles.bl, imgHandles.br); } catch { }
+      try { c.add(stroke); } catch { }
       try {
         highlight.bringToFront?.();
         imgHandles.tl.bringToFront?.();
@@ -3212,7 +3414,7 @@ const Editor2D = forwardRef<Editor2DHandle, Props>(function Editor2D(
         imgHandles.bl.bringToFront?.();
         imgHandles.br.bringToFront?.();
         stroke.bringToFront?.();
-      } catch {}
+      } catch { }
     });
 
     const baseSrc: string | undefined =
@@ -3255,17 +3457,17 @@ const Editor2D = forwardRef<Editor2DHandle, Props>(function Editor2D(
     try {
       const exclude = new Set<any>([img, overlay, highlight, stroke, imgHandles.tl, imgHandles.tr, imgHandles.bl, imgHandles.br]);
       session.othersPrev = freezeOtherCanvasObjectsForCrop(exclude);
-    } catch {}
+    } catch { }
 
     effectLassoRef.current = session;
 
-    try { emitEffectEditMode(true); } catch {}
+    try { emitEffectEditMode(true); } catch { }
 
     const getPointer = (opt: any) => {
       try {
         const p = c.getPointer?.(opt.e);
         if (p && typeof p.x === "number" && typeof p.y === "number") return { x: p.x, y: p.y };
-      } catch {}
+      } catch { }
       return { x: 0, y: 0 };
     };
 
@@ -3321,16 +3523,16 @@ const Editor2D = forwardRef<Editor2DHandle, Props>(function Editor2D(
           s.img.setSrc(
             dataUrl,
             () => {
-              try { c.requestRenderAll?.(); } catch {}
+              try { c.requestRenderAll?.(); } catch { }
               resolve();
             },
             { crossOrigin: "anonymous" }
           );
         });
 
-        try { (s.img as any).__moldaOriginalSrc = dataUrl; } catch {}
-        try { delete (s.img as any).__moldaImageEffects; } catch {}
-      } catch {}
+        try { (s.img as any).__moldaOriginalSrc = dataUrl; } catch { }
+        try { delete (s.img as any).__moldaImageEffects; } catch { }
+      } catch { }
 
       if (shouldRecordHistory()) {
         historyRef.current?.push("image-effect-lasso");
@@ -3348,7 +3550,7 @@ const Editor2D = forwardRef<Editor2DHandle, Props>(function Editor2D(
         try {
           s.highlight.set({ left: s.imageRect.left, top: s.imageRect.top, width: s.imageRect.width, height: s.imageRect.height });
           s.highlight.setCoords?.();
-        } catch {}
+        } catch { }
         try {
           const l = s.imageRect.left;
           const t = s.imageRect.top;
@@ -3362,7 +3564,7 @@ const Editor2D = forwardRef<Editor2DHandle, Props>(function Editor2D(
           s.imgHandles.tr.setCoords?.();
           s.imgHandles.bl.setCoords?.();
           s.imgHandles.br.setCoords?.();
-        } catch {}
+        } catch { }
       });
       updateEffectLassoGraphics();
     };
@@ -3386,7 +3588,7 @@ const Editor2D = forwardRef<Editor2DHandle, Props>(function Editor2D(
           s.img.set({ scaleX: nextScale, scaleY: nextScale });
           centerImageInCanvas(s.img);
           s.img.setCoords?.();
-        } catch {}
+        } catch { }
       });
       refreshFromImage();
     };
@@ -3408,8 +3610,8 @@ const Editor2D = forwardRef<Editor2DHandle, Props>(function Editor2D(
       if ((opt as any)?.target && (opt as any).target.__moldaLassoPointIndex != null) return;
       if (s.isEditingPoint) return;
       if (s.closed) return;
-      try { opt?.e?.preventDefault?.(); } catch {}
-      try { opt?.e?.stopPropagation?.(); } catch {}
+      try { opt?.e?.preventDefault?.(); } catch { }
+      try { opt?.e?.stopPropagation?.(); } catch { }
       s.isPointerDown = true;
       s.isDragging = false;
       const p0c = clampPointToRect(getPointer(opt), s.imageRect);
@@ -3427,8 +3629,8 @@ const Editor2D = forwardRef<Editor2DHandle, Props>(function Editor2D(
       if (s.isEditingPoint) return;
       if (!s.isPointerDown) return;
       if (s.closed) return;
-      try { opt?.e?.preventDefault?.(); } catch {}
-      try { opt?.e?.stopPropagation?.(); } catch {}
+      try { opt?.e?.preventDefault?.(); } catch { }
+      try { opt?.e?.stopPropagation?.(); } catch { }
       const pc = clampPointToRect(getPointer(opt), s.imageRect);
       const p = canvasPointToLasso(s, pc);
       const down = s.downPoint;
@@ -3488,8 +3690,8 @@ const Editor2D = forwardRef<Editor2DHandle, Props>(function Editor2D(
       if (!s?.active) return;
       if (isImageScaleHandleTarget(opt)) return;
       if ((opt as any)?.target && (opt as any).target.__moldaLassoPointIndex != null) return;
-      try { opt?.e?.preventDefault?.(); } catch {}
-      try { opt?.e?.stopPropagation?.(); } catch {}
+      try { opt?.e?.preventDefault?.(); } catch { }
+      try { opt?.e?.stopPropagation?.(); } catch { }
       const pc = clampPointToRect(getPointer(opt), s.imageRect);
       const p = canvasPointToLasso(s, pc);
       const down = s.downPoint;
@@ -3561,9 +3763,9 @@ const Editor2D = forwardRef<Editor2DHandle, Props>(function Editor2D(
       c.on?.("mouse:down", session.onMouseDown);
       c.on?.("mouse:move", session.onMouseMove);
       c.on?.("mouse:up", session.onMouseUp);
-    } catch {}
+    } catch { }
 
-    try { c.requestRenderAll?.(); } catch {}
+    try { c.requestRenderAll?.(); } catch { }
   };
 
   const cancelEffectLasso = () => {
@@ -3576,13 +3778,13 @@ const Editor2D = forwardRef<Editor2DHandle, Props>(function Editor2D(
             s.img.setSrc(
               s.baseSrc!,
               () => {
-                try { c.requestRenderAll?.(); } catch {}
+                try { c.requestRenderAll?.(); } catch { }
                 resolve();
               },
               { crossOrigin: "anonymous" }
             );
           });
-        } catch {}
+        } catch { }
       }
       cleanupEffectLasso({ restoreImage: true });
     })();
@@ -3640,9 +3842,9 @@ const Editor2D = forwardRef<Editor2DHandle, Props>(function Editor2D(
       runSilently(() => {
         try {
           (s.pointMarkers ?? []).forEach((m) => {
-            try { c.remove(m); } catch {}
+            try { c.remove(m); } catch { }
           });
-        } catch {}
+        } catch { }
         s.pointMarkers = [];
 
         const markerStroke = withAlpha(GIZMO_THEME.stroke, 0.9);
@@ -3693,7 +3895,7 @@ const Editor2D = forwardRef<Editor2DHandle, Props>(function Editor2D(
             objectCaching: false,
             excludeFromExport: true,
           });
-          try { (m as any).__moldaLassoPointIndex = i; } catch {}
+          try { (m as any).__moldaLassoPointIndex = i; } catch { }
 
           m.on?.("mousedown", (ev: any) => {
             const ss = lassoCropRef.current;
@@ -3709,16 +3911,16 @@ const Editor2D = forwardRef<Editor2DHandle, Props>(function Editor2D(
               ss.dragPoint = undefined;
               ss.downPoint = undefined;
               ss.lastSample = undefined;
-              try { ev?.e?.preventDefault?.(); } catch {}
-              try { ev?.e?.stopPropagation?.(); } catch {}
+              try { ev?.e?.preventDefault?.(); } catch { }
+              try { ev?.e?.stopPropagation?.(); } catch { }
               updateLassoGraphics();
               return;
             }
 
             // Só permite edição de pontos depois de fechado.
             if (!ss.closed) {
-              try { ev?.e?.preventDefault?.(); } catch {}
-              try { ev?.e?.stopPropagation?.(); } catch {}
+              try { ev?.e?.preventDefault?.(); } catch { }
+              try { ev?.e?.stopPropagation?.(); } catch { }
               return;
             }
 
@@ -3726,8 +3928,8 @@ const Editor2D = forwardRef<Editor2DHandle, Props>(function Editor2D(
             pushLassoSnapshot();
             ss.isEditingPoint = true;
             ss.editingIndex = i;
-            try { ev?.e?.preventDefault?.(); } catch {}
-            try { ev?.e?.stopPropagation?.(); } catch {}
+            try { ev?.e?.preventDefault?.(); } catch { }
+            try { ev?.e?.stopPropagation?.(); } catch { }
           });
 
           m.on?.("moving", () => {
@@ -3737,8 +3939,8 @@ const Editor2D = forwardRef<Editor2DHandle, Props>(function Editor2D(
             ss.editingIndex = i;
             const pp = m.getCenterPoint?.() ?? { x: Number(m.left ?? 0), y: Number(m.top ?? 0) };
             const cl = clampPointToRect({ x: Number(pp.x ?? 0), y: Number(pp.y ?? 0) }, ss.imageRect);
-            try { m.set({ left: cl.x, top: cl.y }); } catch {}
-            try { m.setCoords?.(); } catch {}
+            try { m.set({ left: cl.x, top: cl.y }); } catch { }
+            try { m.setCoords?.(); } catch { }
             const cur = ss.points[i];
             if (cur) {
               const norm = canvasPointToLasso(ss, cl);
@@ -3756,7 +3958,7 @@ const Editor2D = forwardRef<Editor2DHandle, Props>(function Editor2D(
           });
 
           s.pointMarkers.push(m);
-          try { c.add(m); } catch {}
+          try { c.add(m); } catch { }
           lastShown = { x: pc.x, y: pc.y };
         }
       });
@@ -3766,7 +3968,7 @@ const Editor2D = forwardRef<Editor2DHandle, Props>(function Editor2D(
     runSilently(() => {
       try {
         (s.overlay as any).clipPath = null;
-      } catch {}
+      } catch { }
     });
 
     if (strokePts.length >= 2) {
@@ -3790,7 +3992,7 @@ const Editor2D = forwardRef<Editor2DHandle, Props>(function Editor2D(
         try {
           s.stroke.set({ left: minX, top: minY, points: norm });
           s.stroke.setCoords?.();
-        } catch {}
+        } catch { }
       });
 
 
@@ -3824,9 +4026,9 @@ const Editor2D = forwardRef<Editor2DHandle, Props>(function Editor2D(
           absolutePositioned: true,
           excludeFromExport: true,
         });
-        try { (poly as any).inverted = true; } catch {}
+        try { (poly as any).inverted = true; } catch { }
         runSilently(() => {
-          try { (s.overlay as any).clipPath = poly; } catch {}
+          try { (s.overlay as any).clipPath = poly; } catch { }
         });
       }
     } else {
@@ -3835,17 +4037,17 @@ const Editor2D = forwardRef<Editor2DHandle, Props>(function Editor2D(
         try {
           s.stroke.set({ left: 0, top: 0, points: [] });
           s.stroke.setCoords?.();
-        } catch {}
+        } catch { }
       });
     }
 
     try {
       s.stroke.bringToFront?.();
-    } catch {}
+    } catch { }
     try {
       (s.pointMarkers ?? []).forEach((m) => m.bringToFront?.());
-    } catch {}
-    try { c.requestRenderAll?.(); } catch {}
+    } catch { }
+    try { c.requestRenderAll?.(); } catch { }
   };
 
   // Salva o estado atual dos pontos no undoStack antes de modificar
@@ -3954,13 +4156,13 @@ const Editor2D = forwardRef<Editor2DHandle, Props>(function Editor2D(
         startLassoCropReEdit();
         return;
       }
-    } catch {}
+    } catch { }
 
     const originalCenter = (() => {
       try {
         const p = img.getCenterPoint?.();
         if (p && typeof p.x === "number" && typeof p.y === "number") return { x: p.x, y: p.y };
-      } catch {}
+      } catch { }
       return { x: (c.getWidth?.() ?? 0) / 2, y: (c.getHeight?.() ?? 0) / 2 };
     })();
     const originalAngle = Number(img.angle ?? 0);
@@ -3970,9 +4172,9 @@ const Editor2D = forwardRef<Editor2DHandle, Props>(function Editor2D(
 
     // Evita o retângulo de seleção do Fabric enquanto desenha.
     const canvasPrev = { selection: !!c.selection, defaultCursor: String(c.defaultCursor ?? "") };
-    try { c.selection = false; } catch {}
-    try { c.defaultCursor = "crosshair"; } catch {}
-    try { c.discardActiveObject?.(); } catch {}
+    try { c.selection = false; } catch { }
+    try { c.defaultCursor = "crosshair"; } catch { }
+    try { c.discardActiveObject?.(); } catch { }
 
     // Centraliza temporariamente a imagem no canvas.
     runSilently(() => {
@@ -3980,14 +4182,14 @@ const Editor2D = forwardRef<Editor2DHandle, Props>(function Editor2D(
         const p = new fabric.Point(c.getWidth() / 2, c.getHeight() / 2);
         img.setPositionByOrigin?.(p, "center", "center");
         img.setCoords?.();
-      } catch {}
+      } catch { }
     });
 
     const imageRect = (() => {
       try {
         const r = img.getBoundingRect?.(true, true);
         if (r && typeof r.left === "number") return { left: r.left, top: r.top, width: r.width, height: r.height };
-      } catch {}
+      } catch { }
       const left = Number(img.left ?? 0);
       const top = Number(img.top ?? 0);
       const w = Number(img.width ?? 0) * Number(img.scaleX ?? 1);
@@ -4038,10 +4240,10 @@ const Editor2D = forwardRef<Editor2DHandle, Props>(function Editor2D(
     });
 
     runSilently(() => {
-      try { c.add(overlay); } catch {}
-      try { c.add(highlight); } catch {}
-      try { c.add(imgHandles.tl, imgHandles.tr, imgHandles.bl, imgHandles.br); } catch {}
-      try { c.add(stroke); } catch {}
+      try { c.add(overlay); } catch { }
+      try { c.add(highlight); } catch { }
+      try { c.add(imgHandles.tl, imgHandles.tr, imgHandles.bl, imgHandles.br); } catch { }
+      try { c.add(stroke); } catch { }
       try {
         highlight.bringToFront?.();
         imgHandles.tl.bringToFront?.();
@@ -4049,7 +4251,7 @@ const Editor2D = forwardRef<Editor2DHandle, Props>(function Editor2D(
         imgHandles.bl.bringToFront?.();
         imgHandles.br.bringToFront?.();
         stroke.bringToFront?.();
-      } catch {}
+      } catch { }
     });
 
     const session: LassoCropSession = {
@@ -4075,7 +4277,7 @@ const Editor2D = forwardRef<Editor2DHandle, Props>(function Editor2D(
     try {
       const exclude = new Set<any>([img, overlay, highlight, stroke, imgHandles.tl, imgHandles.tr, imgHandles.bl, imgHandles.br]);
       session.othersPrev = freezeOtherCanvasObjectsForCrop(exclude);
-    } catch {}
+    } catch { }
 
     lassoCropRef.current = session;
     emitCropMode(true);
@@ -4092,7 +4294,7 @@ const Editor2D = forwardRef<Editor2DHandle, Props>(function Editor2D(
         s.undoStack.push(prev);
         if (s.undoStack.length > MAX_SQUARE_CROP_UNDO) s.undoStack.shift();
         s.redoStack = [];
-      } catch {}
+      } catch { }
     };
 
     const endSquareAdjust = () => {
@@ -4102,14 +4304,14 @@ const Editor2D = forwardRef<Editor2DHandle, Props>(function Editor2D(
       // Atualiza o estado atual (para o próximo gesto/undo)
       try {
         s.lastRecorded = normalizeSquareCropSnapshot(getSquareCropSnapshot(s));
-      } catch {}
+      } catch { }
     };
 
     const getPointer = (opt: any) => {
       try {
         const p = c.getPointer?.(opt.e);
         if (p && typeof p.x === "number" && typeof p.y === "number") return { x: p.x, y: p.y };
-      } catch {}
+      } catch { }
       return { x: 0, y: 0 };
     };
 
@@ -4130,7 +4332,7 @@ const Editor2D = forwardRef<Editor2DHandle, Props>(function Editor2D(
         try {
           s.highlight.set({ left: s.imageRect.left, top: s.imageRect.top, width: s.imageRect.width, height: s.imageRect.height });
           s.highlight.setCoords?.();
-        } catch {}
+        } catch { }
         try {
           const l = s.imageRect.left;
           const t = s.imageRect.top;
@@ -4144,11 +4346,11 @@ const Editor2D = forwardRef<Editor2DHandle, Props>(function Editor2D(
           s.imgHandles.tr.setCoords?.();
           s.imgHandles.bl.setCoords?.();
           s.imgHandles.br.setCoords?.();
-        } catch {}
+        } catch { }
       });
       (s as any).__syncingImgHandles = false;
       updateLassoGraphics();
-      try { c.requestRenderAll?.(); } catch {}
+      try { c.requestRenderAll?.(); } catch { }
     };
 
     const onImgHandleMoving = (h: any) => {
@@ -4171,7 +4373,7 @@ const Editor2D = forwardRef<Editor2DHandle, Props>(function Editor2D(
           s.img.set({ scaleX: nextScale, scaleY: nextScale });
           centerImageInCanvas(s.img);
           s.img.setCoords?.();
-        } catch {}
+        } catch { }
       });
       refreshFromImage();
     };
@@ -4202,8 +4404,8 @@ const Editor2D = forwardRef<Editor2DHandle, Props>(function Editor2D(
       if (isImageScaleHandleTarget(opt)) return;
       if ((opt as any)?.target && (opt as any).target.__moldaLassoPointIndex != null) return;
       if (s.closed) return;
-      try { opt?.e?.preventDefault?.(); } catch {}
-      try { opt?.e?.stopPropagation?.(); } catch {}
+      try { opt?.e?.preventDefault?.(); } catch { }
+      try { opt?.e?.stopPropagation?.(); } catch { }
 
       s.isPointerDown = true;
       s.isFreehand = false;
@@ -4222,8 +4424,8 @@ const Editor2D = forwardRef<Editor2DHandle, Props>(function Editor2D(
       if (s.isEditingPoint) return;
       if (!s.isPointerDown) return;
       if (s.closed) return;
-      try { opt?.e?.preventDefault?.(); } catch {}
-      try { opt?.e?.stopPropagation?.(); } catch {}
+      try { opt?.e?.preventDefault?.(); } catch { }
+      try { opt?.e?.stopPropagation?.(); } catch { }
       const pc = clampPointToRect(getPointer(opt), s.imageRect);
       const p = canvasPointToLasso(s, pc);
       const down = s.downPoint;
@@ -4292,8 +4494,8 @@ const Editor2D = forwardRef<Editor2DHandle, Props>(function Editor2D(
         updateLassoGraphics();
         return;
       }
-      try { opt?.e?.preventDefault?.(); } catch {}
-      try { opt?.e?.stopPropagation?.(); } catch {}
+      try { opt?.e?.preventDefault?.(); } catch { }
+      try { opt?.e?.stopPropagation?.(); } catch { }
       const pc = clampPointToRect(getPointer(opt), s.imageRect);
       const p = canvasPointToLasso(s, pc);
       const down = s.downPoint;
@@ -4370,7 +4572,7 @@ const Editor2D = forwardRef<Editor2DHandle, Props>(function Editor2D(
       c.on?.("mouse:down", session.onMouseDown);
       c.on?.("mouse:move", session.onMouseMove);
       c.on?.("mouse:up", session.onMouseUp);
-    } catch {}
+    } catch { }
 
     updateLassoGraphics();
   };
@@ -4421,7 +4623,7 @@ const Editor2D = forwardRef<Editor2DHandle, Props>(function Editor2D(
           try {
             const arr = c.getObjects?.();
             if (Array.isArray(arr)) return arr.indexOf(croppedImgRef);
-          } catch {}
+          } catch { }
           return -1;
         })();
 
@@ -4451,7 +4653,7 @@ const Editor2D = forwardRef<Editor2DHandle, Props>(function Editor2D(
                 if (x > maxRelX) maxRelX = x;
                 if (y > maxRelY) maxRelY = y;
               }
-            } catch {}
+            } catch { }
             const cropBoxW = Math.max(1, Math.ceil((Number.isFinite(maxRelX) ? maxRelX : savedW) - (Number.isFinite(minRelX) ? minRelX : 0)));
             const cropBoxH = Math.max(1, Math.ceil((Number.isFinite(maxRelY) ? maxRelY : savedH) - (Number.isFinite(minRelY) ? minRelY : 0)));
 
@@ -4488,7 +4690,7 @@ const Editor2D = forwardRef<Editor2DHandle, Props>(function Editor2D(
             try {
               const p = new fabric.Point(c.getWidth() / 2, c.getHeight() / 2);
               originalImg.setPositionByOrigin?.(p, "center", "center");
-            } catch {}
+            } catch { }
             originalImg.setCoords?.();
 
             // Insere no canvas
@@ -4498,13 +4700,13 @@ const Editor2D = forwardRef<Editor2DHandle, Props>(function Editor2D(
             // Remove a imagem cortada temporariamente (será restaurada se cancelar)
             c.remove(croppedImgRef);
             originalImg.setCoords?.();
-          } catch {}
+          } catch { }
         });
 
         // Seleciona a imagem original
-        try { c.discardActiveObject?.(); } catch {}
-        try { c.setActiveObject?.(originalImg); } catch {}
-        try { c.requestRenderAll?.(); } catch {}
+        try { c.discardActiveObject?.(); } catch { }
+        try { c.setActiveObject?.(originalImg); } catch { }
+        try { c.requestRenderAll?.(); } catch { }
 
         // Agora inicia o lasso crop com essa imagem
         // Precisamos iniciar manualmente pois o startLassoCrop pega a seleção
@@ -4513,16 +4715,16 @@ const Editor2D = forwardRef<Editor2DHandle, Props>(function Editor2D(
           try {
             const p = originalImg.getCenterPoint?.();
             if (p && typeof p.x === "number" && typeof p.y === "number") return { x: p.x, y: p.y };
-          } catch {}
+          } catch { }
           return { x: (c.getWidth?.() ?? 0) / 2, y: (c.getHeight?.() ?? 0) / 2 };
         })();
         const originalAngle = Number(originalImg.angle ?? 0);
 
         const imgPrev = freezeImageForCrop(originalImg);
         const canvasPrev = { selection: !!c.selection, defaultCursor: String(c.defaultCursor ?? "") };
-        try { c.selection = false; } catch {}
-        try { c.defaultCursor = "crosshair"; } catch {}
-        try { c.discardActiveObject?.(); } catch {}
+        try { c.selection = false; } catch { }
+        try { c.defaultCursor = "crosshair"; } catch { }
+        try { c.discardActiveObject?.(); } catch { }
 
         // Em re-edição, centraliza igual ao startLassoCrop.
 
@@ -4530,7 +4732,7 @@ const Editor2D = forwardRef<Editor2DHandle, Props>(function Editor2D(
           try {
             const r = originalImg.getBoundingRect?.(true, true);
             if (r && typeof r.left === "number") return { left: r.left, top: r.top, width: r.width, height: r.height };
-          } catch {}
+          } catch { }
           const left = Number(originalImg.left ?? 0);
           const top = Number(originalImg.top ?? 0);
           const w = Number(originalImg.width ?? 0) * Number(originalImg.scaleX ?? 1);
@@ -4581,10 +4783,10 @@ const Editor2D = forwardRef<Editor2DHandle, Props>(function Editor2D(
         });
 
         runSilently(() => {
-          try { c.add(overlay); } catch {}
-          try { c.add(highlight); } catch {}
-          try { c.add(imgHandles.tl, imgHandles.tr, imgHandles.bl, imgHandles.br); } catch {}
-          try { c.add(stroke); } catch {}
+          try { c.add(overlay); } catch { }
+          try { c.add(highlight); } catch { }
+          try { c.add(imgHandles.tl, imgHandles.tr, imgHandles.bl, imgHandles.br); } catch { }
+          try { c.add(stroke); } catch { }
           try {
             highlight.bringToFront?.();
             imgHandles.tl.bringToFront?.();
@@ -4592,7 +4794,7 @@ const Editor2D = forwardRef<Editor2DHandle, Props>(function Editor2D(
             imgHandles.bl.bringToFront?.();
             imgHandles.br.bringToFront?.();
             stroke.bringToFront?.();
-          } catch {}
+          } catch { }
         });
 
         // Converte pontos relativos para coordenadas absolutas do canvas.
@@ -4643,7 +4845,7 @@ const Editor2D = forwardRef<Editor2DHandle, Props>(function Editor2D(
         try {
           const exclude = new Set<any>([originalImg, overlay, highlight, stroke, imgHandles.tl, imgHandles.tr, imgHandles.bl, imgHandles.br]);
           session.othersPrev = freezeOtherCanvasObjectsForCrop(exclude);
-        } catch {}
+        } catch { }
 
         lassoCropRef.current = session;
         emitCropMode(true);
@@ -4653,7 +4855,7 @@ const Editor2D = forwardRef<Editor2DHandle, Props>(function Editor2D(
           try {
             const p = c.getPointer?.(opt.e);
             if (p && typeof p.x === "number" && typeof p.y === "number") return { x: p.x, y: p.y };
-          } catch {}
+          } catch { }
           return { x: 0, y: 0 };
         };
 
@@ -4674,7 +4876,7 @@ const Editor2D = forwardRef<Editor2DHandle, Props>(function Editor2D(
             try {
               s.highlight.set({ left: s.imageRect.left, top: s.imageRect.top, width: s.imageRect.width, height: s.imageRect.height });
               s.highlight.setCoords?.();
-            } catch {}
+            } catch { }
             try {
               const l = s.imageRect.left;
               const t = s.imageRect.top;
@@ -4688,11 +4890,11 @@ const Editor2D = forwardRef<Editor2DHandle, Props>(function Editor2D(
               s.imgHandles.tr.setCoords?.();
               s.imgHandles.bl.setCoords?.();
               s.imgHandles.br.setCoords?.();
-            } catch {}
+            } catch { }
           });
           (s as any).__syncingImgHandles = false;
           updateLassoGraphics();
-          try { c.requestRenderAll?.(); } catch {}
+          try { c.requestRenderAll?.(); } catch { }
         };
 
         const onImgHandleMoving = (h: any) => {
@@ -4715,7 +4917,7 @@ const Editor2D = forwardRef<Editor2DHandle, Props>(function Editor2D(
               s.img.set({ scaleX: nextScale, scaleY: nextScale });
               centerImageInCanvas(s.img);
               s.img.setCoords?.();
-            } catch {}
+            } catch { }
           });
           refreshFromImage();
         };
@@ -4742,11 +4944,11 @@ const Editor2D = forwardRef<Editor2DHandle, Props>(function Editor2D(
           if (t && (t as any).__moldaImageScaleCorner != null) return;
           if ((opt as any)?.target && (opt as any).target.__moldaLassoPointIndex != null) return;
           if (s.closed) return;
-          try { opt?.e?.preventDefault?.(); } catch {}
-          try { opt?.e?.stopPropagation?.(); } catch {}
-          
+          try { opt?.e?.preventDefault?.(); } catch { }
+          try { opt?.e?.stopPropagation?.(); } catch { }
+
           pushLassoSnapshot();
-          
+
           s.isPointerDown = true;
           s.isFreehand = false;
           s.isDragging = false;
@@ -4764,8 +4966,8 @@ const Editor2D = forwardRef<Editor2DHandle, Props>(function Editor2D(
           if (s.isEditingPoint) return;
           if (!s.isPointerDown) return;
           if (s.closed) return;
-          try { opt?.e?.preventDefault?.(); } catch {}
-          try { opt?.e?.stopPropagation?.(); } catch {}
+          try { opt?.e?.preventDefault?.(); } catch { }
+          try { opt?.e?.stopPropagation?.(); } catch { }
           const p = clampPointToRect(getPointer(opt), s.imageRect);
           const down = s.downPoint;
           if (!down) return;
@@ -4818,8 +5020,8 @@ const Editor2D = forwardRef<Editor2DHandle, Props>(function Editor2D(
             updateLassoGraphics();
             return;
           }
-          try { opt?.e?.preventDefault?.(); } catch {}
-          try { opt?.e?.stopPropagation?.(); } catch {}
+          try { opt?.e?.preventDefault?.(); } catch { }
+          try { opt?.e?.stopPropagation?.(); } catch { }
           const p = clampPointToRect(getPointer(opt), s.imageRect);
           const down = s.downPoint;
           s.isPointerDown = false;
@@ -4876,7 +5078,7 @@ const Editor2D = forwardRef<Editor2DHandle, Props>(function Editor2D(
           c.on?.("mouse:down", session.onMouseDown);
           c.on?.("mouse:move", session.onMouseMove);
           c.on?.("mouse:up", session.onMouseUp);
-        } catch {}
+        } catch { }
 
         updateLassoGraphics();
       },
@@ -4895,29 +5097,29 @@ const Editor2D = forwardRef<Editor2DHandle, Props>(function Editor2D(
         const prev = (s as any).canvasPrev;
         if (prev && typeof prev.selection === "boolean") c.selection = prev.selection;
         if (prev && typeof prev.defaultCursor === "string") c.defaultCursor = prev.defaultCursor;
-      } catch {}
+      } catch { }
 
       try {
         restoreOtherCanvasObjectsAfterCrop(s.othersPrev);
-      } catch {}
-      try { c.remove(s.imgHandles?.tl); } catch {}
-      try { c.remove(s.imgHandles?.tr); } catch {}
-      try { c.remove(s.imgHandles?.bl); } catch {}
-      try { c.remove(s.imgHandles?.br); } catch {}
-      try { c.remove(s.cropBox); } catch {}
-      try { c.remove(s.handles.tl); } catch {}
-      try { c.remove(s.handles.tr); } catch {}
-      try { c.remove(s.handles.bl); } catch {}
-      try { c.remove(s.handles.br); } catch {}
-      try { c.remove(s.overlays.top); } catch {}
-      try { c.remove(s.overlays.bottom); } catch {}
-      try { c.remove(s.overlays.left); } catch {}
-      try { c.remove(s.overlays.right); } catch {}
-      try { c.remove(s.highlight); } catch {}
+      } catch { }
+      try { c.remove(s.imgHandles?.tl); } catch { }
+      try { c.remove(s.imgHandles?.tr); } catch { }
+      try { c.remove(s.imgHandles?.bl); } catch { }
+      try { c.remove(s.imgHandles?.br); } catch { }
+      try { c.remove(s.cropBox); } catch { }
+      try { c.remove(s.handles.tl); } catch { }
+      try { c.remove(s.handles.tr); } catch { }
+      try { c.remove(s.handles.bl); } catch { }
+      try { c.remove(s.handles.br); } catch { }
+      try { c.remove(s.overlays.top); } catch { }
+      try { c.remove(s.overlays.bottom); } catch { }
+      try { c.remove(s.overlays.left); } catch { }
+      try { c.remove(s.overlays.right); } catch { }
+      try { c.remove(s.highlight); } catch { }
 
       try {
         restoreImageAfterCrop(s.img, (s as any).imgPrev);
-      } catch {}
+      } catch { }
 
       if (opts?.restoreImage !== false) {
         try {
@@ -4925,13 +5127,13 @@ const Editor2D = forwardRef<Editor2DHandle, Props>(function Editor2D(
           s.img.setPositionByOrigin?.(p, "center", "center");
           s.img.set({ angle: s.imgOriginalAngle });
           s.img.setCoords?.();
-        } catch {}
+        } catch { }
       }
     });
 
     squareCropRef.current = null;
     emitCropMode(false);
-    try { c.requestRenderAll?.(); } catch {}
+    try { c.requestRenderAll?.(); } catch { }
   };
 
   const updateSquareCropPreview = () => {
@@ -4960,13 +5162,13 @@ const Editor2D = forwardRef<Editor2DHandle, Props>(function Editor2D(
       try {
         h.set({ left: x, top: y });
         h.setCoords?.();
-      } catch {}
+      } catch { }
     };
 
     runSilently(() => {
       // cropBox retangular (handles independentes)
-      try { s.cropBox.set({ left: cl, top: ct, width: w, height: h }); } catch {}
-      try { s.cropBox.setCoords?.(); } catch {}
+      try { s.cropBox.set({ left: cl, top: ct, width: w, height: h }); } catch { }
+      try { s.cropBox.setCoords?.(); } catch { }
       s.size = Math.max(w, h);
 
       // handles nos vértices
@@ -4984,14 +5186,14 @@ const Editor2D = forwardRef<Editor2DHandle, Props>(function Editor2D(
       const rightW = Math.max(0, canvasW - (cl + w));
 
       // overlay global: escurece todo o canvas fora do recorte
-      try { s.overlays.top.set({ left: 0, top: 0, width: canvasW, height: topH }); } catch {}
-      try { s.overlays.bottom.set({ left: 0, top: ct + h, width: canvasW, height: bottomH }); } catch {}
-      try { s.overlays.left.set({ left: 0, top: ct, width: leftW, height: h }); } catch {}
-      try { s.overlays.right.set({ left: cl + w, top: ct, width: rightW, height: h }); } catch {}
-      try { s.overlays.top.setCoords?.(); } catch {}
-      try { s.overlays.bottom.setCoords?.(); } catch {}
-      try { s.overlays.left.setCoords?.(); } catch {}
-      try { s.overlays.right.setCoords?.(); } catch {}
+      try { s.overlays.top.set({ left: 0, top: 0, width: canvasW, height: topH }); } catch { }
+      try { s.overlays.bottom.set({ left: 0, top: ct + h, width: canvasW, height: bottomH }); } catch { }
+      try { s.overlays.left.set({ left: 0, top: ct, width: leftW, height: h }); } catch { }
+      try { s.overlays.right.set({ left: cl + w, top: ct, width: rightW, height: h }); } catch { }
+      try { s.overlays.top.setCoords?.(); } catch { }
+      try { s.overlays.bottom.setCoords?.(); } catch { }
+      try { s.overlays.left.setCoords?.(); } catch { }
+      try { s.overlays.right.setCoords?.(); } catch { }
     });
 
     try {
@@ -5001,9 +5203,9 @@ const Editor2D = forwardRef<Editor2DHandle, Props>(function Editor2D(
       s.handles.tr.bringToFront?.();
       s.handles.bl.bringToFront?.();
       s.handles.br.bringToFront?.();
-    } catch {}
+    } catch { }
 
-    try { c.requestRenderAll?.(); } catch {}
+    try { c.requestRenderAll?.(); } catch { }
   };
 
   const startSquareCrop = () => {
@@ -5021,7 +5223,7 @@ const Editor2D = forwardRef<Editor2DHandle, Props>(function Editor2D(
       try {
         const p = img.getCenterPoint?.();
         if (p && typeof p.x === "number" && typeof p.y === "number") return { x: p.x, y: p.y };
-      } catch {}
+      } catch { }
       return { x: (c.getWidth?.() ?? 0) / 2, y: (c.getHeight?.() ?? 0) / 2 };
     })();
     const originalAngle = Number(img.angle ?? 0);
@@ -5031,9 +5233,9 @@ const Editor2D = forwardRef<Editor2DHandle, Props>(function Editor2D(
 
     // Evita o retângulo de seleção do Fabric durante o crop.
     const canvasPrev = { selection: !!c.selection, defaultCursor: String(c.defaultCursor ?? "") };
-    try { c.selection = false; } catch {}
-    try { c.defaultCursor = "default"; } catch {}
-    try { c.discardActiveObject?.(); } catch {}
+    try { c.selection = false; } catch { }
+    try { c.defaultCursor = "default"; } catch { }
+    try { c.discardActiveObject?.(); } catch { }
 
     // Centraliza temporariamente a imagem no canvas.
     runSilently(() => {
@@ -5041,14 +5243,14 @@ const Editor2D = forwardRef<Editor2DHandle, Props>(function Editor2D(
         const p = new fabric.Point(c.getWidth() / 2, c.getHeight() / 2);
         img.setPositionByOrigin?.(p, "center", "center");
         img.setCoords?.();
-      } catch {}
+      } catch { }
     });
 
     const imageRect = (() => {
       try {
         const r = img.getBoundingRect?.(true, true);
         if (r && typeof r.left === "number") return { left: r.left, top: r.top, width: r.width, height: r.height };
-      } catch {}
+      } catch { }
       // fallback simples
       const left = Number(img.left ?? 0);
       const top = Number(img.top ?? 0);
@@ -5137,7 +5339,7 @@ const Editor2D = forwardRef<Editor2DHandle, Props>(function Editor2D(
         hoverCursor: "nwse-resize",
         excludeFromExport: true,
       });
-      try { (h as any).__moldaSquareCropCorner = corner; } catch {}
+      try { (h as any).__moldaSquareCropCorner = corner; } catch { }
       return h;
     };
 
@@ -5150,11 +5352,11 @@ const Editor2D = forwardRef<Editor2DHandle, Props>(function Editor2D(
 
     // Adiciona ao canvas sem capturar histórico.
     runSilently(() => {
-      try { c.add(overlays.top, overlays.bottom, overlays.left, overlays.right); } catch {}
-      try { c.add(highlight); } catch {}
-      try { c.add(imgHandles.tl, imgHandles.tr, imgHandles.bl, imgHandles.br); } catch {}
-      try { c.add(cropBox); } catch {}
-      try { c.add(handles.tl, handles.tr, handles.bl, handles.br); } catch {}
+      try { c.add(overlays.top, overlays.bottom, overlays.left, overlays.right); } catch { }
+      try { c.add(highlight); } catch { }
+      try { c.add(imgHandles.tl, imgHandles.tr, imgHandles.bl, imgHandles.br); } catch { }
+      try { c.add(cropBox); } catch { }
+      try { c.add(handles.tl, handles.tr, handles.bl, handles.br); } catch { }
       try {
         // garante que o crop UI fique acima
         cropBox.bringToFront?.();
@@ -5162,8 +5364,8 @@ const Editor2D = forwardRef<Editor2DHandle, Props>(function Editor2D(
         handles.tr.bringToFront?.();
         handles.bl.bringToFront?.();
         handles.br.bringToFront?.();
-      } catch {}
-      try { c.setActiveObject?.(cropBox); } catch {}
+      } catch { }
+      try { c.setActiveObject?.(cropBox); } catch { }
     });
 
     squareCropRef.current = {
@@ -5191,7 +5393,7 @@ const Editor2D = forwardRef<Editor2DHandle, Props>(function Editor2D(
     // Estado inicial para gravação incremental
     try {
       squareCropRef.current.lastRecorded = normalizeSquareCropSnapshot(getSquareCropSnapshot(squareCropRef.current));
-    } catch {}
+    } catch { }
 
     try {
       const exclude = new Set<any>([
@@ -5212,7 +5414,7 @@ const Editor2D = forwardRef<Editor2DHandle, Props>(function Editor2D(
         imgHandles.br,
       ]);
       squareCropRef.current.othersPrev = freezeOtherCanvasObjectsForCrop(exclude);
-    } catch {}
+    } catch { }
 
     emitCropMode(true);
 
@@ -5228,7 +5430,7 @@ const Editor2D = forwardRef<Editor2DHandle, Props>(function Editor2D(
         s.undoStack.push(prev);
         if (s.undoStack.length > MAX_SQUARE_CROP_UNDO) s.undoStack.shift();
         s.redoStack = [];
-      } catch {}
+      } catch { }
     };
 
     const endSquareAdjust = () => {
@@ -5238,7 +5440,7 @@ const Editor2D = forwardRef<Editor2DHandle, Props>(function Editor2D(
       // Atualiza o estado atual (para o próximo gesto/undo)
       try {
         s.lastRecorded = normalizeSquareCropSnapshot(getSquareCropSnapshot(s));
-      } catch {}
+      } catch { }
     };
 
     const refreshFromImage = () => {
@@ -5250,7 +5452,7 @@ const Editor2D = forwardRef<Editor2DHandle, Props>(function Editor2D(
         try {
           s.highlight.set({ left: s.imageRect.left, top: s.imageRect.top, width: s.imageRect.width, height: s.imageRect.height });
           s.highlight.setCoords?.();
-        } catch {}
+        } catch { }
         try {
           const l = s.imageRect.left;
           const t = s.imageRect.top;
@@ -5264,11 +5466,11 @@ const Editor2D = forwardRef<Editor2DHandle, Props>(function Editor2D(
           s.imgHandles.tr.setCoords?.();
           s.imgHandles.bl.setCoords?.();
           s.imgHandles.br.setCoords?.();
-        } catch {}
+        } catch { }
       });
       (s as any).__syncingImgHandles = false;
       updateSquareCropPreview();
-      try { c.requestRenderAll?.(); } catch {}
+      try { c.requestRenderAll?.(); } catch { }
     };
 
     const onAnyDrag = () => updateSquareCropPreview();
@@ -5305,7 +5507,7 @@ const Editor2D = forwardRef<Editor2DHandle, Props>(function Editor2D(
           s.img.set({ scaleX: nextScale, scaleY: nextScale });
           centerImageInCanvas(s.img);
           s.img.setCoords?.();
-        } catch {}
+        } catch { }
       });
       refreshFromImage();
     };
@@ -5398,8 +5600,8 @@ const Editor2D = forwardRef<Editor2DHandle, Props>(function Editor2D(
 
       // Aplica e clampa no retângulo da imagem
       runSilently(() => {
-        try { session.cropBox.set({ left: nextLeft, top: nextTop, width: nextW, height: nextH }); } catch {}
-        try { session.cropBox.setCoords?.(); } catch {}
+        try { session.cropBox.set({ left: nextLeft, top: nextTop, width: nextW, height: nextH }); } catch { }
+        try { session.cropBox.setCoords?.(); } catch { }
       });
       updateSquareCropPreview();
     };
@@ -5458,16 +5660,16 @@ const Editor2D = forwardRef<Editor2DHandle, Props>(function Editor2D(
 
     try {
       if (s.onMouseDown) c.off?.("mouse:down", s.onMouseDown);
-    } catch {}
+    } catch { }
     try {
       if (s.onMouseMove) c.off?.("mouse:move", s.onMouseMove);
-    } catch {}
+    } catch { }
     try {
       if (s.onKeyDown) window.removeEventListener("keydown", s.onKeyDown);
-    } catch {}
+    } catch { }
     try {
       if (s.onHostLeave && hostRef.current) hostRef.current.removeEventListener("mouseleave", s.onHostLeave);
-    } catch {}
+    } catch { }
 
     // Remove UI overlays/highlight
     runSilently(() => {
@@ -5478,34 +5680,34 @@ const Editor2D = forwardRef<Editor2DHandle, Props>(function Editor2D(
           c.remove(s.overlays.left);
           c.remove(s.overlays.right);
         }
-      } catch {}
+      } catch { }
       try {
         if (s.highlight) c.remove(s.highlight);
-      } catch {}
+      } catch { }
     });
 
     // Restore canvas selection & cursor
     try {
       if (typeof s.canvasPrev?.selection === "boolean") c.selection = s.canvasPrev.selection;
-    } catch {}
+    } catch { }
     try {
       if (typeof s.canvasPrev?.defaultCursor === "string") c.defaultCursor = s.canvasPrev.defaultCursor;
-    } catch {}
+    } catch { }
 
     try {
       if (typeof s.hostPrevCursor === "string" && hostRef.current) (hostRef.current.style as any).cursor = s.hostPrevCursor;
-    } catch {}
+    } catch { }
 
     try {
       if (loupeWrapRef.current) loupeWrapRef.current.style.display = "none";
-    } catch {}
+    } catch { }
 
-    try { restoreImageAfterCrop(s.img, s.imgPrev); } catch {}
-    try { restoreOtherCanvasObjectsAfterCrop(s.othersPrev); } catch {}
+    try { restoreImageAfterCrop(s.img, s.imgPrev); } catch { }
+    try { restoreOtherCanvasObjectsAfterCrop(s.othersPrev); } catch { }
 
     colorCutRef.current = null;
-    try { emitColorCutMode(false); } catch {}
-    try { c.requestRenderAll?.(); } catch {}
+    try { emitColorCutMode(false); } catch { }
+    try { c.requestRenderAll?.(); } catch { }
   };
 
   const cancelColorCut = () => {
@@ -5524,7 +5726,7 @@ const Editor2D = forwardRef<Editor2DHandle, Props>(function Editor2D(
             img.setSrc(
               restoreSrc,
               () => {
-                try { c.requestRenderAll?.(); } catch {}
+                try { c.requestRenderAll?.(); } catch { }
                 resolve();
               },
               { crossOrigin: "anonymous" }
@@ -5535,7 +5737,7 @@ const Editor2D = forwardRef<Editor2DHandle, Props>(function Editor2D(
         });
         try {
           if (typeof restoreOriginal === "string" && restoreOriginal.length) (img as any).__moldaOriginalSrc = restoreOriginal;
-        } catch {}
+        } catch { }
       } finally {
         cleanupColorCut();
       }
@@ -5556,10 +5758,11 @@ const Editor2D = forwardRef<Editor2DHandle, Props>(function Editor2D(
 
     try {
       if (typeof finalSrc === "string" && finalSrc.length) (img as any).__moldaOriginalSrc = finalSrc;
-    } catch {}
+    } catch { }
+    try { (img as any).__moldaHasBakedModification = true; } catch { }
 
     if (shouldRecordHistory()) {
-      try { historyRef.current?.push("color-cut"); } catch {}
+      try { historyRef.current?.push("color-cut"); } catch { }
       emitHistory();
     }
 
@@ -5585,7 +5788,7 @@ const Editor2D = forwardRef<Editor2DHandle, Props>(function Editor2D(
       try {
         s.highlight?.set?.({ left: imageRect.left, top: imageRect.top, width: imageRect.width, height: imageRect.height });
         s.highlight?.setCoords?.();
-      } catch {}
+      } catch { }
 
       try {
         const canvasW = Number(c.getWidth?.() ?? 0) || 0;
@@ -5603,12 +5806,12 @@ const Editor2D = forwardRef<Editor2DHandle, Props>(function Editor2D(
         s.overlays?.bottom?.setCoords?.();
         s.overlays?.left?.setCoords?.();
         s.overlays?.right?.setCoords?.();
-      } catch {}
+      } catch { }
 
-      try { s.highlight?.bringToFront?.(); } catch {}
+      try { s.highlight?.bringToFront?.(); } catch { }
     });
 
-    try { c.requestRenderAll?.(); } catch {}
+    try { c.requestRenderAll?.(); } catch { }
   };
 
   const startColorCut = () => {
@@ -5617,9 +5820,9 @@ const Editor2D = forwardRef<Editor2DHandle, Props>(function Editor2D(
     if (!c || !fabric) return;
 
     // Evita sobreposição com outros modos
-    try { cancelCrop(); } catch {}
-    try { cancelEffectBrush?.(); } catch {}
-    try { cancelEffectLasso?.(); } catch {}
+    try { cancelCrop(); } catch { }
+    try { cancelEffectBrush?.(); } catch { }
+    try { cancelEffectLasso?.(); } catch { }
 
     cleanupColorCut();
 
@@ -5644,13 +5847,13 @@ const Editor2D = forwardRef<Editor2DHandle, Props>(function Editor2D(
 
     // Evita o retângulo de seleção do Fabric durante o modo
     const canvasPrev = { selection: !!c.selection, defaultCursor: String(c.defaultCursor ?? "") };
-    try { c.selection = false; } catch {}
-    try { c.discardActiveObject?.(); } catch {}
+    try { c.selection = false; } catch { }
+    try { c.discardActiveObject?.(); } catch { }
 
     // Cursor: escondemos o cursor padrão e usamos um "loupe" (overlay DOM) seguindo o mouse.
     const hostPrevCursor = hostRef.current ? String((hostRef.current.style as any).cursor ?? "") : "";
-    try { if (hostRef.current) (hostRef.current.style as any).cursor = "none"; } catch {}
-    try { c.defaultCursor = "none"; } catch { try { c.defaultCursor = "crosshair"; } catch {} }
+    try { if (hostRef.current) (hostRef.current.style as any).cursor = "none"; } catch { }
+    try { c.defaultCursor = "none"; } catch { try { c.defaultCursor = "crosshair"; } catch { } }
 
     const imgPrev = freezeImageForCrop(img);
 
@@ -5660,7 +5863,7 @@ const Editor2D = forwardRef<Editor2DHandle, Props>(function Editor2D(
         const p = new fabric.Point(c.getWidth() / 2, c.getHeight() / 2);
         img.setPositionByOrigin?.(p, "center", "center");
         img.setCoords?.();
-      } catch {}
+      } catch { }
     });
 
     const imageRect = getImageRect(img);
@@ -5681,7 +5884,7 @@ const Editor2D = forwardRef<Editor2DHandle, Props>(function Editor2D(
             loupeBuffer.height = h;
             loupeCtx.clearRect(0, 0, w, h);
             loupeCtx.drawImage(imgEl, 0, 0, w, h);
-          } catch {}
+          } catch { }
           resolve();
         };
         imgEl.onerror = () => resolve();
@@ -5721,16 +5924,16 @@ const Editor2D = forwardRef<Editor2DHandle, Props>(function Editor2D(
     });
 
     runSilently(() => {
-      try { c.add(overlays.top, overlays.bottom, overlays.left, overlays.right); } catch {}
-      try { c.add(highlight); } catch {}
-      try { highlight.bringToFront?.(); } catch {}
+      try { c.add(overlays.top, overlays.bottom, overlays.left, overlays.right); } catch { }
+      try { c.add(highlight); } catch { }
+      try { highlight.bringToFront?.(); } catch { }
     });
 
     let othersPrev: any[] | undefined;
     try {
       const exclude = new Set<any>([img, highlight, overlays.top, overlays.bottom, overlays.left, overlays.right]);
       othersPrev = freezeOtherCanvasObjectsForCrop(exclude);
-    } catch {}
+    } catch { }
 
     const canvasToImagePixel = (pCanvas: { x: number; y: number }) => {
       try {
@@ -5743,7 +5946,7 @@ const Editor2D = forwardRef<Editor2DHandle, Props>(function Editor2D(
           const local = fabric.util.transformPoint(pt, inv);
           return { x: Number(local.x ?? 0) + w / 2, y: Number(local.y ?? 0) + h / 2 };
         }
-      } catch {}
+      } catch { }
 
       const r = getImageRect(img);
       const u = (pCanvas.x - r.left) / Math.max(1e-6, r.width);
@@ -5772,24 +5975,24 @@ const Editor2D = forwardRef<Editor2DHandle, Props>(function Editor2D(
           }
           return { x: Number((pt as any).x ?? 0), y: Number((pt as any).y ?? 0) };
         }
-      } catch {}
+      } catch { }
 
       // Fallback to Fabric helper
       try {
         const pt = c.getPointer?.(evt);
         if (pt && typeof pt.x === "number" && typeof pt.y === "number") return { x: pt.x, y: pt.y };
-      } catch {}
+      } catch { }
       return null;
     };
 
     const onKeyDown = (ev: KeyboardEvent) => {
       if (ev.key === "Escape") {
-        try { ev.preventDefault(); } catch {}
+        try { ev.preventDefault(); } catch { }
         cancelColorCut();
         return;
       }
       if (ev.key === "Enter") {
-        try { ev.preventDefault(); } catch {}
+        try { ev.preventDefault(); } catch { }
         confirmColorCut();
         return;
       }
@@ -5873,7 +6076,7 @@ const Editor2D = forwardRef<Editor2DHandle, Props>(function Editor2D(
         outCtx.fillRect(size - 22, size - 22, 14, 14);
         outCtx.strokeStyle = withAlpha(GIZMO_THEME.primary, 0.85);
         outCtx.strokeRect(size - 22, size - 22, 14, 14);
-      } catch {}
+      } catch { }
 
       outCtx.restore();
 
@@ -5900,7 +6103,7 @@ const Editor2D = forwardRef<Editor2DHandle, Props>(function Editor2D(
     const onHostLeave = () => {
       try {
         if (loupeWrapRef.current) loupeWrapRef.current.style.display = "none";
-      } catch {}
+      } catch { }
     };
 
     const onMouseDown = (opt: any) => {
@@ -5995,7 +6198,7 @@ const Editor2D = forwardRef<Editor2DHandle, Props>(function Editor2D(
               img.setSrc(
                 dataUrl,
                 () => {
-                  try { c.requestRenderAll?.(); } catch {}
+                  try { c.requestRenderAll?.(); } catch { }
                   resolve();
                 },
                 { crossOrigin: "anonymous" }
@@ -6007,7 +6210,7 @@ const Editor2D = forwardRef<Editor2DHandle, Props>(function Editor2D(
 
           // Mantém modo ativo; só comita no Confirmar
           s.currentSrc = dataUrl;
-          try { await ensureLoupeBufferFromSrc(dataUrl); } catch {}
+          try { await ensureLoupeBufferFromSrc(dataUrl); } catch { }
         } finally {
           const cur = colorCutRef.current;
           if (cur) cur.inFlight = false;
@@ -6018,7 +6221,7 @@ const Editor2D = forwardRef<Editor2DHandle, Props>(function Editor2D(
     window.addEventListener("keydown", onKeyDown);
     c.on?.("mouse:down", onMouseDown);
     c.on?.("mouse:move", onMouseMove);
-    try { if (hostRef.current) hostRef.current.addEventListener("mouseleave", onHostLeave); } catch {}
+    try { if (hostRef.current) hostRef.current.addEventListener("mouseleave", onHostLeave); } catch { }
 
     colorCutRef.current = {
       active: true,
@@ -6046,20 +6249,20 @@ const Editor2D = forwardRef<Editor2DHandle, Props>(function Editor2D(
         loupeWrapRef.current.style.left = "0px";
         loupeWrapRef.current.style.top = "0px";
       }
-    } catch {}
+    } catch { }
 
-    try { emitColorCutMode(true); } catch {}
+    try { emitColorCutMode(true); } catch { }
   };
 
   const cancelLassoCrop = () => {
     const c: any = canvasRef.current;
     const s = lassoCropRef.current;
-    
+
     // Se estávamos re-editando, restaura a imagem cortada original
     if (s?.isReEdit && s.originalImageForReEdit && c) {
       const croppedImg = s.originalImageForReEdit;
       const tempOriginalImg = s.img;
-      
+
       runSilently(() => {
         try {
           // Restaura a imagem cortada original
@@ -6067,27 +6270,27 @@ const Editor2D = forwardRef<Editor2DHandle, Props>(function Editor2D(
             try {
               const arr = c.getObjects?.();
               if (Array.isArray(arr)) return arr.indexOf(tempOriginalImg);
-            } catch {}
+            } catch { }
             return -1;
           })();
-          
+
           if (idx >= 0 && typeof c.insertAt === "function") {
             c.insertAt(croppedImg, idx, false);
           } else {
             c.add(croppedImg);
           }
-          
+
           // Remove a imagem original temporária
           c.remove(tempOriginalImg);
           croppedImg.setCoords?.();
-        } catch {}
+        } catch { }
       });
-      
+
       // Seleciona a imagem restaurada
-      try { c.discardActiveObject?.(); } catch {}
-      try { c.setActiveObject?.(croppedImg); } catch {}
+      try { c.discardActiveObject?.(); } catch { }
+      try { c.setActiveObject?.(croppedImg); } catch { }
     }
-    
+
     cleanupLassoCropPreview({ restoreImage: true });
   };
 
@@ -6115,7 +6318,7 @@ const Editor2D = forwardRef<Editor2DHandle, Props>(function Editor2D(
       try {
         const src = (img as any).__moldaOriginalSrc;
         if (typeof src === "string" && src.length > 0) return src;
-      } catch {}
+      } catch { }
 
       // Senão, gera do elemento atual
       try {
@@ -6215,16 +6418,16 @@ const Editor2D = forwardRef<Editor2DHandle, Props>(function Editor2D(
     // Evita que o usuário clique/seleciona a imagem antiga enquanto a nova carrega.
     try {
       runSilently(() => {
-        try { img.set?.({ selectable: false, evented: false }); } catch {}
-        try { img.setCoords?.(); } catch {}
+        try { img.set?.({ selectable: false, evented: false }); } catch { }
+        try { img.setCoords?.(); } catch { }
       });
-    } catch {}
+    } catch { }
 
     const idx = (() => {
       try {
         const arr = c.getObjects?.();
         if (Array.isArray(arr)) return arr.indexOf(img);
-      } catch {}
+      } catch { }
       return -1;
     })();
 
@@ -6253,41 +6456,41 @@ const Editor2D = forwardRef<Editor2DHandle, Props>(function Editor2D(
               selectable: true,
               evented: true,
             });
-          } catch {}
+          } catch { }
 
           // Para ajustes futuros, a base agora é o PNG recortado.
-          try { (newImg as any).__moldaOriginalSrc = dataUrl; } catch {}
+          try { (newImg as any).__moldaOriginalSrc = dataUrl; } catch { }
           try {
             const adj = (img as any).__moldaImageAdjustments;
             if (adj) (newImg as any).__moldaImageAdjustments = adj;
-          } catch {}
-          
+          } catch { }
+
           // Armazena metadados do corte laço para re-edição
           if (lassoCropMeta) {
-            try { (newImg as any).__moldaLassoCropMeta = lassoCropMeta; } catch {}
+            try { (newImg as any).__moldaLassoCropMeta = lassoCropMeta; } catch { }
           }
 
           try {
             if (idx >= 0 && typeof c.insertAt === "function") c.insertAt(newImg, idx, false);
             else c.add(newImg);
           } catch {
-            try { c.add(newImg); } catch {}
+            try { c.add(newImg); } catch { }
           }
-          try { c.remove(img); } catch {}
-          try { newImg.setCoords?.(); } catch {}
+          try { c.remove(img); } catch { }
+          try { newImg.setCoords?.(); } catch { }
         });
 
         // gizmo novo
-        try { c.discardActiveObject?.(); } catch {}
-        try { c.setActiveObject?.(newImg); } catch {}
-        try { c.requestRenderAll?.(); } catch {}
+        try { c.discardActiveObject?.(); } catch { }
+        try { c.setActiveObject?.(newImg); } catch { }
+        try { c.requestRenderAll?.(); } catch { }
 
         try {
           if (!isRestoringRef.current && !isLoadingRef.current) {
             historyRef.current?.push("crop-lasso");
             emitHistory();
           }
-        } catch {}
+        } catch { }
       },
       { crossOrigin: "anonymous" }
     );
@@ -6306,7 +6509,7 @@ const Editor2D = forwardRef<Editor2DHandle, Props>(function Editor2D(
       try {
         const r = img.getBoundingRect?.(true, true);
         if (r && typeof r.left === "number") return { left: r.left, top: r.top, width: r.width, height: r.height };
-      } catch {}
+      } catch { }
       return s.imageRect;
     })();
 
@@ -6350,7 +6553,7 @@ const Editor2D = forwardRef<Editor2DHandle, Props>(function Editor2D(
         const fabric: any = fabricRef.current;
         const el = img.getElement?.() ?? img._element ?? img._originalElement;
         if (el && fabric?.Image) return new fabric.Image(el, {});
-      } catch {}
+      } catch { }
       return null;
     });
 
@@ -6359,15 +6562,15 @@ const Editor2D = forwardRef<Editor2DHandle, Props>(function Editor2D(
       try {
         newObj.set({ cropX: newCropX, cropY: newCropY, width: wPx, height: hPx });
         newObj.setCoords?.();
-      } catch {}
+      } catch { }
 
       // Para evitar que o resultado "suma" fora da área visível após um zoom ancorado no cursor,
       // mantemos o comportamento de pós-corte: imagem centralizada no canvas.
-      try { centerImageInCanvas(newObj); } catch {}
+      try { centerImageInCanvas(newObj); } catch { }
     }
 
     cleanupSquareCropPreview({ restoreImage: false });
-    try { c.requestRenderAll?.(); } catch {}
+    try { c.requestRenderAll?.(); } catch { }
 
     // captura histórico ao finalizar
     try {
@@ -6375,7 +6578,7 @@ const Editor2D = forwardRef<Editor2DHandle, Props>(function Editor2D(
         historyRef.current?.push("crop-square");
         emitHistory();
       }
-    } catch {}
+    } catch { }
   };
 
   const toJSON = () => {
@@ -6391,6 +6594,10 @@ const Editor2D = forwardRef<Editor2DHandle, Props>(function Editor2D(
         "__moldaImageAdjustments",
         "__moldaImageEffects",
         "__moldaOriginalSrc",
+        "__moldaGalleryItemId",
+        "__moldaGalleryGroupId",
+        "__moldaGalleryOriginalName",
+        "__moldaGalleryIsVariant",
         "__moldaHasPattern",
         "__moldaPatternTarget",
         "__moldaPatternUrl",
@@ -6399,6 +6606,7 @@ const Editor2D = forwardRef<Editor2DHandle, Props>(function Editor2D(
         "__moldaOriginalFill",
         "__moldaOriginalStroke",
         "__moldaLassoCropMeta",
+        "__moldaHasBakedModification",
       ]);
       return JSON.stringify({ kind: "fabric", data });
     }
@@ -6411,7 +6619,7 @@ const Editor2D = forwardRef<Editor2DHandle, Props>(function Editor2D(
     let parsed: any = null;
     try {
       parsed = JSON.parse(json);
-    } catch {}
+    } catch { }
     if (parsed?.kind === "fabric" && c?.loadFromJSON) {
       isLoadingRef.current = true;
       return new Promise<void>((resolve, reject) => {
@@ -6466,6 +6674,65 @@ const Editor2D = forwardRef<Editor2DHandle, Props>(function Editor2D(
     return "";
   };
 
+  /**
+   * Computes the union bounding box of all objects on the canvas and returns
+   * it as ratios of the canvas dimensions (0–1), including the crop origin.
+   * A small padding is included so strokes at the edge are not clipped.
+   * Returns null when the canvas has no objects.
+   */
+  const getContentBounds = (): { ratioLeft: number; ratioTop: number; ratioW: number; ratioH: number } | null => {
+    const c = canvasRef.current as any;
+    if (!c) return null;
+    const objects: any[] = (typeof c.getObjects === "function" ? c.getObjects() : []) ?? [];
+    if (!objects.length) return null;
+
+    const canvasW: number = typeof c.getWidth === "function" ? c.getWidth() : (c.width ?? 1);
+    const canvasH: number = typeof c.getHeight === "function" ? c.getHeight() : (c.height ?? 1);
+    if (canvasW <= 0 || canvasH <= 0) return null;
+
+    let minX = Infinity, minY = Infinity, maxX = -Infinity, maxY = -Infinity;
+
+    for (const obj of objects) {
+      if (!obj || obj.visible === false) continue;
+      try {
+        const br = typeof obj.getBoundingRect === "function"
+          ? obj.getBoundingRect(true, true)
+          : null;
+        if (!br) continue;
+        const left = Number(br.left ?? 0);
+        const top = Number(br.top ?? 0);
+        const width = Number(br.width ?? 0);
+        const height = Number(br.height ?? 0);
+        if (!Number.isFinite(left) || !Number.isFinite(top) || !Number.isFinite(width) || !Number.isFinite(height)) continue;
+        if (left < minX) minX = left;
+        if (top < minY) minY = top;
+        if (left + width > maxX) maxX = left + width;
+        if (top + height > maxY) maxY = top + height;
+      } catch { }
+    }
+
+    if (!Number.isFinite(minX) || !Number.isFinite(maxX)) return null;
+
+    const contentW = Math.max(0, maxX - minX);
+    const contentH = Math.max(0, maxY - minY);
+    if (contentW <= 0 || contentH <= 0) return null;
+
+    // Padding so strokes/shadows at the edge aren't clipped and the gizmo has breathing room
+    const padX = Math.min(canvasW * 0.08, Math.max(8, contentW * 0.10));
+    const padY = Math.min(canvasH * 0.08, Math.max(8, contentH * 0.10));
+    const cropLeft = Math.max(0, minX - padX);
+    const cropTop = Math.max(0, minY - padY);
+    const cropRight = Math.min(canvasW, maxX + padX);
+    const cropBottom = Math.min(canvasH, maxY + padY);
+
+    return {
+      ratioLeft: cropLeft / canvasW,
+      ratioTop: cropTop / canvasH,
+      ratioW: (cropRight - cropLeft) / canvasW,
+      ratioH: (cropBottom - cropTop) / canvasH,
+    };
+  };
+
   const selectObjectAt = (pt: { x: number; y: number; containerWidth: number; containerHeight: number }): boolean => {
     const c: any = canvasRef.current as any;
     const fabricLocal: any = fabricRef.current as any;
@@ -6495,7 +6762,7 @@ const Editor2D = forwardRef<Editor2DHandle, Props>(function Editor2D(
             notifySelectionKind();
             return true;
           }
-        } catch {}
+        } catch { }
       }
 
       // Clique em vazio: limpa seleção
@@ -6539,7 +6806,7 @@ const Editor2D = forwardRef<Editor2DHandle, Props>(function Editor2D(
         width: bounds.width,
         height: bounds.height,
       });
-      
+
       return canvasDataURL;
     } catch (err) {
       console.warn("[exportSelectionPNG] Error:", err);
@@ -6548,17 +6815,85 @@ const Editor2D = forwardRef<Editor2DHandle, Props>(function Editor2D(
     return null;
   };
 
-  const addText = (value: string = "Digite aqui", opts?: { x?: number; y?: number }) => {
+  const getSelectedImageGalleryMeta = (): {
+    itemId?: string;
+    groupId?: string;
+    originalName?: string;
+    isVariant?: boolean;
+  } | null => {
+    const imgs = getSelectedImageObjects();
+    if (!imgs.length) return null;
+    const img: any = imgs[0];
+
+    const itemId = typeof img?.__moldaGalleryItemId === "string" ? img.__moldaGalleryItemId : undefined;
+    const groupId = typeof img?.__moldaGalleryGroupId === "string" ? img.__moldaGalleryGroupId : undefined;
+    const originalName =
+      typeof img?.__moldaGalleryOriginalName === "string" ? img.__moldaGalleryOriginalName : undefined;
+    const isVariant = typeof img?.__moldaGalleryIsVariant === "boolean" ? img.__moldaGalleryIsVariant : undefined;
+
+    if (!itemId && !groupId && !originalName && isVariant == null) return null;
+    return { itemId, groupId, originalName, isVariant };
+  };
+
+  const hasSelectedImageVisualChanges = (): boolean => {
+    const imgs = getSelectedImageObjects();
+    if (!imgs.length) return false;
+    const img: any = imgs[0];
+
+    const currentSrc = typeof img?._element?.src === "string" ? img._element.src : "";
+    const originalSrc =
+      typeof img?.__moldaOriginalSrc === "string"
+        ? img.__moldaOriginalSrc
+        : typeof img?._originalElement?.src === "string"
+        ? img._originalElement.src
+        : "";
+
+    const savedAdj = (img as any).__moldaImageAdjustments as Partial<ImageAdjustments> | undefined;
+    const mergedAdj: ImageAdjustments = { ...DEFAULT_IMAGE_ADJ, ...(savedAdj || {}) };
+    const adjChanged = (Object.keys(DEFAULT_IMAGE_ADJ) as Array<keyof ImageAdjustments>).some(
+      (key) => mergedAdj[key] !== DEFAULT_IMAGE_ADJ[key]
+    );
+
+    const fx = (img as any).__moldaImageEffects as ImageEffects | undefined;
+    const fxChanged = !!fx && (fx.kind !== "none" || Math.abs((fx.amount ?? 1) - 1) > 1e-6);
+
+    const srcChanged = !!originalSrc && !!currentSrc && originalSrc !== currentSrc;
+
+    // Detect Fabric native square-crop (cropX/cropY/width/height changed from natural)
+    const imgElem: HTMLImageElement | null = img?._element instanceof HTMLImageElement
+      ? img._element
+      : img?._originalElement instanceof HTMLImageElement
+      ? img._originalElement
+      : null;
+    const naturalW = imgElem?.naturalWidth ?? 0;
+    const naturalH = imgElem?.naturalHeight ?? 0;
+    const hasFabricCrop =
+      (Number(img.cropX ?? 0) > 0.5) ||
+      (Number(img.cropY ?? 0) > 0.5) ||
+      (naturalW > 0 && Number(img.width ?? 0) > 0 && Number(img.width) < naturalW - 1) ||
+      (naturalH > 0 && Number(img.height ?? 0) > 0 && Number(img.height) < naturalH - 1);
+
+    // Detect lasso crop (meta is set on the new image after commit)
+    const hasLassoCrop = !!(img as any).__moldaLassoCropMeta;
+
+    // Detect baked modifications (effect brush, color cut) — set by those operations
+    const hasBakedMod = !!(img as any).__moldaHasBakedModification;
+
+    return adjChanged || fxChanged || srcChanged || hasFabricCrop || hasLassoCrop || hasBakedMod;
+  };
+
+  const addText = (value: string = "Digite aqui", opts?: { x?: number; y?: number; fontFamily?: string }) => {
     const c: any = canvasRef.current as any;
     const fabricLocal: any = fabricRef.current as any;
     if (!c || !fabricLocal) return;
     const center = { x: c.getWidth() / 2, y: c.getHeight() / 2 };
+    const family = opts?.fontFamily || pendingFontFamilyRef.current || "Inter";
     const it = new fabricLocal.IText(value, {
       left: typeof opts?.x === "number" ? opts.x : center.x,
       top: typeof opts?.y === "number" ? opts.y : center.y,
       originX: "center",
       originY: "center",
-      fontFamily: "Inter",
+      fontFamily: family,
       fontSize: 32,
       fill: strokeColorRef.current || "#000000",
       objectCaching: true,
@@ -6578,19 +6913,64 @@ const Editor2D = forwardRef<Editor2DHandle, Props>(function Editor2D(
     const active: any = c.getActiveObject && c.getActiveObject();
     if (!active || !String(active.type || "").toLowerCase().includes("text")) return null;
 
+    // Tenta obter estilos no nível de caractere (útil quando o texto está sendo editado
+    // e a fonte foi aplicada via setSelectionStyles, e não via set no objeto inteiro)
+    let charStyle: any = {};
+    try {
+      if (typeof active.getSelectionStyles === "function") {
+        const selStyles: any[] = active.getSelectionStyles() || [];
+        if (selStyles.length > 0) {
+          // Usa o estilo do primeiro caractere da seleção como referência
+          charStyle = selStyles[0] || {};
+        } else if (
+          typeof active.selectionStart === "number" &&
+          active.selectionStart === active.selectionEnd &&
+          typeof active.getStyleAtPosition === "function"
+        ) {
+          // Cursor sem seleção: pega o estilo na posição do cursor
+          charStyle = active.getStyleAtPosition(Math.max(0, active.selectionStart - 1)) || {};
+        }
+      }
+    } catch { }
+
+    // Detecta se o fill do objeto é um Gradient do Fabric.js
+    let fillResult: string | GradientFill = charStyle.fill ?? active.fill;
+    try {
+      const rawFill = active.fill;
+      if (rawFill && typeof rawFill === 'object' && rawFill.type === 'linear' && Array.isArray(rawFill.colorStops)) {
+        // Extrai ângulo a partir de coords (x1,y1,x2,y2)
+        const coords = rawFill.coords || {};
+        const x1 = Number(coords.x1 ?? 0);
+        const y1 = Number(coords.y1 ?? 0);
+        const x2 = Number(coords.x2 ?? 0);
+        const y2 = Number(coords.y2 ?? 0);
+        const angleRad = Math.atan2(y2 - y1, x2 - x1);
+        const angleDeg = ((angleRad * 180 / Math.PI) + 360) % 360;
+        fillResult = {
+          type: 'gradient',
+          gradientType: 'linear',
+          angle: Math.round(angleDeg),
+          colorStops: rawFill.colorStops.map((s: any) => ({
+            offset: Number(s.offset ?? 0),
+            color: String(s.color || '#000000'),
+          })),
+        };
+      }
+    } catch { }
+
     return {
-      fontFamily: active.fontFamily,
-      fontSize: active.fontSize,
-      fontWeight: active.fontWeight,
-      fontStyle: active.fontStyle,
-      underline: !!active.underline,
-      linethrough: !!active.linethrough,
-      fill: active.fill,
-      stroke: active.stroke,
-      strokeWidth: active.strokeWidth,
+      fontFamily: charStyle.fontFamily || active.fontFamily,
+      fontSize: charStyle.fontSize ?? active.fontSize,
+      fontWeight: charStyle.fontWeight ?? active.fontWeight,
+      fontStyle: charStyle.fontStyle ?? active.fontStyle,
+      underline: !!(charStyle.underline ?? active.underline),
+      linethrough: !!(charStyle.linethrough ?? active.linethrough),
+      fill: fillResult,
+      stroke: charStyle.stroke ?? active.stroke,
+      strokeWidth: charStyle.strokeWidth ?? active.strokeWidth,
       textAlign: active.textAlign,
       lineHeight: active.lineHeight,
-      charSpacing: active.charSpacing,
+      charSpacing: charStyle.charSpacing ?? active.charSpacing,
       shadow: null,
     };
   };
@@ -6598,7 +6978,7 @@ const Editor2D = forwardRef<Editor2DHandle, Props>(function Editor2D(
   const emitTextStyleEvent = (type: "editor2d:activeTextStyle" | "editor2d:selectionStyle", style: TextStyle | null) => {
     try {
       window.dispatchEvent(new CustomEvent(type, { detail: style || {} }));
-    } catch {}
+    } catch { }
   };
 
   const emitFontUsed = (fontFamily?: string) => {
@@ -6606,18 +6986,60 @@ const Editor2D = forwardRef<Editor2DHandle, Props>(function Editor2D(
     if (!family) return;
     try {
       window.dispatchEvent(new CustomEvent("editor2d:fontUsed", { detail: { fontFamily: family } }));
-    } catch {}
+    } catch { }
   };
 
-  const setActiveTextStyle = async (patch: TextStyle & { from?: "font-picker" | "inspector" }) => {
+  const setActiveTextStyle = async (patch: TextStyle & { from?: "font-picker" | "inspector" | "gradient-live" }) => {
     const c: any = canvasRef.current as any;
     if (!c) return;
     const active: any = c.getActiveObject && c.getActiveObject();
     if (!active || !String(active.type || "").toLowerCase().includes("text")) return;
 
     const nextPatch: any = { ...patch };
+    const isGradientLive = patch.from === "gradient-live";
     if (nextPatch.fontFamily == null) {
-      nextPatch.fontFamily = active.fontFamily || "Inter";
+      if (isGradientLive) {
+        nextPatch.fontFamily = active.fontFamily || "Inter";
+      } else {
+        const liveStyle = getActiveTextStyle();
+        nextPatch.fontFamily = liveStyle?.fontFamily || active.fontFamily || "Inter";
+      }
+    }
+
+    // ===== Gradient fill handling =====
+    // Se o fill for um GradientFill, converte para fabric.Gradient e aplica no objeto inteiro
+    const gradientFill = nextPatch.fill;
+    let fabricGradient: any = null;
+    if (gradientFill && typeof gradientFill === 'object' && gradientFill.type === 'gradient') {
+      try {
+        const fabric: any = fabricRef.current;
+        const angleRad = (gradientFill.angle || 0) * Math.PI / 180;
+        const objW = Number(active.width ?? 100);
+        const objH = Number(active.height ?? 100);
+        // Calcula coords a partir do ângulo
+        const cos = Math.cos(angleRad);
+        const sin = Math.sin(angleRad);
+        const halfW = objW / 2;
+        const halfH = objH / 2;
+        const x1 = halfW - cos * halfW;
+        const y1 = halfH - sin * halfH;
+        const x2 = halfW + cos * halfW;
+        const y2 = halfH + sin * halfH;
+        fabricGradient = new fabric.Gradient({
+          type: 'linear',
+          gradientUnits: 'pixels',
+          coords: { x1, y1, x2, y2 },
+          colorStops: (gradientFill.colorStops || []).map((s: any) => ({
+            offset: Number(s.offset ?? 0),
+            color: String(s.color || '#000000'),
+            opacity: 1,
+          })),
+        });
+      } catch (err) {
+        console.warn('[setActiveTextStyle] Failed to create gradient:', err);
+      }
+      // Remove fill do patch — será aplicado separadamente como objeto
+      delete nextPatch.fill;
     }
 
     const isIText = typeof active?.setSelectionStyles === "function";
@@ -6646,29 +7068,36 @@ const Editor2D = forwardRef<Editor2DHandle, Props>(function Editor2D(
       });
       try {
         active.setSelectionStyles(charPatch);
-      } catch {}
+      } catch { }
       const wholePatch: any = {};
       blockKeys.forEach((k) => {
         if (nextPatch[k] !== undefined) wholePatch[k] = nextPatch[k];
       });
       if (Object.keys(wholePatch).length) {
-        try { active.set(wholePatch); } catch {}
+        try { active.set(wholePatch); } catch { }
       }
     } else {
-      try { active.set(nextPatch); } catch {}
+      try { active.set(nextPatch); } catch { }
     }
 
-    try { active.setCoords?.(); } catch {}
-    try { c.requestRenderAll?.(); } catch {}
+    // Aplica gradiente no objeto inteiro (sempre object-level, nunca per-char)
+    if (fabricGradient) {
+      try { active.set('fill', fabricGradient); } catch { }
+    }
 
-    if (!isRestoringRef.current && !isLoadingRef.current) {
+    try { active.setCoords?.(); } catch { }
+    try { c.requestRenderAll?.(); } catch { }
+
+    if (!isGradientLive && !isRestoringRef.current && !isLoadingRef.current) {
       historyRef.current?.push("modify");
       emitHistory();
     }
 
-    emitTextStyleEvent("editor2d:activeTextStyle", getActiveTextStyle());
-    emitTextStyleEvent("editor2d:selectionStyle", getActiveTextStyle());
-    emitFontUsed(nextPatch.fontFamily);
+    if (!isGradientLive) {
+      emitTextStyleEvent("editor2d:activeTextStyle", getActiveTextStyle());
+      emitTextStyleEvent("editor2d:selectionStyle", getActiveTextStyle());
+      emitFontUsed(nextPatch.fontFamily);
+    }
   };
 
   const applyTextStyle = (patch: TextStyle) => {
@@ -6697,21 +7126,21 @@ const Editor2D = forwardRef<Editor2DHandle, Props>(function Editor2D(
         if (obj.__isPreview) return;
         try {
           c.remove(obj);
-        } catch {}
+        } catch { }
       });
       try {
         c.discardActiveObject?.();
-      } catch {}
+      } catch { }
     });
 
     try {
       c.requestRenderAll?.();
-    } catch {}
+    } catch { }
 
     if (shouldPush) {
       try {
         historyRef.current?.push("remove");
-      } catch {}
+      } catch { }
       emitHistory();
     }
   };
@@ -6734,10 +7163,10 @@ const Editor2D = forwardRef<Editor2DHandle, Props>(function Editor2D(
     const uc: CanvasRenderingContext2D | null = upper ? upper.getContext("2d") : null;
     if (lc && uc) return;
     const snap = toJSON();
-    try { c.dispose?.(); } catch {}
+    try { c.dispose?.(); } catch { }
     try {
       while (host.firstChild) host.removeChild(host.firstChild);
-    } catch {}
+    } catch { }
     const el = document.createElement("canvas");
     el.style.width = "100%";
     el.style.height = "100%";
@@ -6745,7 +7174,7 @@ const Editor2D = forwardRef<Editor2DHandle, Props>(function Editor2D(
     el.height = host.clientHeight || 1;
     host.appendChild(el);
     try {
-    const nc = new fabric.Canvas(el, getCanvasOptions());
+      const nc = new fabric.Canvas(el, getCanvasOptions());
       nc.renderOnAddRemove = true;
       nc.setBackgroundColor("transparent", () => nc.renderAll());
       canvasRef.current = nc;
@@ -6753,7 +7182,7 @@ const Editor2D = forwardRef<Editor2DHandle, Props>(function Editor2D(
       if (snap) {
         await loadFromJSON(snap);
       }
-    } catch {}
+    } catch { }
   };
 
   const ensureCanvasSize = () => {
@@ -6800,7 +7229,7 @@ const Editor2D = forwardRef<Editor2DHandle, Props>(function Editor2D(
     if (keydown && isActiveRef.current) window.addEventListener("keydown", keydown);
     listenersRef.current = handlers;
   };
-  
+
   const detachLineListeners = (c: FabricCanvas) => {
     const { down, move, up, dbl, keydown } = listenersRef.current;
     if (down) c.off("mouse:down", down);
@@ -6987,7 +7416,7 @@ const Editor2D = forwardRef<Editor2DHandle, Props>(function Editor2D(
       path.__brushMeta = { ...meta, width };
       path.setCoords?.();
       path.dirty = true;
-    } catch {}
+    } catch { }
   };
 
   const applyBrushMetaToPath = (path: any) => {
@@ -7280,8 +7709,8 @@ const Editor2D = forwardRef<Editor2DHandle, Props>(function Editor2D(
 
     target.hasBorders = false;
     target.transparentCorners = false;
-  target.cornerColor = GIZMO_THEME.primary;
-  target.cornerStrokeColor = GIZMO_THEME.stroke;
+    target.cornerColor = GIZMO_THEME.primary;
+    target.cornerStrokeColor = GIZMO_THEME.stroke;
     target.lockScalingX = true;
     target.lockScalingY = true;
     target.lockScalingFlip = true;
@@ -7572,8 +8001,8 @@ const Editor2D = forwardRef<Editor2DHandle, Props>(function Editor2D(
           nextPoints[index] = { x: localPt.x, y: localPt.y };
           controlTarget.points = nextPoints;
           controlTarget.dirty = true;
-          try { controlTarget.setCoords?.(); } catch {}
-          try { canvas.requestRenderAll?.(); } catch {}
+          try { controlTarget.setCoords?.(); } catch { }
+          try { canvas.requestRenderAll?.(); } catch { }
           transform.actionPerformed = true;
           return true;
         },
@@ -7607,7 +8036,7 @@ const Editor2D = forwardRef<Editor2DHandle, Props>(function Editor2D(
     target.lockScalingY = false;
     target.lockScalingFlip = false;
     target.lockRotation = false;
-    try { target.setCoords?.(); } catch {}
+    try { target.setCoords?.(); } catch { }
   };
 
   const syncCurveControls = (target: any, meta: CurveMeta) => {
@@ -7817,8 +8246,8 @@ const Editor2D = forwardRef<Editor2DHandle, Props>(function Editor2D(
     target.hasBorders = false;
     target.transparentCorners = true;
     target.cornerStyle = "circle";
-  target.cornerColor = GIZMO_THEME.primary;
-  target.cornerStrokeColor = GIZMO_THEME.stroke;
+    target.cornerColor = GIZMO_THEME.primary;
+    target.cornerStrokeColor = GIZMO_THEME.stroke;
     target.lockScalingX = true;
     target.lockScalingY = true;
     target.lockScalingFlip = true;
@@ -7943,20 +8372,20 @@ const Editor2D = forwardRef<Editor2DHandle, Props>(function Editor2D(
     if (!target || !meta) return;
     const fabric = fabricRef.current;
     if (!fabric) return;
-    
+
     // meta is LOCAL; convert to world before updating Fabric's path
     const worldMeta = curveMetaLocalToWorld(target, meta);
     const commands = computeBezierFromNodes(worldMeta.nodes, worldMeta.closed);
-    
+
     // Preserve pattern settings
     const preservedStroke = target.stroke;
     const preservedFill = target.fill;
     const hasPattern = target.__moldaHasPattern;
-    
+
     // Save the current center point of the meta in world coordinates
     // We'll use this to position the object correctly after initialize()
     const worldMetaCenter = computeCurveMetaCenter(worldMeta);
-    
+
     // Use initialize() to properly recalculate all path dimensions.
     // This prevents clipping when the path extends beyond original bounds.
     if (typeof target.initialize === "function") {
@@ -7975,11 +8404,11 @@ const Editor2D = forwardRef<Editor2DHandle, Props>(function Editor2D(
     } else {
       target.path = commands;
     }
-    
+
     target.dirty = true;
     target.objectCaching = false;
     target.setCoords();
-    
+
     // After initialize(), the object's transform matrix has changed.
     // We need to update __curveMeta to LOCAL coordinates relative to the NEW transform.
     // This keeps the controls aligned with the path.
@@ -7990,9 +8419,9 @@ const Editor2D = forwardRef<Editor2DHandle, Props>(function Editor2D(
     newLocalMeta.opacity = meta.opacity;
     newLocalMeta.closed = meta.closed;
     target.__curveMeta = newLocalMeta;
-    
+
     target.__curveMetaCenter = computeCurveMetaCenter(newLocalMeta);
-    
+
     if (curveTransformGuardRef.current === 0) {
       target.__curveNeedsControlSync = false;
       syncCurveControls(target, newLocalMeta);
@@ -8098,7 +8527,7 @@ const Editor2D = forwardRef<Editor2DHandle, Props>(function Editor2D(
         runSilently(() => {
           canvas.remove(state.preview);
         });
-      } catch {}
+      } catch { }
     }
     state.preview = null;
   };
@@ -8107,7 +8536,7 @@ const Editor2D = forwardRef<Editor2DHandle, Props>(function Editor2D(
     const state = curveStateRef.current;
     if (canvas) {
       clearCurvePreview(canvas);
-      try { canvas.requestRenderAll(); } catch {}
+      try { canvas.requestRenderAll(); } catch { }
     } else {
       state.preview = null;
     }
@@ -8217,20 +8646,26 @@ const Editor2D = forwardRef<Editor2DHandle, Props>(function Editor2D(
     const useFill = style?.fillEnabled !== undefined ? style.fillEnabled : true;
     const finalStrokeColor = style?.strokeColor ?? strokeColor;
     const finalFillColor = useFill ? finalStrokeColor : null;
-    
-    const finalStrokeWidth = style?.strokeWidth ?? strokeWidth;
+
+    // Se for preenchido, removemos a borda para ser um objeto sólido unico (solicitação do usuário)
+    const finalStrokeWidth = useFill ? 0 : (style?.strokeWidth ?? strokeWidth);
     const finalOpacity = style?.opacity ?? opacity;
+    const actualStroke = useFill ? null : finalStrokeColor;
+
+    // Use 0,0 as local origin; we'll center after creation
+    const cx = 0;
+    const cy = 0;
 
     let obj: any = null;
-    
+
     if (shape === "rect") {
       obj = new fabric.Rect({
-        left: 80,
-        top: 60,
+        left: cx,
+        top: cy,
         width: 180,
         height: 180,
         fill: finalFillColor || "transparent",
-        stroke: finalStrokeColor,
+        stroke: actualStroke,
         strokeWidth: finalStrokeWidth,
         opacity: finalOpacity,
         erasable: true,
@@ -8238,11 +8673,11 @@ const Editor2D = forwardRef<Editor2DHandle, Props>(function Editor2D(
       });
     } else if (shape === "ellipse") {
       obj = new fabric.Circle({
-        left: 80,
-        top: 60,
+        left: cx,
+        top: cy,
         radius: 90,
         fill: finalFillColor || "transparent",
-        stroke: finalStrokeColor,
+        stroke: actualStroke,
         strokeWidth: finalStrokeWidth,
         opacity: finalOpacity,
         erasable: true,
@@ -8250,19 +8685,17 @@ const Editor2D = forwardRef<Editor2DHandle, Props>(function Editor2D(
       });
     } else if (shape === "triangle") {
       const points: Array<{ x: number; y: number }> = [];
-      const centerX = 80 + 90;
-      const centerY = 60 + 60;
       const radius = 80;
       for (let i = 0; i < 3; i++) {
         const angle = (Math.PI * 2 / 3) * i - Math.PI / 2;
         points.push({
-          x: centerX + radius * Math.cos(angle),
-          y: centerY + radius * Math.sin(angle),
+          x: cx + radius * Math.cos(angle),
+          y: cy + radius * Math.sin(angle),
         });
       }
       obj = new fabric.Polygon(points, {
         fill: finalFillColor || "transparent",
-        stroke: finalStrokeColor,
+        stroke: actualStroke,
         strokeWidth: finalStrokeWidth,
         opacity: finalOpacity,
         erasable: true,
@@ -8270,38 +8703,201 @@ const Editor2D = forwardRef<Editor2DHandle, Props>(function Editor2D(
     } else if (shape === "polygon") {
       // Hexágono
       const points: Array<{ x: number; y: number }> = [];
-      const centerX = 80 + 90;
-      const centerY = 60 + 60;
       const radius = 60;
       for (let i = 0; i < 6; i++) {
         const angle = (Math.PI / 3) * i - Math.PI / 2;
         points.push({
-          x: centerX + radius * Math.cos(angle),
-          y: centerY + radius * Math.sin(angle),
+          x: cx + radius * Math.cos(angle),
+          y: cy + radius * Math.sin(angle),
         });
       }
       obj = new fabric.Polygon(points, {
         fill: finalFillColor || "transparent",
-        stroke: finalStrokeColor,
+        stroke: actualStroke,
         strokeWidth: finalStrokeWidth,
         opacity: finalOpacity,
         erasable: true,
       });
     } else if (shape === "star") {
       const points: Array<{ x: number; y: number }> = [];
-      const centerX = 80 + 90;
-      const centerY = 60 + 60;
       const outerRadius = 70;
       const innerRadius = 32;
-      const steps = 10; // 5-point star -> 10 vertices alternating radii
+      const steps = 10;
       for (let i = 0; i < steps; i++) {
         const angle = -Math.PI / 2 + i * (Math.PI / 5);
         const r = i % 2 === 0 ? outerRadius : innerRadius;
-        points.push({ x: centerX + r * Math.cos(angle), y: centerY + r * Math.sin(angle) });
+        points.push({ x: cx + r * Math.cos(angle), y: cy + r * Math.sin(angle) });
       }
       obj = new fabric.Polygon(points, {
         fill: finalFillColor || "transparent",
-        stroke: finalStrokeColor,
+        stroke: actualStroke,
+        strokeWidth: finalStrokeWidth,
+        opacity: finalOpacity,
+        erasable: true,
+      });
+    } else if (shape === "diamond") {
+      const w = 120;
+      const h = 160;
+      const points = [
+        { x: cx, y: cy - h / 2 },
+        { x: cx + w / 2, y: cy },
+        { x: cx, y: cy + h / 2 },
+        { x: cx - w / 2, y: cy },
+      ];
+      obj = new fabric.Polygon(points, {
+        fill: finalFillColor || "transparent",
+        stroke: actualStroke,
+        strokeWidth: finalStrokeWidth,
+        opacity: finalOpacity,
+        erasable: true,
+      });
+    } else if (shape === "pentagon") {
+      const points: Array<{ x: number; y: number }> = [];
+      const radius = 70;
+      for (let i = 0; i < 5; i++) {
+        const angle = (Math.PI * 2 / 5) * i - Math.PI / 2;
+        points.push({
+          x: cx + radius * Math.cos(angle),
+          y: cy + radius * Math.sin(angle),
+        });
+      }
+      obj = new fabric.Polygon(points, {
+        fill: finalFillColor || "transparent",
+        stroke: actualStroke,
+        strokeWidth: finalStrokeWidth,
+        opacity: finalOpacity,
+        erasable: true,
+      });
+    } else if (shape === "octagon") {
+      const points: Array<{ x: number; y: number }> = [];
+      const radius = 70;
+      for (let i = 0; i < 8; i++) {
+        const angle = (Math.PI * 2 / 8) * i - Math.PI / 2 + Math.PI / 8;
+        points.push({
+          x: cx + radius * Math.cos(angle),
+          y: cy + radius * Math.sin(angle),
+        });
+      }
+      obj = new fabric.Polygon(points, {
+        fill: finalFillColor || "transparent",
+        stroke: actualStroke,
+        strokeWidth: finalStrokeWidth,
+        opacity: finalOpacity,
+        erasable: true,
+      });
+    } else if (shape === "cross") {
+      const arm = 70;
+      const thick = 30;
+      const hf = thick / 2;
+      const points = [
+        { x: cx - hf, y: cy - arm },
+        { x: cx + hf, y: cy - arm },
+        { x: cx + hf, y: cy - hf },
+        { x: cx + arm, y: cy - hf },
+        { x: cx + arm, y: cy + hf },
+        { x: cx + hf, y: cy + hf },
+        { x: cx + hf, y: cy + arm },
+        { x: cx - hf, y: cy + arm },
+        { x: cx - hf, y: cy + hf },
+        { x: cx - arm, y: cy + hf },
+        { x: cx - arm, y: cy - hf },
+        { x: cx - hf, y: cy - hf },
+      ];
+      obj = new fabric.Polygon(points, {
+        fill: finalFillColor || "transparent",
+        stroke: actualStroke,
+        strokeWidth: finalStrokeWidth,
+        opacity: finalOpacity,
+        erasable: true,
+      });
+    } else if (shape === "heart") {
+      const s = 1.1;
+      const hx = 0;
+      const hy = 0;
+      const path = `M ${hx},${hy + 30 * s} ` +
+        `C ${hx},${hy + 26 * s} ${hx - 5 * s},${hy + 15 * s} ${hx - 15 * s},${hy + 15 * s} ` +
+        `C ${hx - 30 * s},${hy + 15 * s} ${hx - 40 * s},${hy + 30 * s} ${hx - 40 * s},${hy + 40 * s} ` +
+        `C ${hx - 40 * s},${hy + 60 * s} ${hx - 20 * s},${hy + 75 * s} ${hx},${hy + 90 * s} ` +
+        `C ${hx + 20 * s},${hy + 75 * s} ${hx + 40 * s},${hy + 60 * s} ${hx + 40 * s},${hy + 40 * s} ` +
+        `C ${hx + 40 * s},${hy + 30 * s} ${hx + 30 * s},${hy + 15 * s} ${hx + 15 * s},${hy + 15 * s} ` +
+        `C ${hx + 5 * s},${hy + 15 * s} ${hx},${hy + 26 * s} ${hx},${hy + 30 * s} Z`;
+      obj = new fabric.Path(path, {
+        fill: finalFillColor || "transparent",
+        stroke: actualStroke,
+        strokeWidth: finalStrokeWidth,
+        opacity: finalOpacity,
+        erasable: true,
+      });
+    } else if (shape === "arrow") {
+      const points = [
+        { x: cx - 60, y: cy - 20 },
+        { x: cx + 20, y: cy - 20 },
+        { x: cx + 20, y: cy - 45 },
+        { x: cx + 70, y: cy },
+        { x: cx + 20, y: cy + 45 },
+        { x: cx + 20, y: cy + 20 },
+        { x: cx - 60, y: cy + 20 },
+      ];
+      obj = new fabric.Polygon(points, {
+        fill: finalFillColor || "transparent",
+        stroke: actualStroke,
+        strokeWidth: finalStrokeWidth,
+        opacity: finalOpacity,
+        erasable: true,
+      });
+    } else if (shape === "lightning") {
+      const points = [
+        { x: cx - 10, y: cy - 70 },
+        { x: cx + 30, y: cy - 70 },
+        { x: cx + 5, y: cy - 10 },
+        { x: cx + 35, y: cy - 10 },
+        { x: cx - 20, y: cy + 70 },
+        { x: cx + 5, y: cy + 5 },
+        { x: cx - 25, y: cy + 5 },
+      ];
+      obj = new fabric.Polygon(points, {
+        fill: finalFillColor || "transparent",
+        stroke: actualStroke,
+        strokeWidth: finalStrokeWidth,
+        opacity: finalOpacity,
+        erasable: true,
+      });
+    } else if (shape === "drop") {
+      const path = `M 0,0 ` +
+        `C -5,20 -45,60 -45,90 ` +
+        `A 45 45 0 0 0 45,90 ` +
+        `C 45,60 5,20 0,0 Z`;
+      obj = new fabric.Path(path, {
+        fill: finalFillColor || "transparent",
+        stroke: actualStroke,
+        strokeWidth: finalStrokeWidth,
+        opacity: finalOpacity,
+        erasable: true,
+      });
+    } else if (shape === "moon") {
+      // Crescent moon: outer circle at origin (R=55), inner cutout at (-20,0) (r=45)
+      // Intersection points at (-35, ±42.4)
+      const path = `M -35,-42.4 A 55 55 0 1 1 -35,42.4 A 45 45 0 0 1 -35,-42.4 Z`;
+      obj = new fabric.Path(path, {
+        fill: finalFillColor || "transparent",
+        stroke: actualStroke,
+        strokeWidth: finalStrokeWidth,
+        opacity: finalOpacity,
+        erasable: true,
+      });
+    } else if (shape === "star6") {
+      const points: Array<{ x: number; y: number }> = [];
+      const outerRadius = 70;
+      const innerRadius = 40;
+      const steps = 12;
+      for (let i = 0; i < steps; i++) {
+        const angle = -Math.PI / 2 + i * (Math.PI / 6);
+        const r = i % 2 === 0 ? outerRadius : innerRadius;
+        points.push({ x: cx + r * Math.cos(angle), y: cy + r * Math.sin(angle) });
+      }
+      obj = new fabric.Polygon(points, {
+        fill: finalFillColor || "transparent",
+        stroke: actualStroke,
         strokeWidth: finalStrokeWidth,
         opacity: finalOpacity,
         erasable: true,
@@ -8310,11 +8906,14 @@ const Editor2D = forwardRef<Editor2DHandle, Props>(function Editor2D(
 
     if (obj) {
       c.add(obj);
+      // Center the shape on the canvas
+      obj.center();
+      obj.setCoords();
       c.setActiveObject(obj);
       c.renderAll();
       if (String(obj.type || "").toLowerCase() === "polygon") {
         (obj as any).__vertexMode = false;
-        try { applyDefaultPolygonControls(obj); } catch {}
+        try { applyDefaultPolygonControls(obj); } catch { }
       }
       historyRef.current?.push(`add-shape-${shape}`);
       emitHistory();
@@ -8324,16 +8923,16 @@ const Editor2D = forwardRef<Editor2DHandle, Props>(function Editor2D(
   // Cancel any active drawing operations
   const cancelContinuousLine = () => {
     console.log(`[Editor2D] Canceling active drawing operations, current tool: ${toolRef.current}`);
-    
+
     // Cancel curve drawing
     resetCurveState(canvasRef.current);
-    
+
     // Cancel continuous line mode if active
     if (continuousLineMode) {
       console.log(`[Editor2D] Canceling continuous line mode`);
       onContinuousLineCancelRef.current?.();
     }
-    
+
     // Reset any other tool states that might be active
     try {
       const canvas = canvasRef.current;
@@ -8348,7 +8947,7 @@ const Editor2D = forwardRef<Editor2DHandle, Props>(function Editor2D(
     } catch (error) {
       console.error(`[Editor2D] Error resetting canvas state:`, error);
     }
-    
+
     // Reset host cursor to default (this fixes the stamp cursor issue)
     try {
       setHostCursor("default");
@@ -8356,7 +8955,7 @@ const Editor2D = forwardRef<Editor2DHandle, Props>(function Editor2D(
     } catch (error) {
       console.error(`[Editor2D] Error resetting host cursor:`, error);
     }
-    
+
     // Request tool change to select if current tool is a drawing tool
     const currentTool = toolRef.current;
     if (currentTool && currentTool !== "select" && currentTool !== "text") {
@@ -8365,13 +8964,13 @@ const Editor2D = forwardRef<Editor2DHandle, Props>(function Editor2D(
     }
   };
 
-  const addImage = (src: string, opts?: { x?: number; y?: number; scale?: number }) => {
+  const addImage = (src: string, opts?: { x?: number; y?: number; scale?: number; meta?: Record<string, unknown> }) => {
     const c = canvasRef.current;
     const fabric = fabricRef.current;
     if (c && fabric) {
       // Cancel any active drawing tools when adding image
       cancelContinuousLine();
-      
+
       void ensureCanvasReady();
       fabric.Image.fromURL(
         src,
@@ -8391,10 +8990,25 @@ const Editor2D = forwardRef<Editor2DHandle, Props>(function Editor2D(
           // guarda a origem para permitir re-aplicar filtros sem degradar (dataURL em cascata)
           try {
             (img as any).__moldaOriginalSrc = src;
-          } catch {}
+          } catch { }
+          try {
+            const meta = opts?.meta || {};
+            if (typeof meta.galleryItemId === "string" && meta.galleryItemId.length) {
+              (img as any).__moldaGalleryItemId = meta.galleryItemId;
+            }
+            if (typeof meta.galleryGroupId === "string" && meta.galleryGroupId.length) {
+              (img as any).__moldaGalleryGroupId = meta.galleryGroupId;
+            }
+            if (typeof meta.galleryOriginalName === "string" && meta.galleryOriginalName.length) {
+              (img as any).__moldaGalleryOriginalName = meta.galleryOriginalName;
+            }
+            if (typeof meta.galleryIsVariant === "boolean") {
+              (img as any).__moldaGalleryIsVariant = meta.galleryIsVariant;
+            }
+          } catch { }
           c.add(img);
           c.setActiveObject(img);
-          try { c.requestRenderAll?.(); } catch {}
+          try { c.requestRenderAll?.(); } catch { }
         },
         { crossOrigin: "anonymous" }
       );
@@ -8481,7 +9095,7 @@ const Editor2D = forwardRef<Editor2DHandle, Props>(function Editor2D(
 
           try {
             (ctx as any).filter = filterCss;
-          } catch {}
+          } catch { }
 
           ctx.drawImage(imgEl, 0, 0);
 
@@ -8723,7 +9337,7 @@ const Editor2D = forwardRef<Editor2DHandle, Props>(function Editor2D(
             offsetY: offset,
           });
         }
-      } catch {}
+      } catch { }
     };
 
     const needsReencode = (prev: ImageAdjustments | undefined, next: ImageAdjustments) => {
@@ -8749,11 +9363,11 @@ const Editor2D = forwardRef<Editor2DHandle, Props>(function Editor2D(
       const prev = (img as any).__moldaImageAdjustments as ImageAdjustments | undefined;
       try {
         (img as any).__moldaImageAdjustments = { ...adj };
-      } catch {}
+      } catch { }
 
       // Shadow é aplicado via Fabric para não recortar (clipping) e responder corretamente.
       applyFabricShadow(img, adj);
-      try { c.requestRenderAll?.(); } catch {}
+      try { c.requestRenderAll?.(); } catch { }
 
       // Reset para o default: volta para a imagem original (se disponível) sem re-encode.
       if (isDefaultLevels(adj)) {
@@ -8764,7 +9378,7 @@ const Editor2D = forwardRef<Editor2DHandle, Props>(function Editor2D(
             img.setSrc(
               originalSrc,
               () => {
-                try { c.requestRenderAll?.(); } catch {}
+                try { c.requestRenderAll?.(); } catch { }
                 resolve();
               },
               { crossOrigin: "anonymous" }
@@ -8795,7 +9409,7 @@ const Editor2D = forwardRef<Editor2DHandle, Props>(function Editor2D(
             img.setSrc(
               dataUrl,
               () => {
-                try { c.requestRenderAll?.(); } catch {}
+                try { c.requestRenderAll?.(); } catch { }
                 resolve();
               },
               { crossOrigin: "anonymous" }
@@ -8806,7 +9420,7 @@ const Editor2D = forwardRef<Editor2DHandle, Props>(function Editor2D(
           // fallback: troca o elemento e força render
           try {
             img._element = null;
-          } catch {}
+          } catch { }
           resolve();
         });
       } catch {
@@ -9294,7 +9908,7 @@ const Editor2D = forwardRef<Editor2DHandle, Props>(function Editor2D(
 
           try {
             (ctx as any).filter = filterCss;
-          } catch {}
+          } catch { }
 
           ctx.drawImage(imgEl, 0, 0);
 
@@ -9343,7 +9957,7 @@ const Editor2D = forwardRef<Editor2DHandle, Props>(function Editor2D(
     for (const img of imgs) {
       try {
         (img as any).__moldaImageEffects = { ...fx };
-      } catch {}
+      } catch { }
 
       const kind = fx.kind ?? "none";
       const amount = typeof fx.amount === "number" ? fx.amount : 1;
@@ -9361,11 +9975,11 @@ const Editor2D = forwardRef<Editor2DHandle, Props>(function Editor2D(
             const dataUrl = await exportImageWithAdjustmentsToDataUrl(originalSrc, adj);
             await new Promise<void>((resolve) => {
               img.setSrc(dataUrl, () => {
-                try { c.requestRenderAll?.(); } catch {}
+                try { c.requestRenderAll?.(); } catch { }
                 resolve();
               }, { crossOrigin: "anonymous" });
             });
-          } catch {}
+          } catch { }
         }
         scheduleHistoryCommit();
         continue;
@@ -9388,14 +10002,14 @@ const Editor2D = forwardRef<Editor2DHandle, Props>(function Editor2D(
         await new Promise<void>((resolve) => {
           if (typeof img?.setSrc === "function") {
             img.setSrc(dataUrl, () => {
-              try { c.requestRenderAll?.(); } catch {}
+              try { c.requestRenderAll?.(); } catch { }
               resolve();
             }, { crossOrigin: "anonymous" });
             return;
           }
           resolve();
         });
-      } catch {}
+      } catch { }
 
       scheduleHistoryCommit();
     }
@@ -9410,15 +10024,15 @@ const Editor2D = forwardRef<Editor2DHandle, Props>(function Editor2D(
   const getSelectionInfo = (): SelectionInfo | null => {
     const c = canvasRef.current;
     if (!c) return null;
-    
+
     const activeObject = c.getActiveObject();
     const activeSelection = c.getActiveObjects();
     const hasSelection = !!activeObject && activeSelection.length > 0;
-    
+
     if (!hasSelection) {
       return {
         hasSelection: false,
-        hasClipboard: !!clipboardRef.current,
+        hasClipboard: !!(clipboardRef.current || _globalFabricClipboard),
         isFullyLocked: false,
         canBringForward: false,
         canSendBackward: false,
@@ -9432,21 +10046,21 @@ const Editor2D = forwardRef<Editor2DHandle, Props>(function Editor2D(
 
     const allObjects = c.getObjects();
     const selectedObjects = activeSelection;
-    
+
     // Check if all selected objects are locked
-    const isFullyLocked = selectedObjects.every((obj: any) => 
+    const isFullyLocked = selectedObjects.every((obj: any) =>
       obj.lockMovementX && obj.lockMovementY && obj.lockScalingX && obj.lockScalingY && obj.lockRotation
     );
 
     // Check layering possibilities
     const maxIndex = Math.max(...selectedObjects.map((obj: any) => allObjects.indexOf(obj)));
     const minIndex = Math.min(...selectedObjects.map((obj: any) => allObjects.indexOf(obj)));
-    
+
     const canBringForward = maxIndex < allObjects.length - 1;
     const canSendBackward = minIndex > 0;
     const canBringToFront = maxIndex < allObjects.length - 1;
     const canSendToBack = minIndex > 0;
-    
+
     // Can group if more than one object selected and they're not already grouped
     const canGroup = selectedObjects.length > 1 && !selectedObjects.some((obj: any) => obj.type === 'group');
 
@@ -9463,7 +10077,7 @@ const Editor2D = forwardRef<Editor2DHandle, Props>(function Editor2D(
       "group",
       "activeSelection",
     ]);
-    
+
     const baseType = String(activeObject?.type || "").toLowerCase();
     const canApplyPattern = compatibleTypes.has(baseType);
 
@@ -9472,7 +10086,7 @@ const Editor2D = forwardRef<Editor2DHandle, Props>(function Editor2D(
 
     return {
       hasSelection: true,
-      hasClipboard: !!clipboardRef.current,
+      hasClipboard: !!(clipboardRef.current || _globalFabricClipboard),
       isFullyLocked,
       canBringForward,
       canSendBackward,
@@ -9505,17 +10119,17 @@ const Editor2D = forwardRef<Editor2DHandle, Props>(function Editor2D(
           fill: backup.fill,
           stroke: backup.stroke,
         });
-        try { obj.setCoords?.(); } catch {}
+        try { obj.setCoords?.(); } catch { }
       });
       state.backup.delete(obj);
       needsRender = true;
     });
-  state.objects.clear();
-  state.backup.clear();
+    state.objects.clear();
+    state.backup.clear();
     if (needsRender) {
       try {
         c?.requestRenderAll?.();
-      } catch {}
+      } catch { }
     }
   };
 
@@ -9572,7 +10186,7 @@ const Editor2D = forwardRef<Editor2DHandle, Props>(function Editor2D(
     obj.cacheTranslationY = 0;
     obj.dirty = true;
     if (typeof obj._removeCache === "function") {
-      try { obj._removeCache(); } catch {}
+      try { obj._removeCache(); } catch { }
     }
     if (obj._cacheCanvas) obj._cacheCanvas = undefined;
     if (obj._cacheContext) obj._cacheContext = undefined;
@@ -9581,7 +10195,7 @@ const Editor2D = forwardRef<Editor2DHandle, Props>(function Editor2D(
     if (typeof obj.setCoords === "function") {
       try {
         obj.setCoords();
-      } catch {}
+      } catch { }
     }
     // If the object belongs to a group, drop parent caches as well
     if (obj.group) {
@@ -9632,6 +10246,14 @@ const Editor2D = forwardRef<Editor2DHandle, Props>(function Editor2D(
       });
     } else {
       patch.fill = pattern;
+      // Quando aplicamos padrão ao preenchimento, removemos a borda para ser objeto sólido
+      // (solicitação do usuário: degradê/padrão deve colorir o objeto todo)
+      const t = String(obj?.type || "").toLowerCase();
+      const isPathLike = t === "path" || t === "line" || t === "poly-line";
+      if (!isPathLike) {
+        patch.stroke = null;
+        patch.strokeWidth = 0;
+      }
     }
     obj.set(patch);
     // Centraliza a invalidação de cache/bounds em um único lugar
@@ -9684,7 +10306,7 @@ const Editor2D = forwardRef<Editor2DHandle, Props>(function Editor2D(
       });
       try {
         c.requestRenderAll?.();
-      } catch {}
+      } catch { }
       return;
     }
     for (const obj of selectedObjects) {
@@ -9695,7 +10317,7 @@ const Editor2D = forwardRef<Editor2DHandle, Props>(function Editor2D(
     } catch {
       try {
         c.renderAll?.();
-      } catch {}
+      } catch { }
     }
     historyRef.current?.push("apply-pattern");
     emitHistory();
@@ -9739,7 +10361,7 @@ const Editor2D = forwardRef<Editor2DHandle, Props>(function Editor2D(
     });
     try {
       obj.canvas?.requestRenderAll?.();
-    } catch {}
+    } catch { }
   };
 
   const reapplyPatternForTarget = (target: any) => {
@@ -9791,7 +10413,7 @@ const Editor2D = forwardRef<Editor2DHandle, Props>(function Editor2D(
 
       try {
         obj.setCoords?.();
-      } catch {}
+      } catch { }
     };
 
     for (const obj of selectedObjects) {
@@ -9802,7 +10424,7 @@ const Editor2D = forwardRef<Editor2DHandle, Props>(function Editor2D(
     try {
       c.requestRenderAll?.();
     } catch {
-      try { c.renderAll?.(); } catch {}
+      try { c.renderAll?.(); } catch { }
     }
     historyRef.current?.push("remove-pattern");
     emitHistory();
@@ -9859,12 +10481,12 @@ const Editor2D = forwardRef<Editor2DHandle, Props>(function Editor2D(
   const notifySelectionKind = () => {
     const kind = computeSelectionKind();
     selectionListenersRef.current.forEach((cb) => {
-      try { cb(kind); } catch {}
+      try { cb(kind); } catch { }
     });
     const style = kind === "text" ? getActiveTextStyle() : null;
     try {
       window.dispatchEvent(new CustomEvent("editor2d:selectionChange", { detail: { kind, ...((style && style.fontFamily) ? { fontFamily: style.fontFamily } : {}) } }));
-    } catch {}
+    } catch { }
     if (style) {
       emitTextStyleEvent("editor2d:activeTextStyle", style);
       emitTextStyleEvent("editor2d:selectionStyle", style);
@@ -9886,7 +10508,7 @@ const Editor2D = forwardRef<Editor2DHandle, Props>(function Editor2D(
             detail: { kind, ...((style && style.fontFamily) ? { fontFamily: style.fontFamily } : {}) },
           })
         );
-      } catch {}
+      } catch { }
     };
 
     const handleRequestStyle = () => {
@@ -9902,6 +10524,7 @@ const Editor2D = forwardRef<Editor2DHandle, Props>(function Editor2D(
     const handleFontPicked = (ev: Event) => {
       const family = (ev as CustomEvent)?.detail?.fontFamily;
       if (typeof family === "string" && family.trim()) {
+        pendingFontFamilyRef.current = family.trim();
         applyTextStyle({ fontFamily: family });
         emitFontUsed(family);
       }
@@ -9931,20 +10554,25 @@ const Editor2D = forwardRef<Editor2DHandle, Props>(function Editor2D(
   const copySelection = () => {
     const c = canvasRef.current;
     if (!c) return;
-    
+
     const activeObject = c.getActiveObject();
     if (!activeObject) return;
-    
+
     activeObject.clone((cloned: any) => {
       clipboardRef.current = cloned;
+      // Also write to module-level global so other canvas tabs can paste it.
+      _globalFabricClipboard = cloned;
     });
   };
 
   const pasteSelection = () => {
     const c = canvasRef.current;
-    if (!c || !clipboardRef.current) return;
-    
-    clipboardRef.current.clone((cloned: any) => {
+    // Fall back to module-level global clipboard when this canvas has nothing local.
+    // This enables cross-canvas paste (copy on tab A, paste on tab B).
+    const source = clipboardRef.current ?? _globalFabricClipboard;
+    if (!c || !source) return;
+
+    source.clone((cloned: any) => {
       c.discardActiveObject();
       cloned.set({
         left: cloned.left + 10,
@@ -9960,8 +10588,12 @@ const Editor2D = forwardRef<Editor2DHandle, Props>(function Editor2D(
       } else {
         c.add(cloned);
       }
-      clipboardRef.current.top += 10;
-      clipboardRef.current.left += 10;
+      // Offset source so repeated pastes cascade instead of stacking exactly.
+      source.top += 10;
+      source.left += 10;
+      // Sync local clipboard with the (possibly global) source so subsequent
+      // pastes in this canvas use the already-offset reference.
+      clipboardRef.current = source;
       c.setActiveObject(cloned);
       c.requestRenderAll();
       historyRef.current?.push("paste");
@@ -9977,12 +10609,12 @@ const Editor2D = forwardRef<Editor2DHandle, Props>(function Editor2D(
   const toggleLockSelection = () => {
     const c = canvasRef.current;
     if (!c) return;
-    
+
     const activeObjects = c.getActiveObjects();
     if (activeObjects.length === 0) return;
-    
+
     const isLocked = activeObjects[0].lockMovementX;
-    
+
     activeObjects.forEach((obj: any) => {
       obj.set({
         lockMovementX: !isLocked,
@@ -9993,7 +10625,7 @@ const Editor2D = forwardRef<Editor2DHandle, Props>(function Editor2D(
         selectable: isLocked, // If unlocking, make selectable
       });
     });
-    
+
     c.requestRenderAll();
     historyRef.current?.push("lock");
     emitHistory();
@@ -10002,12 +10634,12 @@ const Editor2D = forwardRef<Editor2DHandle, Props>(function Editor2D(
   const bringSelectionForward = () => {
     const c = canvasRef.current;
     if (!c) return;
-    
+
     const activeObjects = c.getActiveObjects();
     activeObjects.forEach((obj: any) => {
       c.bringForward(obj);
     });
-    
+
     c.requestRenderAll();
     historyRef.current?.push("bring-forward");
     emitHistory();
@@ -10016,12 +10648,12 @@ const Editor2D = forwardRef<Editor2DHandle, Props>(function Editor2D(
   const sendSelectionBackward = () => {
     const c = canvasRef.current;
     if (!c) return;
-    
+
     const activeObjects = c.getActiveObjects();
     activeObjects.forEach((obj: any) => {
       c.sendBackwards(obj);
     });
-    
+
     c.requestRenderAll();
     historyRef.current?.push("send-backward");
     emitHistory();
@@ -10030,12 +10662,12 @@ const Editor2D = forwardRef<Editor2DHandle, Props>(function Editor2D(
   const bringSelectionToFront = () => {
     const c = canvasRef.current;
     if (!c) return;
-    
+
     const activeObjects = c.getActiveObjects();
     activeObjects.forEach((obj: any) => {
       c.bringToFront(obj);
     });
-    
+
     c.requestRenderAll();
     historyRef.current?.push("bring-to-front");
     emitHistory();
@@ -10044,12 +10676,12 @@ const Editor2D = forwardRef<Editor2DHandle, Props>(function Editor2D(
   const sendSelectionToBack = () => {
     const c = canvasRef.current;
     if (!c) return;
-    
+
     const activeObjects = c.getActiveObjects();
     activeObjects.forEach((obj: any) => {
       c.sendToBack(obj);
     });
-    
+
     c.requestRenderAll();
     historyRef.current?.push("send-to-back");
     emitHistory();
@@ -10058,22 +10690,22 @@ const Editor2D = forwardRef<Editor2DHandle, Props>(function Editor2D(
   const groupSelection = () => {
     const c = canvasRef.current;
     if (!c) return;
-    
+
     const activeObjects = c.getActiveObjects();
     if (activeObjects.length < 2) return;
-    
+
     const group = new (window as any).fabric.Group(activeObjects, {
       canvas: c,
     });
-    
+
     activeObjects.forEach((obj: any) => {
       c.remove(obj);
     });
-    
+
     c.add(group);
     c.setActiveObject(group);
     c.requestRenderAll();
-    
+
     historyRef.current?.push("group");
     emitHistory();
   };
@@ -10081,17 +10713,17 @@ const Editor2D = forwardRef<Editor2DHandle, Props>(function Editor2D(
   const refresh = () => {
     const c = canvasRef.current;
     if (c) {
-      try { c.requestRenderAll(); } catch {}
+      try { c.requestRenderAll(); } catch { }
     }
   };
 
   const listUsedFonts = (): string[] => {
     const c = canvasRef.current;
     if (!c) return [];
-    
+
     const fonts = new Set<string>();
     const objects = c.getObjects();
-    
+
     objects.forEach((obj: any) => {
       if (obj.type === 'text' || obj.type === 'i-text' || obj.type === 'textbox') {
         if (obj.fontFamily) {
@@ -10105,14 +10737,134 @@ const Editor2D = forwardRef<Editor2DHandle, Props>(function Editor2D(
         });
       }
     });
-    
+
     return Array.from(fonts);
   };
+
+  // ---- Aplica degradê a qualquer objeto selecionado ----
+  const applyGradientToSelection = (gfill: GradientFill) => {
+    const c: any = canvasRef.current;
+    if (!c) return;
+    const active: any = c.getActiveObject?.();
+    if (!active) return;
+    try {
+      const fabric: any = fabricRef.current;
+      const angleRad = (gfill.angle || 0) * Math.PI / 180;
+      const objW = Number(active.width ?? 100);
+      const objH = Number(active.height ?? 100);
+      
+      let grad: any;
+      const stops = (gfill.colorStops || []).map((s: any) => ({
+        offset: Number(s.offset ?? 0),
+        color: String(s.color || '#000000'),
+        opacity: 1,
+      }));
+
+      const gType = gfill.gradientType || 'linear';
+
+      if (gType === 'linear') {
+        const cos = Math.cos(angleRad);
+        const sin = Math.sin(angleRad);
+        const halfW = objW / 2;
+        const halfH = objH / 2;
+        const x1 = halfW - cos * halfW;
+        const y1 = halfH - sin * halfH;
+        const x2 = halfW + cos * halfW;
+        const y2 = halfH + sin * halfH;
+        grad = new fabric.Gradient({
+          type: 'linear',
+          gradientUnits: 'pixels',
+          coords: { x1, y1, x2, y2 },
+          colorStops: stops,
+        });
+      } 
+      else if (gType === 'radial') {
+        const radiusFraction = (gfill as any).radius ?? 1.0;
+        const r2 = Math.max(objW, objH) / 2 * radiusFraction;
+        grad = new fabric.Gradient({
+          type: 'radial',
+          gradientUnits: 'pixels',
+          coords: {
+            x1: objW / 2,
+            y1: objH / 2,
+            r1: 0,
+            x2: objW / 2,
+            y2: objH / 2,
+            r2,
+          },
+          colorStops: stops,
+        });
+      }
+
+      const t = String(active.type || "").toLowerCase();
+      const currentFill = active.get('fill');
+      const isUnfilled = !currentFill || currentFill === 'transparent' || currentFill === 'rgba(0,0,0,0)';
+
+      const shouldApplyToStroke = t === "path" || t === "line" || t === "poly-line" || isUnfilled;
+
+      if (shouldApplyToStroke) {
+        active.set('stroke', grad);
+        active.set('fill', isUnfilled ? currentFill : null);
+      } else {
+        active.set('fill', grad);
+      }
+
+      active.setCoords?.();
+      c.requestRenderAll?.();
+    } catch (err) {
+      console.warn('[applyGradientToSelection] Failed:', err);
+    }
+  };
+
+  // Helper para interpolação de stops
+  function getInterpolatedColorAt(stops: any[], t: number) {
+    if (stops.length === 0) return '#000';
+    if (stops.length === 1) return stops[0].color;
+    const sorted = [...stops].sort((a,b) => a.offset - b.offset);
+    if (t <= sorted[0].offset) return sorted[0].color;
+    if (t >= sorted[sorted.length-1].offset) return sorted[sorted.length-1].color;
+    
+    for (let i = 0; i < sorted.length - 1; i++) {
+      const s1 = sorted[i];
+      const s2 = sorted[i+1];
+      if (t >= s1.offset && t <= s2.offset) {
+        const localT = (t - s1.offset) / (s2.offset - s1.offset);
+        return interpolateHex(s1.color, s2.color, localT);
+      }
+    }
+    return sorted[0].color;
+  }
+
+  function interpolateHex(hex1: string, hex2: string, t: number): string {
+    const h1 = hexToRgb(hex1);
+    const h2 = hexToRgb(hex2);
+    if (!h1 || !h2) return hex1;
+    const r = Math.round(h1.r + (h2.r - h1.r) * t);
+    const g = Math.round(h1.g + (h2.g - h1.g) * t);
+    const b = Math.round(h1.b + (h2.b - h1.b) * t);
+    const toHex = (n: number) => Math.min(255, Math.max(0, n)).toString(16).padStart(2, '0');
+    return `#${toHex(r)}${toHex(g)}${toHex(b)}`.toUpperCase();
+  }
+
+  function hexToRgb(hex: string) {
+    let cleanHex = hex.replace('#', '');
+    if (cleanHex.length === 3) {
+      cleanHex = cleanHex.split('').map(c => c + c).join('');
+    }
+    const m = /^([a-f\d]{2})([a-f\d]{2})([a-f\d]{2})$/i.exec(cleanHex);
+    return m ? {
+      r: parseInt(m[1], 16),
+      g: parseInt(m[2], 16),
+      b: parseInt(m[3], 16)
+    } : null;
+  }
 
   useImperativeHandle(ref, () => ({
     clear,
     exportPNG,
     exportSelectionPNG,
+    getSelectedImageGalleryMeta,
+    hasSelectedImageVisualChanges,
     selectObjectAt,
     getSelectionKind: computeSelectionKind,
     addShape,
@@ -10139,6 +10891,7 @@ const Editor2D = forwardRef<Editor2DHandle, Props>(function Editor2D(
     getActiveTextStyle,
     setActiveTextStyle,
     applyTextStyle,
+    applyGradientToSelection,
     getActiveImageAdjustments,
     applyActiveImageAdjustments,
     getActiveImageEffects,
@@ -10176,6 +10929,89 @@ const Editor2D = forwardRef<Editor2DHandle, Props>(function Editor2D(
     onColorCutModeChange: (cb) => {
       colorCutModeListenersRef.current.add(cb);
     },
+    removeBackground: async () => {
+      const c: any = canvasRef.current;
+      if (!c) return;
+
+      const imgs = getSelectedImageObjects();
+      if (imgs.length !== 1) {
+        console.warn("[removeBackground] Selecione exatamente 1 imagem.");
+        return;
+      }
+      const img = imgs[0];
+
+      try {
+        // Pega o elemento HTML já carregado pelo Fabric — evita fetch/CORS
+        const el: HTMLImageElement | null =
+          img._originalElement || img._element || null;
+
+        let blob: Blob | null = null;
+
+        if (el) {
+          // Abordagem 1: desenha o elemento no canvas offscreen → blob PNG
+          const w = el.naturalWidth || (el as any).width || 512;
+          const h = el.naturalHeight || (el as any).height || 512;
+          const offscreen = document.createElement("canvas");
+          offscreen.width = w;
+          offscreen.height = h;
+          const ctx2d = offscreen.getContext("2d");
+          if (ctx2d) {
+            try {
+              ctx2d.drawImage(el, 0, 0);
+              blob = await new Promise<Blob | null>((res) => {
+                offscreen.toBlob((b) => res(b), "image/png");
+              });
+            } catch {
+              // canvas tainted — tenta pelo src abaixo
+            }
+          }
+        }
+
+        // Abordagem 2 (fallback): usa o src da imagem
+        if (!blob) {
+          const src: string | undefined =
+            (img as any).__moldaOriginalSrc ||
+            (typeof img?.getSrc === "function" ? img.getSrc() : undefined) ||
+            img?._originalElement?.src ||
+            img?._element?.src;
+          if (!src) {
+            console.error("[removeBackground] Sem src acessível na imagem.");
+            return;
+          }
+          const res = await fetch(src);
+          blob = await res.blob();
+        }
+
+        // Processa no Worker — a main thread / UI NÃO trava durante a inferência ONNX
+        const resultBlob = await _removeBackgroundInWorker(blob);
+
+        const dataUrl = await new Promise<string>((resolve, reject) => {
+          const reader = new FileReader();
+          reader.onload = () => resolve(reader.result as string);
+          reader.onerror = reject;
+          reader.readAsDataURL(resultBlob);
+        });
+
+        await new Promise<void>((resolve) => {
+          img.setSrc(
+            dataUrl,
+            () => {
+              // Garante que o boundingBox está correto após troca de src
+              try { img.setCoords?.(); } catch { }
+              try { c.requestRenderAll?.(); } catch { }
+              resolve();
+            },
+            { crossOrigin: "anonymous" }
+          );
+        });
+
+        historyRef.current?.push("removeBackground");
+        emitHistory();
+      } catch (err) {
+        console.error("[removeBackground] falhou:", err);
+        throw err; // propaga para o .catch() do caller exibir o toast de erro
+      }
+    },
     onCropModeChange: (cb) => {
       cropModeListenersRef.current.add(cb);
     },
@@ -10185,7 +11021,7 @@ const Editor2D = forwardRef<Editor2DHandle, Props>(function Editor2D(
     onSelectionChange: (cb) => {
       selectionListenersRef.current.add(cb);
     },
-    
+
     // Context Menu Functions
     getSelectionInfo,
     copySelection,
@@ -10199,11 +11035,12 @@ const Editor2D = forwardRef<Editor2DHandle, Props>(function Editor2D(
     groupSelection,
     applyPatternToSelection,
     removePatternFromSelection,
-  previewPatternStart,
-  previewPatternEnd,
+    previewPatternStart,
+    previewPatternEnd,
     refresh,
     listUsedFonts,
     waitForIdle,
+    getContentBounds,
   }));
 
   // Inicialização principal
@@ -10213,10 +11050,10 @@ const Editor2D = forwardRef<Editor2DHandle, Props>(function Editor2D(
     const init = async () => {
       try {
         console.log("[Editor2D] Init started");
-  const fabric = await loadFabricRuntime();
-  console.log("[Editor2D] Fabric loaded:", !!fabric, !!fabric?.Canvas);
-  applyGizmoThemeToFabric(fabric);
-        
+        const fabric = await loadFabricRuntime();
+        console.log("[Editor2D] Fabric loaded:", !!fabric, !!fabric?.Canvas);
+        applyGizmoThemeToFabric(fabric);
+
         if (disposed || !hostRef.current) {
           console.log("[Editor2D] Disposed or no host, aborting");
           return;
@@ -10228,121 +11065,121 @@ const Editor2D = forwardRef<Editor2DHandle, Props>(function Editor2D(
           return;
         }
 
-          installFabricEraser(fabric);
+        installFabricEraser(fabric);
 
-          // CORREÇÃO CRÍTICA: Intercepta o prototype do Pattern para garantir renderização sem limitações
-          // O problema é que o canvas do pattern é criado com tamanho baseado no objeto original
-          // e não é atualizado quando o objeto é redimensionado
-          try {
-            if (fabric.Pattern && fabric.Pattern.prototype) {
-              const PatternProto = fabric.Pattern.prototype as any;
-              
-              // Intercepta o método toLive que cria o canvas do pattern
-              // Este método é chamado toda vez que o pattern é renderizado
-              // CRÍTICO: O problema pode estar no canvas sendo criado com tamanho baseado na imagem original
-              if (PatternProto.toLive && typeof PatternProto.toLive === "function" && !PatternProto.__moldaToLivePatched) {
-                PatternProto.__moldaToLivePatched = true;
-                const originalToLive = PatternProto.toLive;
-                PatternProto.toLive = function(ctx: CanvasRenderingContext2D) {
-                  try {
-                    // CRÍTICO: Remove sourceRect ANTES de renderizar
-                    // O sourceRect limita a área de renderização do pattern baseado no tamanho da imagem
-                    if (this.sourceRect) {
-                      delete this.sourceRect;
-                    }
-                    // CRÍTICO: Remove canvas cacheado para forçar recriação
-                    // O canvas pode ter sido criado com tamanho baseado na imagem original (img.width, img.height)
-                    // e não no tamanho atual do objeto
-                    if (this._patternCanvas) {
-                      const oldCanvas = this._patternCanvas;
-                      delete this._patternCanvas;
-                      // Se o canvas tinha tamanho limitado pela imagem, força recriação sem limitações
-                    }
-                    // CRÍTICO: Intercepta a criação do canvas para garantir que não use o tamanho da imagem como limite
-                    // O método original pode estar criando um canvas com width/height baseados em this.source.width/height
-                    // Precisamos garantir que o canvas seja criado sem essas limitações
-                    const originalSource = this.source;
-                    // Se source é uma imagem, não devemos usar suas dimensões para limitar o canvas
-                    // O pattern deve ser renderizado em toda a extensão do objeto, não limitado pela imagem
-                    
-                    // Chama o método original
-                    const result = originalToLive.call(this, ctx);
-                    
-                    // CRÍTICO: Após criar o canvas, garante que ele não tenha limitações de tamanho
-                    if (this._patternCanvas) {
-                      // O canvas pode ter sido criado com tamanho baseado na imagem
-                      // Não podemos mudar o tamanho do canvas diretamente, mas podemos garantir
-                      // que o sourceRect não limite a renderização
-                      if (this.sourceRect) {
-                        delete this.sourceRect;
-                      }
-                    }
-                    
-                    // Garante que sourceRect não seja recriado após renderização
-                    if (this.sourceRect) {
-                      delete this.sourceRect;
-                    }
-                    return result;
-                  } catch (err) {
-                    console.warn("[Editor2D] Error in toLive patch:", err);
-                    return originalToLive.call(this, ctx);
+        // CORREÇÃO CRÍTICA: Intercepta o prototype do Pattern para garantir renderização sem limitações
+        // O problema é que o canvas do pattern é criado com tamanho baseado no objeto original
+        // e não é atualizado quando o objeto é redimensionado
+        try {
+          if (fabric.Pattern && fabric.Pattern.prototype) {
+            const PatternProto = fabric.Pattern.prototype as any;
+
+            // Intercepta o método toLive que cria o canvas do pattern
+            // Este método é chamado toda vez que o pattern é renderizado
+            // CRÍTICO: O problema pode estar no canvas sendo criado com tamanho baseado na imagem original
+            if (PatternProto.toLive && typeof PatternProto.toLive === "function" && !PatternProto.__moldaToLivePatched) {
+              PatternProto.__moldaToLivePatched = true;
+              const originalToLive = PatternProto.toLive;
+              PatternProto.toLive = function (ctx: CanvasRenderingContext2D) {
+                try {
+                  // CRÍTICO: Remove sourceRect ANTES de renderizar
+                  // O sourceRect limita a área de renderização do pattern baseado no tamanho da imagem
+                  if (this.sourceRect) {
+                    delete this.sourceRect;
                   }
-                };
-              }
-              
-              // Intercepta o método que cria o canvas do pattern se existir
-              // Este método pode estar criando o canvas com tamanho baseado na imagem
-              // CRÍTICO: O problema está aqui - o canvas é criado com tamanho baseado na imagem (img.width, img.height)
-              // e não no tamanho do objeto, causando o corte quando o objeto é redimensionado
-              if (PatternProto._getPatternCanvas && typeof PatternProto._getPatternCanvas === "function" && !PatternProto.__moldaGetPatternCanvasPatched) {
-                PatternProto.__moldaGetPatternCanvasPatched = true;
-                const originalGetPatternCanvas = PatternProto._getPatternCanvas;
-                PatternProto._getPatternCanvas = function() {
-                  try {
-                    // Remove sourceRect antes de criar o canvas
-                    // O sourceRect pode estar sendo definido com base no tamanho da imagem
+                  // CRÍTICO: Remove canvas cacheado para forçar recriação
+                  // O canvas pode ter sido criado com tamanho baseado na imagem original (img.width, img.height)
+                  // e não no tamanho atual do objeto
+                  if (this._patternCanvas) {
+                    const oldCanvas = this._patternCanvas;
+                    delete this._patternCanvas;
+                    // Se o canvas tinha tamanho limitado pela imagem, força recriação sem limitações
+                  }
+                  // CRÍTICO: Intercepta a criação do canvas para garantir que não use o tamanho da imagem como limite
+                  // O método original pode estar criando um canvas com width/height baseados em this.source.width/height
+                  // Precisamos garantir que o canvas seja criado sem essas limitações
+                  const originalSource = this.source;
+                  // Se source é uma imagem, não devemos usar suas dimensões para limitar o canvas
+                  // O pattern deve ser renderizado em toda a extensão do objeto, não limitado pela imagem
+
+                  // Chama o método original
+                  const result = originalToLive.call(this, ctx);
+
+                  // CRÍTICO: Após criar o canvas, garante que ele não tenha limitações de tamanho
+                  if (this._patternCanvas) {
+                    // O canvas pode ter sido criado com tamanho baseado na imagem
+                    // Não podemos mudar o tamanho do canvas diretamente, mas podemos garantir
+                    // que o sourceRect não limite a renderização
                     if (this.sourceRect) {
                       delete this.sourceRect;
                     }
-                    // CRÍTICO: Se source é uma imagem, não devemos usar suas dimensões para limitar o canvas
-                    // O canvas deve ser criado sem limitações de tamanho baseadas na imagem
-                    const originalSource = this.source;
-                    // Temporariamente remove informações de tamanho da imagem para evitar limitações
-                    let savedWidth, savedHeight;
-                    if (originalSource && typeof originalSource === "object" && "width" in originalSource && "height" in originalSource) {
-                      // Não podemos modificar a imagem diretamente, mas podemos garantir
-                      // que o sourceRect não seja criado com base nela
-                    }
-                    
-                    // Chama o método original
-                    const canvas = originalGetPatternCanvas.call(this);
-                    
-                    // CRÍTICO: Após criar o canvas, verifica se ele foi criado com tamanho limitado pela imagem
-                    // Se o canvas tem width/height iguais à imagem, isso pode estar limitando a renderização
-                    if (canvas && originalSource) {
-                      const imgWidth = originalSource.width || 0;
-                      const imgHeight = originalSource.height || 0;
-                      // Se o canvas foi criado com tamanho igual à imagem, isso pode estar causando o problema
-                      // Mas não podemos simplesmente mudar o tamanho do canvas, pois isso quebraria o pattern
-                      // Em vez disso, garantimos que o sourceRect não limite a renderização
-                      if (this.sourceRect) {
-                        delete this.sourceRect;
-                      }
-                    }
-                    
-                    return canvas;
-                  } catch (err) {
-                    console.warn("[Editor2D] Error in _getPatternCanvas patch:", err);
-                    return originalGetPatternCanvas.call(this);
                   }
-                };
-              }
+
+                  // Garante que sourceRect não seja recriado após renderização
+                  if (this.sourceRect) {
+                    delete this.sourceRect;
+                  }
+                  return result;
+                } catch (err) {
+                  console.warn("[Editor2D] Error in toLive patch:", err);
+                  return originalToLive.call(this, ctx);
+                }
+              };
             }
-          } catch (err) {
-            console.warn("[Editor2D] Failed to patch Pattern.prototype.toLive:", err);
-          }
 
-          fabricRef.current = fabric;
+            // Intercepta o método que cria o canvas do pattern se existir
+            // Este método pode estar criando o canvas com tamanho baseado na imagem
+            // CRÍTICO: O problema está aqui - o canvas é criado com tamanho baseado na imagem (img.width, img.height)
+            // e não no tamanho do objeto, causando o corte quando o objeto é redimensionado
+            if (PatternProto._getPatternCanvas && typeof PatternProto._getPatternCanvas === "function" && !PatternProto.__moldaGetPatternCanvasPatched) {
+              PatternProto.__moldaGetPatternCanvasPatched = true;
+              const originalGetPatternCanvas = PatternProto._getPatternCanvas;
+              PatternProto._getPatternCanvas = function () {
+                try {
+                  // Remove sourceRect antes de criar o canvas
+                  // O sourceRect pode estar sendo definido com base no tamanho da imagem
+                  if (this.sourceRect) {
+                    delete this.sourceRect;
+                  }
+                  // CRÍTICO: Se source é uma imagem, não devemos usar suas dimensões para limitar o canvas
+                  // O canvas deve ser criado sem limitações de tamanho baseadas na imagem
+                  const originalSource = this.source;
+                  // Temporariamente remove informações de tamanho da imagem para evitar limitações
+                  let savedWidth, savedHeight;
+                  if (originalSource && typeof originalSource === "object" && "width" in originalSource && "height" in originalSource) {
+                    // Não podemos modificar a imagem diretamente, mas podemos garantir
+                    // que o sourceRect não seja criado com base nela
+                  }
+
+                  // Chama o método original
+                  const canvas = originalGetPatternCanvas.call(this);
+
+                  // CRÍTICO: Após criar o canvas, verifica se ele foi criado com tamanho limitado pela imagem
+                  // Se o canvas tem width/height iguais à imagem, isso pode estar limitando a renderização
+                  if (canvas && originalSource) {
+                    const imgWidth = originalSource.width || 0;
+                    const imgHeight = originalSource.height || 0;
+                    // Se o canvas foi criado com tamanho igual à imagem, isso pode estar causando o problema
+                    // Mas não podemos simplesmente mudar o tamanho do canvas, pois isso quebraria o pattern
+                    // Em vez disso, garantimos que o sourceRect não limite a renderização
+                    if (this.sourceRect) {
+                      delete this.sourceRect;
+                    }
+                  }
+
+                  return canvas;
+                } catch (err) {
+                  console.warn("[Editor2D] Error in _getPatternCanvas patch:", err);
+                  return originalGetPatternCanvas.call(this);
+                }
+              };
+            }
+          }
+        } catch (err) {
+          console.warn("[Editor2D] Failed to patch Pattern.prototype.toLive:", err);
+        }
+
+        fabricRef.current = fabric;
 
         const el = document.createElement("canvas");
         el.style.width = "100%";
@@ -10388,21 +11225,21 @@ const Editor2D = forwardRef<Editor2DHandle, Props>(function Editor2D(
             historyRef.current?.push("add");
           }
           emitHistory();
-          try { c.requestRenderAll(); } catch {}
+          try { c.requestRenderAll(); } catch { }
           notifySelectionKind();
         };
         const __onRemoved = () => {
           if (shouldRecordHistory())
             historyRef.current?.push("remove");
           emitHistory();
-          try { c.requestRenderAll(); } catch {}
+          try { c.requestRenderAll(); } catch { }
           notifySelectionKind();
         };
         const __onModified = (evt: any) => {
           if (shouldRecordHistory())
             historyRef.current?.push("modify");
           emitHistory();
-          try { c.requestRenderAll(); } catch {}
+          try { c.requestRenderAll(); } catch { }
           notifySelectionKind();
           const target = evt?.target;
           if (target) {
@@ -10417,7 +11254,7 @@ const Editor2D = forwardRef<Editor2DHandle, Props>(function Editor2D(
           const syncObj = (obj: any) => {
             if (!obj) return;
             if (obj.__curveMeta) {
-              try { syncCurveControls(obj, obj.__curveMeta as CurveMeta); } catch {}
+              try { syncCurveControls(obj, obj.__curveMeta as CurveMeta); } catch { }
             }
             // reset drag baseline for next move
             if (typeof obj.left === "number" && typeof obj.top === "number") {
@@ -10470,7 +11307,7 @@ const Editor2D = forwardRef<Editor2DHandle, Props>(function Editor2D(
           if (shouldRecordHistory())
             historyRef.current?.push("draw");
           emitHistory();
-          try { c.requestRenderAll(); } catch {}
+          try { c.requestRenderAll(); } catch { }
         };
 
         const __onMoving = (evt: any) => {
@@ -10533,11 +11370,11 @@ const Editor2D = forwardRef<Editor2DHandle, Props>(function Editor2D(
           // O canvas pode ter sido criado com tamanho baseado no objeto original
           visitLeafObjects(target, (obj: any) => {
             if (!obj || !obj.__moldaHasPattern) return;
-           // Remove canvas do pattern para forçar recriação
+            // Remove canvas do pattern para forçar recriação
             const fill = obj.fill;
             const stroke = obj.stroke;
-           if (fill && typeof fill === "object" && fill._patternCanvas) {
-             delete fill._patternCanvas;
+            if (fill && typeof fill === "object" && fill._patternCanvas) {
+              delete fill._patternCanvas;
             }
             if (fill && typeof fill === "object" && fill.sourceRect) {
               delete fill.sourceRect;
@@ -10558,7 +11395,7 @@ const Editor2D = forwardRef<Editor2DHandle, Props>(function Editor2D(
                 if (typeof obj.calcCoords === "function") {
                   obj.calcCoords();
                 }
-              } catch {}
+              } catch { }
             }
             // Invalida cache do bounding box
             if (obj._boundingRect) {
@@ -10626,7 +11463,7 @@ const Editor2D = forwardRef<Editor2DHandle, Props>(function Editor2D(
                   if (s.undoStack.length > MAX_SQUARE_CROP_UNDO) s.undoStack.shift();
                   s.redoStack = [];
                 }
-              } catch {}
+              } catch { }
             }
 
             // Pointer in canvas coordinates.
@@ -10634,7 +11471,7 @@ const Editor2D = forwardRef<Editor2DHandle, Props>(function Editor2D(
             try {
               const p = c.getPointer?.(evt);
               if (p && typeof p.x === "number" && typeof p.y === "number") pointer = { x: p.x, y: p.y };
-            } catch {}
+            } catch { }
             if ((pointer.x === 0 && pointer.y === 0) && opt?.pointer && typeof opt.pointer.x === "number") {
               pointer = { x: opt.pointer.x, y: opt.pointer.y };
             }
@@ -10652,7 +11489,7 @@ const Editor2D = forwardRef<Editor2DHandle, Props>(function Editor2D(
                     img.scaleToPoint(pt, nextScaleX);
                     img.set?.({ scaleX: nextScaleX, scaleY: nextScaleY });
                   } catch {
-                    try { img.set?.({ scaleX: nextScaleX, scaleY: nextScaleY }); } catch {}
+                    try { img.set?.({ scaleX: nextScaleX, scaleY: nextScaleY }); } catch { }
                   }
                 } else {
                   // Fallback: uniform scale + translate opposite the cursor vector.
@@ -10661,7 +11498,7 @@ const Editor2D = forwardRef<Editor2DHandle, Props>(function Editor2D(
                   const dx = pointer.x - center.x;
                   const dy2 = pointer.y - center.y;
                   const nextCenter = { x: center.x - dx * (scaleRatio - 1), y: center.y - dy2 * (scaleRatio - 1) };
-                  try { img.set?.({ scaleX: nextScaleX, scaleY: nextScaleY }); } catch {}
+                  try { img.set?.({ scaleX: nextScaleX, scaleY: nextScaleY }); } catch { }
                   try {
                     const fabric: any = fabricRef.current;
                     if (fabric?.Point && typeof img.setPositionByOrigin === "function") {
@@ -10670,7 +11507,7 @@ const Editor2D = forwardRef<Editor2DHandle, Props>(function Editor2D(
                       img.left = nextCenter.x;
                       img.top = nextCenter.y;
                     }
-                  } catch {}
+                  } catch { }
                 }
               } else {
                 // Zoom out: scale now, but only recenter AFTER the gesture ends (debounce)
@@ -10684,10 +11521,10 @@ const Editor2D = forwardRef<Editor2DHandle, Props>(function Editor2D(
                     img.scaleToPoint(pt, nextScaleX);
                     img.set?.({ scaleX: nextScaleX, scaleY: nextScaleY });
                   } catch {
-                    try { img.set?.({ scaleX: nextScaleX, scaleY: nextScaleY }); } catch {}
+                    try { img.set?.({ scaleX: nextScaleX, scaleY: nextScaleY }); } catch { }
                   }
                 } else {
-                  try { img.set?.({ scaleX: nextScaleX, scaleY: nextScaleY }); } catch {}
+                  try { img.set?.({ scaleX: nextScaleX, scaleY: nextScaleY }); } catch { }
                   try {
                     if (fabric?.Point && typeof img.setPositionByOrigin === "function") {
                       img.setPositionByOrigin(new fabric.Point(imgCenter.x, imgCenter.y), "center", "center");
@@ -10695,7 +11532,7 @@ const Editor2D = forwardRef<Editor2DHandle, Props>(function Editor2D(
                       img.left = imgCenter.x;
                       img.top = imgCenter.y;
                     }
-                  } catch {}
+                  } catch { }
                 }
 
                 // Gentle recentering during zoom-out: move a fraction toward the canvas center.
@@ -10713,23 +11550,23 @@ const Editor2D = forwardRef<Editor2DHandle, Props>(function Editor2D(
                     img.left = nextCenter.x;
                     img.top = nextCenter.y;
                   }
-                } catch {}
+                } catch { }
               }
 
-              try { img.setCoords?.(); } catch {}
+              try { img.setCoords?.(); } catch { }
             });
 
             // Refresh crop UI from image without forcing centering on zoom-in.
             try {
               s.imageRect = getImageRect(img);
-            } catch {}
+            } catch { }
             if (isSquareCropActive) {
               try {
                 runSilently(() => {
                   try {
                     s.highlight.set({ left: s.imageRect.left, top: s.imageRect.top, width: s.imageRect.width, height: s.imageRect.height });
                     s.highlight.setCoords?.();
-                  } catch {}
+                  } catch { }
                   try {
                     const l = s.imageRect.left;
                     const t = s.imageRect.top;
@@ -10743,11 +11580,11 @@ const Editor2D = forwardRef<Editor2DHandle, Props>(function Editor2D(
                     s.imgHandles.tr.setCoords?.();
                     s.imgHandles.bl.setCoords?.();
                     s.imgHandles.br.setCoords?.();
-                  } catch {}
+                  } catch { }
                 });
-              } catch {}
+              } catch { }
 
-              try { updateSquareCropPreview(); } catch {}
+              try { updateSquareCropPreview(); } catch { }
 
               // End gesture after idle; keep snapshot up to date.
               if (wheelScaleCommitTimerRef.current) {
@@ -10761,7 +11598,7 @@ const Editor2D = forwardRef<Editor2DHandle, Props>(function Editor2D(
                 ss.isAdjusting = false;
                 try {
                   ss.lastRecorded = normalizeSquareCropSnapshot(getSquareCropSnapshot(ss));
-                } catch {}
+                } catch { }
               }, 250);
             } else if (isLassoCropActive) {
               // Lasso crop UI refresh.
@@ -10770,7 +11607,7 @@ const Editor2D = forwardRef<Editor2DHandle, Props>(function Editor2D(
                   try {
                     s.highlight.set({ left: s.imageRect.left, top: s.imageRect.top, width: s.imageRect.width, height: s.imageRect.height });
                     s.highlight.setCoords?.();
-                  } catch {}
+                  } catch { }
                   try {
                     const l = s.imageRect.left;
                     const t = s.imageRect.top;
@@ -10784,12 +11621,12 @@ const Editor2D = forwardRef<Editor2DHandle, Props>(function Editor2D(
                     s.imgHandles.tr.setCoords?.();
                     s.imgHandles.bl.setCoords?.();
                     s.imgHandles.br.setCoords?.();
-                  } catch {}
+                  } catch { }
                 });
-              } catch {}
+              } catch { }
 
               // Pontos do laço precisam acompanhar a imagem após zoom/move.
-              try { updateLassoGraphics(); } catch {}
+              try { updateLassoGraphics(); } catch { }
             } else if (isEffectBrushActive || isEffectLassoActive) {
               // Effect brush UI refresh.
               try {
@@ -10797,7 +11634,7 @@ const Editor2D = forwardRef<Editor2DHandle, Props>(function Editor2D(
                   try {
                     s.highlight.set({ left: s.imageRect.left, top: s.imageRect.top, width: s.imageRect.width, height: s.imageRect.height });
                     s.highlight.setCoords?.();
-                  } catch {}
+                  } catch { }
                   try {
                     const l = s.imageRect.left;
                     const t = s.imageRect.top;
@@ -10811,21 +11648,21 @@ const Editor2D = forwardRef<Editor2DHandle, Props>(function Editor2D(
                     s.imgHandles.tr.setCoords?.();
                     s.imgHandles.bl.setCoords?.();
                     s.imgHandles.br.setCoords?.();
-                  } catch {}
+                  } catch { }
                 });
-              } catch {}
+              } catch { }
             }
 
             if (isColorCutActiveLocal) {
-              try { updateColorCutGraphics(); } catch {}
+              try { updateColorCutGraphics(); } catch { }
             }
 
-            try { c.requestRenderAll?.(); } catch {}
+            try { c.requestRenderAll?.(); } catch { }
 
             try {
               evt.preventDefault();
               evt.stopPropagation();
-            } catch {}
+            } catch { }
             return;
           }
 
@@ -10866,26 +11703,26 @@ const Editor2D = forwardRef<Editor2DHandle, Props>(function Editor2D(
             try {
               active.scaleX = nextScaleX;
               active.scaleY = nextScaleY;
-            } catch {}
+            } catch { }
           }
           if (center && typeof active.setPositionByOrigin === "function") {
             try {
               active.setPositionByOrigin(center, "center", "center");
-            } catch {}
+            } catch { }
           }
-          try { active.setCoords?.(); } catch {}
+          try { active.setCoords?.(); } catch { }
 
           // Reuse existing scaling listeners (e.g. pattern invalidation).
           try {
             c.fire?.("object:scaling", { target: active });
-          } catch {}
+          } catch { }
 
-          try { c.requestRenderAll?.(); } catch {}
+          try { c.requestRenderAll?.(); } catch { }
 
           try {
             evt.preventDefault();
             evt.stopPropagation();
-          } catch {}
+          } catch { }
 
           // Debounce history so a scroll gesture becomes a single undo step.
           if (wheelScaleCommitTimerRef.current) {
@@ -10897,16 +11734,16 @@ const Editor2D = forwardRef<Editor2DHandle, Props>(function Editor2D(
             if (shouldRecordHistory()) {
               try {
                 historyRef.current?.push("scale-wheel");
-              } catch {}
+              } catch { }
               emitHistory();
             }
           }, 250);
         };
 
-    c.on("object:added", __onAdded);
-    c.on("object:removed", __onRemoved);
-      c.on("object:modified", __onModified);
-      c.on("object:modified", __onModifiedSyncControls);
+        c.on("object:added", __onAdded);
+        c.on("object:removed", __onRemoved);
+        c.on("object:modified", __onModified);
+        c.on("object:modified", __onModifiedSyncControls);
         const __onSelectedSyncPolygon = (ev: any) => {
           try {
             const t = String(ev?.target?.type || "").toLowerCase();
@@ -10918,7 +11755,7 @@ const Editor2D = forwardRef<Editor2DHandle, Props>(function Editor2D(
                 applyDefaultPolygonControls(trg);
               }
             }
-          } catch {}
+          } catch { }
         };
         c.on("object:selected", __onSelectedSyncPolygon);
         c.on("selection:updated", __onSelectedSyncPolygon);
@@ -10945,10 +11782,10 @@ const Editor2D = forwardRef<Editor2DHandle, Props>(function Editor2D(
               } else {
                 applyDefaultPolygonControls(trg);
               }
-              try { c.setActiveObject?.(trg); } catch {}
-              try { c.requestRenderAll?.(); } catch {}
+              try { c.setActiveObject?.(trg); } catch { }
+              try { c.requestRenderAll?.(); } catch { }
             }
-          } catch {}
+          } catch { }
         };
         c.on("mouse:dblclick", __onDoubleClick);
 
@@ -10978,7 +11815,7 @@ const Editor2D = forwardRef<Editor2DHandle, Props>(function Editor2D(
         pending.forEach((resolve) => {
           try {
             resolve();
-          } catch {}
+          } catch { }
         });
       }
       const c = canvasRef.current;
@@ -11002,10 +11839,10 @@ const Editor2D = forwardRef<Editor2DHandle, Props>(function Editor2D(
 
   // ----------------------- tool switching -----------------------
   useEffect(() => {
-    console.log("[Editor2D] Tool effect:", { 
-      canvasReady, 
-      tool, 
-      brushVariant, 
+    console.log("[Editor2D] Tool effect:", {
+      canvasReady,
+      tool,
+      brushVariant,
       hasCanvas: !!canvasRef.current,
       currentHostCursor: hostRef.current?.style?.cursor || "unknown"
     });
@@ -11035,7 +11872,7 @@ const Editor2D = forwardRef<Editor2DHandle, Props>(function Editor2D(
       if (typeof brushSize === "number" && brushSize > 0) {
         const circularCursor = buildCircularCursor(brushSize);
         setHostCursor(circularCursor);
-        try { c.freeDrawingCursor = circularCursor; } catch {}
+        try { c.freeDrawingCursor = circularCursor; } catch { }
       } else {
         setHostCursor(cursor);
       }
@@ -11059,7 +11896,7 @@ const Editor2D = forwardRef<Editor2DHandle, Props>(function Editor2D(
       }
       // Apply circular cursor to the canvas drawing cursor
       const circularCursor = buildCircularCursor(strokeWidth);
-      try { c.freeDrawingCursor = circularCursor; } catch {}
+      try { c.freeDrawingCursor = circularCursor; } catch { }
       c.renderAll();
     };
 
@@ -11073,26 +11910,55 @@ const Editor2D = forwardRef<Editor2DHandle, Props>(function Editor2D(
       setObjectsSelectable(c, true);
       setHostCursor("default");
       // Reset canvas default cursor to ensure no custom cursors remain
-      try { c.defaultCursor = "default"; } catch {}
+      try { c.defaultCursor = "default"; } catch { }
       c.renderAll();
       console.log("[Editor2D] SELECT tool setup complete, cursor should be default");
       return;
     }
 
-    // TEXT (funciona como select)
+    // TEXT (click-to-add: clicar em área vazia cria uma caixa de texto)
     if (tool === "text") {
-      console.log("[Editor2D] Setting up TEXT tool - resetting cursor to default");
-      // Same behavior as select (do not discard selection).
+      console.log("[Editor2D] Setting up TEXT tool - click-to-add mode");
       c.isDrawingMode = false;
       c.selection = true;
       c.skipTargetFind = false;
       setObjectsSelectable(c, true);
-      setHostCursor("default");
-      // Reset canvas default cursor to ensure no custom cursors remain
-      try { c.defaultCursor = "default"; } catch {}
+      setHostCursor("text");
+      try { c.defaultCursor = "text"; } catch { }
       c.renderAll();
-      console.log("[Editor2D] TEXT tool setup complete, cursor should be default");
-      return;
+
+      // Handler: ao clicar em área vazia, adiciona texto na posição do clique
+      // Após criar o texto, volta para a ferramenta "select" automaticamente
+      let textAdded = false;
+      const onTextMouseDown = (evt: any) => {
+        // Ignora se já adicionou texto nesta sessão (evita duplicatas durante a troca de tool)
+        if (textAdded) return;
+        // Ignora se clicou em um objeto existente (deixa Fabric lidar com seleção)
+        if (evt?.target) return;
+        // Ignora botão secundário
+        if (evt?.e?.button && evt.e.button !== 0) return;
+        try {
+          textAdded = true;
+          const pointer = c.getPointer(evt.e);
+          addText("Digite aqui", {
+            x: pointer.x,
+            y: pointer.y,
+            fontFamily: pendingFontFamilyRef.current || "Inter",
+          });
+          // Volta para select após adicionar o texto
+          onRequestToolChangeRef.current?.("select");
+        } catch (err) {
+          textAdded = false;
+          console.warn("[Editor2D] Error adding text on click:", err);
+        }
+      };
+      c.on("mouse:down", onTextMouseDown);
+
+      console.log("[Editor2D] TEXT tool setup complete, click-to-add active");
+      // Cleanup: remove o handler quando a ferramenta mudar
+      return () => {
+        try { c.off("mouse:down", onTextMouseDown); } catch { }
+      };
     }
 
     // STAMP (carimbo/moldes): clica/arrasta para inserir repetidamente a imagem selecionada
@@ -11108,7 +11974,7 @@ const Editor2D = forwardRef<Editor2DHandle, Props>(function Editor2D(
       const sizePx = Math.max(12, (strokeWidth || 1) * 10);
       const cursor = buildCircularCursor(sizePx);
       setHostCursor(cursor);
-      try { (c as any).defaultCursor = cursor; } catch {}
+      try { (c as any).defaultCursor = cursor; } catch { }
       console.log("[Editor2D] STAMP tool setup complete, circular cursor applied");
 
       const session = stampSessionRef.current;
@@ -11125,7 +11991,7 @@ const Editor2D = forwardRef<Editor2DHandle, Props>(function Editor2D(
         renderScheduled = true;
         requestAnimationFrame(() => {
           renderScheduled = false;
-          try { c.requestRenderAll?.(); } catch {}
+          try { c.requestRenderAll?.(); } catch { }
         });
       };
 
@@ -11168,7 +12034,7 @@ const Editor2D = forwardRef<Editor2DHandle, Props>(function Editor2D(
           objectCaching: false,
         });
 
-        try { (cloned as any).__moldaOriginalSrc = src; } catch {}
+        try { (cloned as any).__moldaOriginalSrc = src; } catch { }
 
         c.add(cloned);
         session.didStamp = true;
@@ -11203,7 +12069,7 @@ const Editor2D = forwardRef<Editor2DHandle, Props>(function Editor2D(
                 objectCaching: false,
               });
 
-              try { (img as any).__moldaOriginalSrc = src; } catch {}
+              try { (img as any).__moldaOriginalSrc = src; } catch { }
 
               c.add(img);
               session.didStamp = true;
@@ -11305,7 +12171,7 @@ const Editor2D = forwardRef<Editor2DHandle, Props>(function Editor2D(
       const onKeyDown = (evt: KeyboardEvent) => {
         if (evt.key === "Escape") {
           evt.preventDefault();
-          try { onRequestToolChangeRef.current?.("select"); } catch {}
+          try { onRequestToolChangeRef.current?.("select"); } catch { }
         }
       };
 
@@ -11348,7 +12214,7 @@ const Editor2D = forwardRef<Editor2DHandle, Props>(function Editor2D(
         resetCurveState(c);
       }
       setHostCursor("default");
-      try { c.requestRenderAll(); } catch {}
+      try { c.requestRenderAll(); } catch { }
     }
 
     if (tool === "curve") {
@@ -11385,6 +12251,16 @@ const Editor2D = forwardRef<Editor2DHandle, Props>(function Editor2D(
         meta.strokeWidth = strokeWidth;
         meta.opacity = opacity;
         const commands = computeBezierFromNodes(meta.nodes, meta.closed);
+
+        // Rubber-band: if not dragging and we have a hover point, append a
+        // dashed line segment from the last anchor to the cursor position.
+        const hover = curveState.hoverPoint;
+        if (hover && !curveState.isPointerDown && meta.nodes.length >= 1) {
+          const last = meta.nodes[meta.nodes.length - 1];
+          const cp1 = last.handleOut || last.anchor;
+          commands.push(["C", cp1.x, cp1.y, hover.x, hover.y, hover.x, hover.y]);
+        }
+
         curveState.preview.path = commands;
         curveState.preview.set({
           stroke: meta.stroke,
@@ -11393,14 +12269,14 @@ const Editor2D = forwardRef<Editor2DHandle, Props>(function Editor2D(
         });
         curveState.preview.dirty = true;
         curveState.preview.setCoords();
-        try { c.requestRenderAll(); } catch {}
+        try { c.requestRenderAll(); } catch { }
       };
 
       const cancelDrawing = () => {
         clearCurvePreview(c);
         resetCurveState(null);
         setHostCursor("crosshair");
-        try { c.requestRenderAll(); } catch {}
+        try { c.requestRenderAll(); } catch { }
       };
 
       const finalizeCurve = (sourceMeta: CurveMeta, forceClose = false) => {
@@ -11419,15 +12295,17 @@ const Editor2D = forwardRef<Editor2DHandle, Props>(function Editor2D(
         resetCurveState(null);
         const curveObject = createCurveObject(metaClone);
         if (!curveObject) {
-          try { c.requestRenderAll(); } catch {}
+          try { c.requestRenderAll(); } catch { }
           return;
         }
         c.add(curveObject);
         runSilently(() => {
           c.setActiveObject(curveObject);
         });
-        try { c.requestRenderAll(); } catch {}
+        try { c.requestRenderAll(); } catch { }
         lastCreatedObjectRef.current = curveObject;
+        // Switch to select tool so the user can interact with the finalized object
+        try { onRequestToolChangeRef.current?.("select"); } catch { }
       };
 
       const onMouseDown = (evt: any) => {
@@ -11526,6 +12404,7 @@ const Editor2D = forwardRef<Editor2DHandle, Props>(function Editor2D(
           return;
         }
 
+        // Update cursor style based on proximity to the first anchor (close threshold)
         if (meta.nodes.length > 1) {
           const first = meta.nodes[0];
           const distance = Math.hypot(current.x - first.anchor.x, current.y - first.anchor.y);
@@ -11534,6 +12413,14 @@ const Editor2D = forwardRef<Editor2DHandle, Props>(function Editor2D(
           } else {
             setHostCursor("crosshair");
           }
+        }
+
+        // Rubber-band: update the hover point so the preview shows a tentative
+        // segment from the last anchor to the current cursor position.
+        if (curveState.isDrawing && meta.nodes.length >= 1) {
+          curveState.hoverPoint = current;
+          ensurePreview();
+          updatePreview();
         }
       };
 
@@ -11778,11 +12665,11 @@ const Editor2D = forwardRef<Editor2DHandle, Props>(function Editor2D(
           if (continuousLineModeRef.current) {
             try {
               onContinuousLineCancelRef.current?.();
-            } catch {}
+            } catch { }
           }
           try {
             onRequestToolChangeRef.current?.("select");
-          } catch {}
+          } catch { }
           return;
         }
 
@@ -11795,7 +12682,7 @@ const Editor2D = forwardRef<Editor2DHandle, Props>(function Editor2D(
           if (continuousLineModeRef.current) {
             try {
               onContinuousLineCancelRef.current?.();
-            } catch {}
+            } catch { }
           }
         }
       };
@@ -11820,7 +12707,7 @@ const Editor2D = forwardRef<Editor2DHandle, Props>(function Editor2D(
       // Se estiver no modo de corte (laço ou quadrado), não processa undo/redo global
       // O handler em onGlobalKeyDown cuida do undo/redo dos pontos do laço
       if (lassoCropRef.current?.active || squareCropRef.current?.active) return;
-      
+
       const target = e.target as HTMLElement | null;
       if (
         target &&
@@ -11865,3 +12752,5 @@ const Editor2D = forwardRef<Editor2DHandle, Props>(function Editor2D(
 });
 
 export default Editor2D;
+
+// Trigger HMR

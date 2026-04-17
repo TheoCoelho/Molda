@@ -1,6 +1,7 @@
 // src/components/TextToolbar.tsx
-import React, { useEffect, useMemo, useRef, useState } from "react";
-import type { Editor2DHandle, TextStyle } from "../components/Editor2D";
+import React, { useEffect, useMemo, useRef, useState, useCallback } from "react";
+import { GradientAngleJoystick } from './GradientAngleJoystick';
+import type { Editor2DHandle, TextStyle, GradientFill, GradientStop } from "../components/Editor2D";
 import { FONT_LIBRARY } from "../fonts/library";
 import { loadFontFamily } from "../utils/fonts";
 import {
@@ -28,96 +29,96 @@ type Props = {
 export default function TextToolbar({ editor, visible, position = "bottom" }: Props) {
 
 
-/** ===== Helpers ===== */
-function ToggleBtn({
-  pressed,
-  onClick,
-  title,
-  children,
-}: React.PropsWithChildren<{ pressed?: boolean; onClick: () => void; title?: string }>) {
-  return (
-    <button
-      type="button"
-      title={title}
-      className={[
-        "h-9 min-w-9 px-2 rounded-full border-none shadow-none",
-        "flex items-center justify-center text-sm",
-        pressed ? "bg-primary/10" : "bg-transparent hover:bg-black/5 dark:hover:bg-white/10",
-      ].join(" ")}
-      onClick={onClick}
-    >
-      {children}
-    </button>
-  );
-}
-
-const clamp = (n: number, min: number, max: number) => Math.min(max, Math.max(min, n));
-
-function hsvToHex(h: number, s: number, v: number) {
-  const c = v * s;
-  const x = c * (1 - Math.abs(((h / 60) % 2) - 1));
-  const m = v - c;
-  let r = 0, g = 0, b = 0;
-  if (h < 60) [r, g, b] = [c, x, 0];
-  else if (h < 120) [r, g, b] = [x, c, 0];
-  else if (h < 180) [r, g, b] = [0, c, x];
-  else if (h < 240) [r, g, b] = [0, x, c];
-  else if (h < 300) [r, g, b] = [x, 0, c];
-  else [r, g, b] = [c, 0, x];
-  const R = Math.round((r + m) * 255);
-  const G = Math.round((g + m) * 255);
-  const B = Math.round((b + m) * 255);
-  const toHex = (n: number) => n.toString(16).padStart(2, "0");
-  return `#${toHex(R)}${toHex(G)}${toHex(B)}`.toUpperCase();
-}
-function hexToHsv(hex: string): [number, number, number] | null {
-  const m = /^#([0-9A-F]{6})$/i.exec(hex);
-  if (!m) return null;
-  const i = parseInt(m[1], 16);
-  const r = ((i >> 16) & 255) / 255;
-  const g = ((i >> 8) & 255) / 255;
-  const b = (i & 255) / 255;
-  const max = Math.max(r, g, b);
-  const min = Math.min(r, g, b);
-  const d = max - min;
-  let h = 0;
-  if (d !== 0) {
-    switch (max) {
-      case r: h = ((g - b) / d) % 6; break;
-      case g: h = (b - r) / d + 2; break;
-      case b: h = (r - g) / d + 4; break;
-    }
-    h *= 60;
-    if (h < 0) h += 360;
+  /** ===== Helpers ===== */
+  function ToggleBtn({
+    pressed,
+    onClick,
+    title,
+    children,
+  }: React.PropsWithChildren<{ pressed?: boolean; onClick: () => void; title?: string }>) {
+    return (
+      <button
+        type="button"
+        title={title}
+        className={[
+          "h-9 min-w-9 px-2 rounded-full border-none shadow-none",
+          "flex items-center justify-center text-sm",
+          pressed ? "bg-primary/10" : "bg-transparent hover:bg-black/5 dark:hover:bg-white/10",
+        ].join(" ")}
+        onClick={onClick}
+      >
+        {children}
+      </button>
+    );
   }
-  const s = max === 0 ? 0 : d / max;
-  const v = max;
-  return [h, s, v];
-}
 
-const DEFAULT_COLORS = [
-  "#FF3B30", "#FF2D55", "#FF9500", "#FFCC00",
-  "#34C759", "#30D158", "#5AC8FA", "#007AFF",
-  "#0A84FF", "#5E5CE6", "#BF5AF2", "#FF375F",
-  "#8E8E93", "#AEAEB2", "#C7C7CC", "#D1D1D6",
-  "#E5E5EA", "#F2F2F7", "#000000", "#FFFFFF",
-];
+  const clamp = (n: number, min: number, max: number) => Math.min(max, Math.max(min, n));
 
-/** Garante que a família está carregada no DOM antes de aplicar no Fabric */
-async function ensureFontReady(
-  family: string,
-  weight: string | number = "400",
-  styleCss: "normal" | "italic" = "normal"
-) {
-  try { await loadFontFamily(family); } catch {}
-  try {
-    if (typeof document !== "undefined" && (document as any).fonts?.load) {
-      await (document as any).fonts.load(`${styleCss} ${String(weight)} 64px "${family}"`);
+  function hsvToHex(h: number, s: number, v: number) {
+    const c = v * s;
+    const x = c * (1 - Math.abs(((h / 60) % 2) - 1));
+    const m = v - c;
+    let r = 0, g = 0, b = 0;
+    if (h < 60) [r, g, b] = [c, x, 0];
+    else if (h < 120) [r, g, b] = [x, c, 0];
+    else if (h < 180) [r, g, b] = [0, c, x];
+    else if (h < 240) [r, g, b] = [0, x, c];
+    else if (h < 300) [r, g, b] = [x, 0, c];
+    else[r, g, b] = [c, 0, x];
+    const R = Math.round((r + m) * 255);
+    const G = Math.round((g + m) * 255);
+    const B = Math.round((b + m) * 255);
+    const toHex = (n: number) => n.toString(16).padStart(2, "0");
+    return `#${toHex(R)}${toHex(G)}${toHex(B)}`.toUpperCase();
+  }
+  function hexToHsv(hex: string): [number, number, number] | null {
+    const m = /^#([0-9A-F]{6})$/i.exec(hex);
+    if (!m) return null;
+    const i = parseInt(m[1], 16);
+    const r = ((i >> 16) & 255) / 255;
+    const g = ((i >> 8) & 255) / 255;
+    const b = (i & 255) / 255;
+    const max = Math.max(r, g, b);
+    const min = Math.min(r, g, b);
+    const d = max - min;
+    let h = 0;
+    if (d !== 0) {
+      switch (max) {
+        case r: h = ((g - b) / d) % 6; break;
+        case g: h = (b - r) / d + 2; break;
+        case b: h = (r - g) / d + 4; break;
+      }
+      h *= 60;
+      if (h < 0) h += 360;
     }
-  } catch {}
-}
+    const s = max === 0 ? 0 : d / max;
+    const v = max;
+    return [h, s, v];
+  }
 
-/** ===== Component ===== */
+  const DEFAULT_COLORS = [
+    "#FF3B30", "#FF2D55", "#FF9500", "#FFCC00",
+    "#34C759", "#30D158", "#5AC8FA", "#007AFF",
+    "#0A84FF", "#5E5CE6", "#BF5AF2", "#FF375F",
+    "#8E8E93", "#AEAEB2", "#C7C7CC", "#D1D1D6",
+    "#E5E5EA", "#F2F2F7", "#000000", "#FFFFFF",
+  ];
+
+  /** Garante que a família está carregada no DOM antes de aplicar no Fabric */
+  async function ensureFontReady(
+    family: string,
+    weight: string | number = "400",
+    styleCss: "normal" | "italic" = "normal"
+  ) {
+    try { await loadFontFamily(family); } catch { }
+    try {
+      if (typeof document !== "undefined" && (document as any).fonts?.load) {
+        await (document as any).fonts.load(`${styleCss} ${String(weight)} 64px "${family}"`);
+      }
+    } catch { }
+  }
+
+  /** ===== Component ===== */
   const [style, setStyle] = useState<TextStyle>({
     fontFamily: FONT_LIBRARY[0]?.family || "Inter",
     fontSize: 32,
@@ -145,7 +146,7 @@ async function ensureFontReady(
           String((s as any).fontWeight ?? style.fontWeight ?? "400"),
           ((s as any).fontStyle ?? style.fontStyle ?? "normal") as "normal" | "italic"
         );
-      } catch {}
+      } catch { }
     }
     setStyle((prev) => ({ ...prev, ...s, fontFamily: fam ?? prev.fontFamily }));
   };
@@ -159,29 +160,27 @@ async function ensureFontReady(
 
   /** Aplica mudanças preservando a fonte viva e corrigindo contorno */
   const apply = async (partial: Partial<TextStyle>) => {
-    // 1) pegue a font "viva" diretamente do objeto selecionado
-    const live = editor.current?.getActiveTextStyle?.() || {};
+    // 1) pegue a font "viva" diretamente do objeto selecionado — SINCRONO, antes de qualquer await
+    const liveBeforeAwait = editor.current?.getActiveTextStyle?.() || {};
     const currentFamily =
       (partial.fontFamily as string) ??
-      ((live as any).fontFamily as string) ??
-      (style.fontFamily as string) ??
+      ((liveBeforeAwait as any).fontFamily as string) ??
       "Inter";
 
     // 2) garanta que ela está realmente carregada
-    const weightNow = String(partial.fontWeight ?? (live as any).fontWeight ?? style.fontWeight ?? "400");
-    const italicNow = (partial.fontStyle ?? (live as any).fontStyle ?? style.fontStyle ?? "normal") as "normal" | "italic";
+    const weightNow = String(partial.fontWeight ?? (liveBeforeAwait as any).fontWeight ?? "400");
+    const italicNow = (partial.fontStyle ?? (liveBeforeAwait as any).fontStyle ?? "normal") as "normal" | "italic";
     await ensureFontReady(currentFamily, weightNow, italicNow);
 
-    // 3) atualize o estado da UI
-    const next: TextStyle = { ...style, ...partial, fontFamily: currentFamily };
-    setStyle(next);
+    // 3) atualize o estado da UI (funcional para evitar closures com estado stale)
+    setStyle((prev) => ({ ...prev, ...partial, fontFamily: currentFamily }));
 
     // 4) monte SÓ o patch a aplicar no Fabric
     const patch: any = { ...partial, fontFamily: currentFamily };
 
     // 5) manter a correção do contorno (stroke antes do fill)
-    const strokeW = partial.strokeWidth !== undefined ? Number(partial.strokeWidth) : Number(next.strokeWidth || 0);
-    const strokeC = (partial.stroke !== undefined ? (partial.stroke as any) : (next.stroke as any)) || undefined;
+    const strokeW = partial.strokeWidth !== undefined ? Number(partial.strokeWidth) : Number((liveBeforeAwait as any).strokeWidth || 0);
+    const strokeC = (partial.stroke !== undefined ? (partial.stroke as any) : ((liveBeforeAwait as any).stroke as any)) || undefined;
     const hasStroke = !!strokeC && strokeW > 0;
     Object.assign(
       patch,
@@ -213,13 +212,14 @@ async function ensureFontReady(
     return () => mq.removeEventListener?.("change", onChange);
   }, []);
 
-  const currentFill = (style.fill as string) || "#000000";
+  const currentFill = (typeof style.fill === 'string' ? style.fill : null) || "#000000";
   const initialHSV = useMemo(() => hexToHsv(currentFill) || [0, 0, 0], [currentFill]);
   const [h, setH] = useState<number>(initialHSV[0]);
   const [s, setS] = useState<number>(initialHSV[1]);
   const [v, setV] = useState<number>(initialHSV[2]);
   useEffect(() => {
-    const hsv = hexToHsv((style.fill as string) || "#000000");
+    if (typeof style.fill !== 'string') return; // skip gradient fills
+    const hsv = hexToHsv(style.fill || "#000000");
     if (hsv) { setH(hsv[0]); setS(hsv[1]); setV(hsv[2]); }
   }, [style.fill]);
   const currentHex = useMemo(() => hsvToHex(h, s, v), [h, s, v]);
@@ -228,7 +228,23 @@ async function ensureFontReady(
 
   const [isColorPanelOpen, setIsColorPanelOpen] = useState(false);
   const [showSwatchBar, setShowSwatchBar] = useState(false);
-  const swatchBarTimeout = useRef<NodeJS.Timeout | null>(null);
+  const swatchBarTimeout = useRef<ReturnType<typeof setTimeout> | null>(null);
+
+  /** ====== Modo do painel: "solid" ou "gradient" ====== */
+  const [colorMode, setColorMode] = useState<"solid" | "gradient">("solid");
+
+  /** ====== Estado do Degradê ====== */
+  const [gradStops, setGradStops] = useState<GradientStop[]>([
+    { offset: 0, color: "#000000" },
+    { offset: 1, color: "#FFFFFF" },
+  ]);
+  const [gradAngle, setGradAngle] = useState<number>(0);
+  const [gradType, setGradType] = useState<'linear' | 'radial'>('linear');
+  const [gradRadius, setGradRadius] = useState<number>(1.0);
+  const [selectedStopIdx, setSelectedStopIdx] = useState<number>(0);
+  const [stopDragging, setStopDragging] = useState(false);
+  const gradBarRef = useRef<HTMLDivElement>(null);
+  const gradApplyingRef = useRef(false); // guard against sync feedback loop
 
   const barRef = useRef<HTMLDivElement>(null);
   const dropWrapRef = useRef<HTMLDivElement>(null);
@@ -275,9 +291,9 @@ async function ensureFontReady(
 
     return () => {
       window.removeEventListener("resize", measure);
-      try { if (barEl) ro.unobserve(barEl); } catch {}
-      try { if (dropEl) ro.unobserve(dropEl); } catch {}
-      try { ro.disconnect(); } catch {}
+      try { if (barEl) ro.unobserve(barEl); } catch { }
+      try { if (dropEl) ro.unobserve(dropEl); } catch { }
+      try { ro.disconnect(); } catch { }
     };
   }, [visible]);
 
@@ -287,6 +303,7 @@ async function ensureFontReady(
   const rafRef = useRef<number | null>(null);
   useEffect(() => {
     if (!(svDragging || hueDragging)) return;
+    if (colorMode !== 'solid') return; // não interferir com o modo degradê
     if (rafRef.current) cancelAnimationFrame(rafRef.current);
     rafRef.current = requestAnimationFrame(() => {
       apply({ fill: hsvToHex(h, s, v) });
@@ -307,11 +324,11 @@ async function ensureFontReady(
           return Array.from(new Set(arr.map((c: string) => c.toUpperCase())));
         }
       }
-    } catch {}
+    } catch { }
     return ["#1677FF", ...DEFAULT_COLORS];
   });
   useEffect(() => {
-    try { localStorage.setItem("textToolbar.recents", JSON.stringify(recents)); } catch {}
+    try { localStorage.setItem("textToolbar.recents", JSON.stringify(recents)); } catch { }
   }, [recents]);
 
   const displayPalette = useMemo(() => {
@@ -403,6 +420,198 @@ async function ensureFontReady(
     }
   }, [visible]);
 
+  // Sincroniza estado do gradient quando seleção muda (não quando nós mesmos aplicamos)
+  useEffect(() => {
+    if (gradApplyingRef.current) return; // skip: we just applied this
+    const fillVal = style.fill;
+    if (fillVal && typeof fillVal === 'object' && (fillVal as any).type === 'gradient') {
+      const gf = fillVal as GradientFill;
+      setColorMode('gradient');
+      setGradStops(gf.colorStops.length >= 2 ? gf.colorStops : [
+        { offset: 0, color: '#000000' },
+        { offset: 1, color: '#FFFFFF' },
+      ]);
+      setGradAngle(gf.angle || 0);
+      setGradType(gf.gradientType || 'linear');
+      setSelectedStopIdx(0);
+    }
+  }, [style.fill]);
+
+  const gradientWriteInFlightRef = useRef(false);
+  const queuedGradientRef = useRef<GradientFill | null>(null);
+
+  const pushGradientLive = useCallback((gradFill: GradientFill) => {
+    queuedGradientRef.current = gradFill;
+    if (gradientWriteInFlightRef.current) return;
+
+    gradientWriteInFlightRef.current = true;
+
+    const flush = async () => {
+      const next = queuedGradientRef.current;
+      queuedGradientRef.current = null;
+      if (!next) {
+        gradientWriteInFlightRef.current = false;
+        return;
+      }
+
+      try {
+        await editor.current?.setActiveTextStyle({
+          fill: next as any,
+          from: 'gradient-live',
+        });
+      } catch { }
+
+      if (queuedGradientRef.current) {
+        requestAnimationFrame(() => {
+          void flush();
+        });
+      } else {
+        gradientWriteInFlightRef.current = false;
+      }
+    };
+
+    void flush();
+  }, [editor]);
+
+  // Refs para valores atuais do degradê (evita stale closures e re-renders desnecessários)
+  const gradStopsRef = useRef(gradStops);
+  const gradAngleRef = useRef(gradAngle);
+  const gradTypeRef = useRef(gradType);
+  const gradRadiusRef = useRef(gradRadius);
+  useEffect(() => { gradStopsRef.current = gradStops; }, [gradStops]);
+  useEffect(() => { gradAngleRef.current = gradAngle; }, [gradAngle]);
+  useEffect(() => { gradTypeRef.current = gradType; }, [gradType]);
+  useEffect(() => { gradRadiusRef.current = gradRadius; }, [gradRadius]);
+
+  // applyGradient é estável (sem deps que mudam) — usa refs para valores atuais
+  const applyGradient = useCallback((
+    stops = gradStopsRef.current,
+    angle = gradAngleRef.current,
+    type: any = gradTypeRef.current,
+    radius = gradRadiusRef.current,
+  ) => {
+    gradApplyingRef.current = true;
+    const gradFill: GradientFill = {
+      type: 'gradient',
+      gradientType: type,
+      angle,
+      colorStops: stops,
+      radius,
+    };
+    pushGradientLive(gradFill);
+    requestAnimationFrame(() => { gradApplyingRef.current = false; });
+  }, [pushGradientLive]);
+
+  // Aplica degradê em tempo real quando stops ou ângulo mudam
+  // applyGradient é estável (deps vazios), então não haverá cascata
+  const gradRafRef = useRef<number | null>(null);
+  useEffect(() => {
+    if (colorMode !== 'gradient') return;
+    if (gradRafRef.current) cancelAnimationFrame(gradRafRef.current);
+    gradRafRef.current = requestAnimationFrame(() => {
+      applyGradient(gradStops, gradAngleRef.current, gradTypeRef.current, gradRadiusRef.current);
+    });
+    return () => {
+      if (gradRafRef.current) cancelAnimationFrame(gradRafRef.current);
+      gradRafRef.current = null;
+    };
+  // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [gradStops, gradAngle, colorMode]);
+
+  // Handlers do stop drag na barra
+  const onStopBarPointer = useCallback((e: React.PointerEvent, idx: number) => {
+    const bar = gradBarRef.current;
+    if (!bar) return;
+    (e.currentTarget as HTMLElement).setPointerCapture(e.pointerId);
+    setStopDragging(true);
+    setSelectedStopIdx(idx);
+    const rect = bar.getBoundingClientRect();
+    const x = clamp((e.clientX - rect.left) / rect.width, 0, 1);
+    setGradStops(prev => {
+      const next = [...prev];
+      next[idx] = { ...next[idx], offset: Math.round(x * 100) / 100 };
+      return next;
+    });
+  }, []);
+
+  const onStopBarMove = useCallback((e: React.PointerEvent, idx: number) => {
+    if (!stopDragging) return;
+    const bar = gradBarRef.current;
+    if (!bar) return;
+    const rect = bar.getBoundingClientRect();
+    const x = clamp((e.clientX - rect.left) / rect.width, 0, 1);
+    setGradStops(prev => {
+      const next = [...prev];
+      next[idx] = { ...next[idx], offset: Math.round(x * 100) / 100 };
+      return next;
+    });
+  }, [stopDragging]);
+
+  // Gera CSS do degradê para preview
+  const gradientCSS = useMemo(() => {
+    const sorted = [...gradStops].sort((a, b) => a.offset - b.offset);
+    const stopsStr = sorted.map(s => `${s.color} ${Math.round(s.offset * 100)}%`).join(', ');
+    return `linear-gradient(${gradAngle}deg, ${stopsStr})`;
+  }, [gradStops, gradAngle]);
+
+  // HSV do stop selecionado
+  const selectedStop = gradStops[selectedStopIdx] || gradStops[0];
+  const selectedStopHSV = useMemo(() => hexToHsv(selectedStop?.color || '#000000') || [0, 0, 0], [selectedStop?.color]);
+
+  // Atualiza a cor do stop selecionado via HSV
+  const updateSelectedStopColor = useCallback((hex: string) => {
+    setGradStops(prev => {
+      const next = [...prev];
+      if (next[selectedStopIdx]) {
+        next[selectedStopIdx] = { ...next[selectedStopIdx], color: hex.toUpperCase() };
+      }
+      return next;
+    });
+  }, [selectedStopIdx]);
+
+  // Adicionar stop
+  const addGradStop = useCallback(() => {
+    setGradStops(prev => {
+      if (prev.length >= 8) return prev; // limite
+      const sorted = [...prev].sort((a, b) => a.offset - b.offset);
+      // Encontra o maior gap e insere no meio
+      let maxGap = 0, gapIdx = 0;
+      for (let i = 0; i < sorted.length - 1; i++) {
+        const gap = sorted[i + 1].offset - sorted[i].offset;
+        if (gap > maxGap) { maxGap = gap; gapIdx = i; }
+      }
+      const newOffset = (sorted[gapIdx].offset + sorted[gapIdx + 1].offset) / 2;
+      // Interpola cor
+      const c1 = sorted[gapIdx].color;
+      const c2 = sorted[gapIdx + 1].color;
+      const midColor = interpolateHex(c1, c2, 0.5);
+      const newStops = [...prev, { offset: Math.round(newOffset * 100) / 100, color: midColor }];
+      setSelectedStopIdx(newStops.length - 1);
+      return newStops;
+    });
+  }, []);
+
+  // Remover stop
+  const removeGradStop = useCallback((idx: number) => {
+    setGradStops(prev => {
+      if (prev.length <= 2) return prev; // mínimo 2
+      const next = prev.filter((_, i) => i !== idx);
+      setSelectedStopIdx(si => Math.min(si, next.length - 1));
+      return next;
+    });
+  }, []);
+
+  // Helper: interpolar cor entre dois hex
+  function interpolateHex(hex1: string, hex2: string, t: number): string {
+    const h1 = hexToHsv(hex1) || [0, 0, 0];
+    const h2 = hexToHsv(hex2) || [0, 0, 0];
+    return hsvToHex(
+      h1[0] + (h2[0] - h1[0]) * t,
+      h1[1] + (h2[1] - h1[1]) * t,
+      h1[2] + (h2[2] - h1[2]) * t,
+    );
+  }
+
   const toolbar = (
     <div
       ref={barRef}
@@ -457,69 +666,410 @@ async function ensureFontReady(
         {isColorPanelOpen && (
           <div className="absolute left-0 bottom-full mb-3 z-30">
             <div className="rounded-2xl p-3 w-[min(320px,95vw)] bg-white/90 dark:bg-neutral-900/95 border border-black/10 dark:border-white/10">
-              {/* S/V */}
-              <div
-                ref={svRef}
-                className="relative h-[160px] rounded-xl overflow-hidden cursor-crosshair"
-                style={{ backgroundColor: `hsl(${h},100%,50%)` }}
-                onPointerDown={onSvPointer}
-                onPointerMove={(e) => svDragging && onSvPointer(e)}
-                onPointerUp={() => { setSvDragging(false); editor.current?.historyCapture?.(); }}
-                onPointerLeave={() => setSvDragging(false)}
-              >
-                <div className="absolute inset-0 bg-[linear-gradient(to_right,#fff,transparent)]" />
-                <div className="absolute inset-0 bg-[linear-gradient(to_top,#000,transparent)]" />
-                <div
-                  className="absolute h-4 w-4 rounded-full border-2 border-white shadow"
-                  style={{
-                    left: `${s * 100}%`,
-                    top: `${(1 - v) * 100}%`,
-                    transform: "translate(-50%, -50%)",
-                    background: currentHex,
-                  }}
-                />
-              </div>
 
-              {/* Hue */}
-              <div
-                ref={hueRef}
-                className="mt-3 h-4 rounded-full cursor-ew-resize"
-                style={{
-                  background:
-                    "linear-gradient(to right, #f00, #ff0, #0f0, #0ff, #00f, #f0f, #f00)",
-                }}
-                onPointerDown={onHuePointer}
-                onPointerMove={(e) => hueDragging && onHuePointer(e)}
-                onPointerUp={() => { setHueDragging(false); editor.current?.historyCapture?.(); }}
-                onPointerLeave={() => setHueDragging(false)}
-              >
-                <div
-                  className="h-4 w-4 rounded-full border-2 border-white shadow -mt-0.5"
-                  style={{ transform: `translateX(${(h / 360) * 100}%)` }}
-                />
-              </div>
-
-              {/* HEX + Eyedropper */}
-              <div className="mt-3 flex items-center gap-2">
-                <input
-                  aria-label="Cor em HEX"
-                  value={hexInput}
-                  onChange={onHexChange}
-                  onBlur={() => editor.current?.historyCapture?.()}
-                  maxLength={7}
-                  className="w-28 px-2 py-1 rounded border border-black/10 dark:border-white/10 bg-white/70 dark:bg-neutral-900/70 text-sm"
-                  placeholder="#000000"
-                />
-                <div className="flex-1" />
+              {/* ===== Tabs Sólido / Degradê ===== */}
+              <div className="flex mb-3 rounded-lg overflow-hidden border border-black/10 dark:border-white/10">
                 <button
                   type="button"
-                  className="h-9 w-9 rounded-md border bg-white/70 dark:bg-neutral-800/70 border-black/10 dark:border-white/10 grid place-items-center"
-                  title="Conta-gotas (se disponível)"
-                  onClick={onEyedrop}
+                  className={[
+                    "flex-1 py-1.5 text-xs font-medium transition-colors",
+                    colorMode === 'solid'
+                      ? 'bg-primary/15 text-primary'
+                      : 'bg-transparent text-muted-foreground hover:bg-black/5 dark:hover:bg-white/5',
+                  ].join(' ')}
+                  onClick={() => {
+                    setColorMode('solid');
+                    // Ao mudar para sólido, aplica a cor do primeiro stop ou a cor atual
+                    const hex = hsvToHex(h, s, v);
+                    apply({ fill: hex });
+                    editor.current?.historyCapture?.();
+                  }}
                 >
-                  <Pipette className="h-4 w-4" />
+                  Sólido
+                </button>
+                <button
+                  type="button"
+                  className={[
+                    "flex-1 py-1.5 text-xs font-medium transition-colors",
+                    colorMode === 'gradient'
+                      ? 'bg-primary/15 text-primary'
+                      : 'bg-transparent text-muted-foreground hover:bg-black/5 dark:hover:bg-white/5',
+                  ].join(' ')}
+                  onClick={() => {
+                    setColorMode('gradient');
+                    // Ao mudar para degradê, aplica o gradient inicial
+                    applyGradient(gradStops, gradAngle);
+                    editor.current?.historyCapture?.();
+                  }}
+                >
+                  Degradê
                 </button>
               </div>
+
+              {colorMode === 'solid' ? (
+                <>
+                  {/* S/V */}
+                  <div
+                    ref={svRef}
+                    className="relative h-[160px] rounded-xl overflow-hidden cursor-crosshair"
+                    style={{ backgroundColor: `hsl(${h},100%,50%)` }}
+                    onPointerDown={onSvPointer}
+                    onPointerMove={(e) => svDragging && onSvPointer(e)}
+                    onPointerUp={() => { setSvDragging(false); editor.current?.historyCapture?.(); }}
+                    onPointerLeave={() => setSvDragging(false)}
+                  >
+                    <div className="absolute inset-0 bg-[linear-gradient(to_right,#fff,transparent)]" />
+                    <div className="absolute inset-0 bg-[linear-gradient(to_top,#000,transparent)]" />
+                    <div
+                      className="absolute h-4 w-4 rounded-full border-2 border-white shadow"
+                      style={{
+                        left: `${s * 100}%`,
+                        top: `${(1 - v) * 100}%`,
+                        transform: "translate(-50%, -50%)",
+                        background: currentHex,
+                      }}
+                    />
+                  </div>
+
+                  {/* Hue */}
+                  <div
+                    ref={hueRef}
+                    className="mt-3 h-4 rounded-full cursor-pointer relative"
+                    style={{
+                      background:
+                        "linear-gradient(to right, #f00, #ff0, #0f0, #0ff, #00f, #f0f, #f00)",
+                    }}
+                    onPointerDown={(e) => {
+                      if (e.target === e.currentTarget) {
+                        const rect = (e.currentTarget as HTMLElement).getBoundingClientRect();
+                        const x = clamp((e.clientX - rect.left) / rect.width, 0, 1);
+                        setH(x * 360);
+                        apply({ fill: hsvToHex(x * 360, s, v) });
+                        editor.current?.historyCapture?.();
+                      }
+                    }}
+                  >
+                    <div
+                      className="absolute top-1/2 h-4 w-4 rounded-full border-2 border-white shadow cursor-ew-resize"
+                      style={{
+                        left: `${(h / 360) * 100}%`,
+                        transform: 'translate(-50%, -50%)',
+                      }}
+                      onPointerDown={(e) => {
+                        e.stopPropagation();
+                        (e.currentTarget as HTMLElement).setPointerCapture(e.pointerId);
+                        setHueDragging(true);
+                        const rect = hueRef.current!.getBoundingClientRect();
+                        const x = clamp((e.clientX - rect.left) / rect.width, 0, 1);
+                        setH(x * 360);
+                      }}
+                      onPointerMove={(e) => {
+                        if (!hueDragging) return;
+                        const rect = hueRef.current!.getBoundingClientRect();
+                        const x = clamp((e.clientX - rect.left) / rect.width, 0, 1);
+                        setH(x * 360);
+                      }}
+                      onPointerUp={() => { setHueDragging(false); editor.current?.historyCapture?.(); }}
+                    />
+                  </div>
+
+                  {/* HEX + Eyedropper */}
+                  <div className="mt-3 flex items-center gap-2">
+                    <input
+                      aria-label="Cor em HEX"
+                      value={hexInput}
+                      onChange={onHexChange}
+                      onBlur={() => editor.current?.historyCapture?.()}
+                      maxLength={7}
+                      className="w-28 px-2 py-1 rounded border border-black/10 dark:border-white/10 bg-white/70 dark:bg-neutral-900/70 text-sm"
+                      placeholder="#000000"
+                    />
+                    <div className="flex-1" />
+                    <button
+                      type="button"
+                      className="h-9 w-9 rounded-md border bg-white/70 dark:bg-neutral-800/70 border-black/10 dark:border-white/10 grid place-items-center"
+                      title="Conta-gotas (se disponível)"
+                      onClick={onEyedrop}
+                    >
+                      <Pipette className="h-4 w-4" />
+                    </button>
+                  </div>
+                </>
+              ) : (
+                <>
+                  {/* ===== MODO DEGRADÊ ===== */}
+                  
+                  {/* Barra de preview do degradê */}
+                  <div
+                    ref={gradBarRef}
+                    className="relative h-8 rounded-lg overflow-visible cursor-pointer"
+                    style={{ background: gradientCSS }}
+                    onClick={(e) => {
+                      // Clicar na barra (não num stop) adiciona um stop na posição
+                      const target = e.target as HTMLElement;
+                      if (target === gradBarRef.current) {
+                        const rect = gradBarRef.current!.getBoundingClientRect();
+                        const offset = clamp((e.clientX - rect.left) / rect.width, 0, 1);
+                        const sorted = [...gradStops].sort((a, b) => a.offset - b.offset);
+                        // Encontra as cores vizinhas
+                        let leftC = sorted[0]?.color || '#000000';
+                        let rightC = sorted[sorted.length - 1]?.color || '#FFFFFF';
+                        for (let i = 0; i < sorted.length - 1; i++) {
+                          if (offset >= sorted[i].offset && offset <= sorted[i + 1].offset) {
+                            leftC = sorted[i].color;
+                            rightC = sorted[i + 1].color;
+                            break;
+                          }
+                        }
+                        const t = 0.5;
+                        const newColor = interpolateHex(leftC, rightC, t);
+                        setGradStops(prev => {
+                          if (prev.length >= 8) return prev;
+                          const next = [...prev, { offset: Math.round(offset * 100) / 100, color: newColor }];
+                          setSelectedStopIdx(next.length - 1);
+                          return next;
+                        });
+                      }
+                    }}
+                  >
+                    {/* Stop handles */}
+                    {gradStops.map((stop, idx) => (
+                      <div
+                        key={idx}
+                        className={[
+                          "absolute top-1/2 h-5 w-5 rounded-full border-2 shadow cursor-grab",
+                          "transform -translate-x-1/2 -translate-y-1/2",
+                          idx === selectedStopIdx
+                            ? 'border-primary ring-2 ring-primary/30 z-10'
+                            : 'border-white z-[5]',
+                        ].join(' ')}
+                        style={{
+                          left: `${stop.offset * 100}%`,
+                          background: stop.color,
+                        }}
+                        onPointerDown={(e) => {
+                          e.stopPropagation();
+                          onStopBarPointer(e, idx);
+                        }}
+                        onPointerMove={(e) => onStopBarMove(e, idx)}
+                        onPointerUp={() => {
+                          setStopDragging(false);
+                          editor.current?.historyCapture?.();
+                        }}
+                        onPointerLeave={() => {
+                          if (stopDragging) {
+                            setStopDragging(false);
+                          }
+                        }}
+                        onClick={(e) => {
+                          e.stopPropagation();
+                          setSelectedStopIdx(idx);
+                        }}
+                      />
+                    ))}
+                  </div>
+
+                  {/* Ações: Adicionar / Remover stop */}
+                  <div className="mt-2 flex items-center gap-2">
+                    <button
+                      type="button"
+                      className="h-7 px-2 rounded border border-black/10 dark:border-white/10 bg-white/70 dark:bg-neutral-800/70 text-xs flex items-center gap-1 hover:bg-black/5 dark:hover:bg-white/5 transition"
+                      onClick={addGradStop}
+                      disabled={gradStops.length >= 8}
+                      title="Adicionar cor"
+                    >
+                      <Plus className="h-3 w-3" /> Cor
+                    </button>
+                    <button
+                      type="button"
+                      className="h-7 px-2 rounded border border-black/10 dark:border-white/10 bg-white/70 dark:bg-neutral-800/70 text-xs flex items-center gap-1 hover:bg-black/5 dark:hover:bg-white/5 transition disabled:opacity-40"
+                      onClick={() => removeGradStop(selectedStopIdx)}
+                      disabled={gradStops.length <= 2}
+                      title="Remover cor selecionada"
+                    >
+                      <Minus className="h-3 w-3" /> Remover
+                    </button>
+                    <div className="flex-1" />
+                    <span className="text-[10px] text-muted-foreground">
+                      Stop {selectedStopIdx + 1}/{gradStops.length}
+                    </span>
+                  </div>
+
+                  {/* HSV do stop selecionado */}
+                  <div
+                    className="relative h-[120px] mt-3 rounded-xl overflow-hidden cursor-crosshair"
+                    style={{ backgroundColor: `hsl(${selectedStopHSV[0]},100%,50%)` }}
+                    onPointerDown={(e) => {
+                      const rect = (e.currentTarget as HTMLElement).getBoundingClientRect();
+                      (e.currentTarget as HTMLElement).setPointerCapture(e.pointerId);
+                      setSvDragging(true);
+                      const x = clamp((e.clientX - rect.left) / rect.width, 0, 1);
+                      const y = clamp((e.clientY - rect.top) / rect.height, 0, 1);
+                      const newHex = hsvToHex(selectedStopHSV[0], x, 1 - y);
+                      updateSelectedStopColor(newHex);
+                    }}
+                    onPointerMove={(e) => {
+                      if (!svDragging) return;
+                      const rect = (e.currentTarget as HTMLElement).getBoundingClientRect();
+                      const x = clamp((e.clientX - rect.left) / rect.width, 0, 1);
+                      const y = clamp((e.clientY - rect.top) / rect.height, 0, 1);
+                      const newHex = hsvToHex(selectedStopHSV[0], x, 1 - y);
+                      updateSelectedStopColor(newHex);
+                    }}
+                    onPointerUp={() => { setSvDragging(false); editor.current?.historyCapture?.(); }}
+                    onPointerLeave={() => setSvDragging(false)}
+                  >
+                    <div className="absolute inset-0 bg-[linear-gradient(to_right,#fff,transparent)]" />
+                    <div className="absolute inset-0 bg-[linear-gradient(to_top,#000,transparent)]" />
+                    <div
+                      className="absolute h-3.5 w-3.5 rounded-full border-2 border-white shadow"
+                      style={{
+                        left: `${selectedStopHSV[1] * 100}%`,
+                        top: `${(1 - selectedStopHSV[2]) * 100}%`,
+                        transform: "translate(-50%, -50%)",
+                        background: selectedStop?.color || '#000',
+                      }}
+                    />
+                  </div>
+
+                  {/* Hue para o stop selecionado */}
+                  <div
+                    className="mt-2 h-3.5 rounded-full cursor-pointer relative"
+                    style={{
+                      background: "linear-gradient(to right, #f00, #ff0, #0f0, #0ff, #00f, #f0f, #f00)",
+                    }}
+                    onPointerDown={(e) => {
+                      if (e.target === e.currentTarget) {
+                        const rect = (e.currentTarget as HTMLElement).getBoundingClientRect();
+                        const x = clamp((e.clientX - rect.left) / rect.width, 0, 1);
+                        updateSelectedStopColor(hsvToHex(x * 360, selectedStopHSV[1], selectedStopHSV[2]));
+                        editor.current?.historyCapture?.();
+                      }
+                    }}
+                  >
+                    <div
+                      className="absolute top-1/2 h-3.5 w-3.5 rounded-full border-2 border-white shadow cursor-ew-resize"
+                      style={{
+                        left: `${(selectedStopHSV[0] / 360) * 100}%`,
+                        transform: 'translate(-50%, -50%)',
+                      }}
+                      onPointerDown={(e) => {
+                        e.stopPropagation();
+                        (e.currentTarget as HTMLElement).setPointerCapture(e.pointerId);
+                        setHueDragging(true);
+                        const bar = (e.currentTarget.parentElement as HTMLElement);
+                        const rect = bar.getBoundingClientRect();
+                        const x = clamp((e.clientX - rect.left) / rect.width, 0, 1);
+                        updateSelectedStopColor(hsvToHex(x * 360, selectedStopHSV[1], selectedStopHSV[2]));
+                      }}
+                      onPointerMove={(e) => {
+                        if (!hueDragging) return;
+                        const bar = (e.currentTarget.parentElement as HTMLElement);
+                        const rect = bar.getBoundingClientRect();
+                        const x = clamp((e.clientX - rect.left) / rect.width, 0, 1);
+                        updateSelectedStopColor(hsvToHex(x * 360, selectedStopHSV[1], selectedStopHSV[2]));
+                      }}
+                      onPointerUp={() => { setHueDragging(false); editor.current?.historyCapture?.(); }}
+                    />
+                  </div>
+
+                  {/* Joystick de Ângulo (Animado com Efeito de Recolha) */}
+                  <div 
+                    className={[
+                      "overflow-hidden transition-all duration-300 ease-in-out flex justify-center border-t border-black/5 dark:border-white/5",
+                      gradType === 'linear' ? "max-h-40 opacity-100 mt-3 pt-3 scale-100" : "max-h-0 opacity-0 mt-0 pt-0 scale-90 pointer-events-none"
+                    ].join(' ')}
+                  >
+                    <GradientAngleJoystick 
+                      angle={gradAngle} 
+                      onChange={setGradAngle} 
+                      onFinalChange={() => editor.current?.historyCapture?.()}
+                    />
+                  </div>
+
+                  {/* Raio (apenas para Radial) */}
+                  <div 
+                    className={[
+                      "overflow-hidden transition-all duration-300 ease-in-out",
+                      gradType === 'radial' ? "max-h-20 opacity-100 mt-3" : "max-h-0 opacity-0 mt-0 pointer-events-none"
+                    ].join(' ')}
+                  >
+                    <div className="flex items-center gap-2 border-t border-black/5 dark:border-white/5 pt-3">
+                      <span className="text-xs text-muted-foreground shrink-0 w-10">Raio</span>
+                      <input
+                        type="range"
+                        min={0.1}
+                        max={3}
+                        step={0.05}
+                        value={gradRadius}
+                        onChange={(e) => {
+                          const r = parseFloat(e.target.value);
+                          setGradRadius(r);
+                          applyGradient(gradStops, gradAngle, gradType, r);
+                        }}
+                        onPointerUp={() => editor.current?.historyCapture?.()}
+                        className="flex-1 accent-primary h-1.5 rounded"
+                      />
+                      <span className="text-xs text-muted-foreground w-8 text-right">{Math.round(gradRadius * 100)}%</span>
+                    </div>
+                  </div>
+
+                  {/* HEX do stop selecionado + Botões de tipo */}
+                  <div className="mt-2 flex items-center gap-2">
+                    <div
+                      className="h-6 w-6 rounded-md border border-black/10 dark:border-white/10 shrink-0"
+                      style={{ background: selectedStop?.color || '#000' }}
+                    />
+                    <input
+                      aria-label="Cor do stop em HEX"
+                      value={selectedStop?.color || '#000000'}
+                      onChange={(e) => {
+                        const val = e.target.value.trim().toUpperCase();
+                        if (/^#([0-9A-F]{6})$/.test(val)) {
+                          updateSelectedStopColor(val);
+                        }
+                      }}
+                      onBlur={() => editor.current?.historyCapture?.()}
+                      maxLength={7}
+                      className="w-24 px-2 py-0.5 rounded border border-black/10 dark:border-white/10 bg-white/70 dark:bg-neutral-900/70 text-xs"
+                      placeholder="#000000"
+                    />
+                    <div className="flex-1" />
+                    {/* Botões de tipo Linear / Radial */}
+                    {(['linear', 'radial'] as const).map((t) => (
+                      <button
+                        key={t}
+                        type="button"
+                        title={t === 'linear' ? 'Degradê Linear' : 'Degradê Radial'}
+                        className={[
+                          "h-7 w-7 rounded border transition grid place-items-center",
+                          gradType === t
+                            ? 'bg-primary/15 border-primary/40 text-primary'
+                            : 'border-black/10 dark:border-white/10 bg-white/70 dark:bg-neutral-800/70 hover:bg-black/5 dark:hover:bg-white/5',
+                        ].join(' ')}
+                        onClick={() => {
+                          setGradType(t);
+                          applyGradient(gradStops, gradAngle, t, gradRadius);
+                          editor.current?.historyCapture?.();
+                        }}
+                      >
+                        {t === 'linear' ? (
+                          <svg width="14" height="14" viewBox="0 0 14 14" fill="none">
+                            <defs><linearGradient id="lg" x1="0" y1="7" x2="14" y2="7" gradientUnits="userSpaceOnUse"><stop stopColor="currentColor" stopOpacity="0.2"/><stop offset="1" stopColor="currentColor"/></linearGradient></defs>
+                            <rect width="14" height="14" rx="2" fill="url(#lg)"/>
+                          </svg>
+                        ) : (
+                          <svg width="14" height="14" viewBox="0 0 14 14" fill="none">
+                            <defs><radialGradient id="rg" cx="50%" cy="50%" r="50%"><stop stopColor="currentColor"/><stop offset="1" stopColor="currentColor" stopOpacity="0.1"/></radialGradient></defs>
+                            <rect width="14" height="14" rx="2" fill="url(#rg)"/>
+                          </svg>
+                        )}
+                      </button>
+                    ))}
+                  </div>
+                </>
+              )}
+
             </div>
           </div>
         )}
@@ -651,26 +1201,26 @@ async function ensureFontReady(
     </div>
   );
 
-if (!visible) return null;
+  if (!visible) return null;
 
-if (position === "top") {
-  return (
-    <div className="fixed left-1/2 -translate-x-1/2 top-4 z-[60] max-w-[95vw] w-fit">
-      {toolbar}
-    </div>
-  );
-}
-if (position === "bottom") {
-  return (
-    <div
-      className="absolute left-1/2 -translate-x-1/2 bottom-6 z-[60] max-w-[95vw] w-fit"
-      style={{ width: "fit-content" }}
-    >
-      {toolbar}
-    </div>
-  );
-}
-// "inline": sem wrapper posicionado (deixe o pai controlar)
-return toolbar;
+  if (position === "top") {
+    return (
+      <div className="fixed left-1/2 -translate-x-1/2 top-4 z-[60] max-w-[95vw] w-fit">
+        {toolbar}
+      </div>
+    );
+  }
+  if (position === "bottom") {
+    return (
+      <div
+        className="absolute left-1/2 -translate-x-1/2 bottom-6 z-[60] max-w-[95vw] w-fit"
+        style={{ width: "fit-content" }}
+      >
+        {toolbar}
+      </div>
+    );
+  }
+  // "inline": sem wrapper posicionado (deixe o pai controlar)
+  return toolbar;
 
 }
