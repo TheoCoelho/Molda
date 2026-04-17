@@ -37,6 +37,7 @@ import { useAuth } from "../contexts/AuthContext";
 import type { ExternalDecalData, DecalTransform, DecalStateSnapshot } from "../types/decals";
 import { STORAGE_BUCKET } from "../lib/supabaseClient";
 import { toast } from "sonner";
+import { normalizeDbDecalZones, type ModelDecalZone } from "../lib/models";
 
 type CanvasTab = { id: string; name: string; type: "2d" | "3d" };
 type SelectionKind = "none" | "text" | "image" | "other";
@@ -79,6 +80,7 @@ type SubtypePrintConstraints = {
   underarm_zone_y_min?: number | null;
   underarm_zone_y_max?: number | null;
   underarm_zone_abs_x_min?: number | null;
+  decal_zones_json?: unknown;
 };
 
 const TRANSPARENT_PNG =
@@ -186,6 +188,7 @@ const Creation = () => {
   const [fixedSubtypeFabric, setFixedSubtypeFabric] = useState<string | null>(null);
   const [isSubtypeFabricLocked, setIsSubtypeFabricLocked] = useState(false);
   const [subtypePrintConstraints, setSubtypePrintConstraints] = useState<SubtypePrintConstraints | null>(null);
+  const [subtypeDecalZonesOverride, setSubtypeDecalZonesOverride] = useState<ModelDecalZone[]>([]);
   const [decalViabilityAlerts, setDecalViabilityAlerts] = useState<Record<string, string[]>>({});
   const [notes, setNotes] = useState("");
 
@@ -212,6 +215,7 @@ const Creation = () => {
       setFixedSubtypeFabric(null);
       setIsSubtypeFabricLocked(false);
       setSubtypePrintConstraints(null);
+      setSubtypeDecalZonesOverride([]);
 
       if (!subtype) return;
 
@@ -228,14 +232,14 @@ const Creation = () => {
 
         let subtypeQuery = supabase
           .from("product_subtypes")
-          .select("id, print_area_width_cm, print_area_height_cm, min_decal_area_cm2, neck_zone_y_min, underarm_zone_y_min, underarm_zone_y_max, underarm_zone_abs_x_min")
+          .select("id, print_area_width_cm, print_area_height_cm, min_decal_area_cm2, neck_zone_y_min, underarm_zone_y_min, underarm_zone_y_max, underarm_zone_abs_x_min, decal_zones_json")
           .ilike("name", subtype)
           .limit(1);
 
         if (typeId) {
           subtypeQuery = supabase
             .from("product_subtypes")
-            .select("id, print_area_width_cm, print_area_height_cm, min_decal_area_cm2, neck_zone_y_min, underarm_zone_y_min, underarm_zone_y_max, underarm_zone_abs_x_min")
+            .select("id, print_area_width_cm, print_area_height_cm, min_decal_area_cm2, neck_zone_y_min, underarm_zone_y_min, underarm_zone_y_max, underarm_zone_abs_x_min, decal_zones_json")
             .eq("type_id", typeId)
             .ilike("name", subtype)
             .limit(1);
@@ -258,7 +262,9 @@ const Creation = () => {
             underarm_zone_y_min: subtypeMeta.underarm_zone_y_min ?? 0.45,
             underarm_zone_y_max: subtypeMeta.underarm_zone_y_max ?? 0.72,
             underarm_zone_abs_x_min: subtypeMeta.underarm_zone_abs_x_min ?? 0.55,
+            decal_zones_json: subtypeMeta.decal_zones_json,
           });
+          setSubtypeDecalZonesOverride(normalizeDbDecalZones(subtypeMeta.decal_zones_json));
         }
 
         const { data: relRows, error: relErr } = await supabase
@@ -697,6 +703,9 @@ const Creation = () => {
   const [tabDecalPreviews, setTabDecalPreviews] = useState<Record<string, string>>({});
   const [tabDecalPlacements, setTabDecalPlacements] = useState<Record<string, DecalTransform>>({});
   const [tabPrintTypes, setTabPrintTypes] = useState<Record<string, string>>({});
+  /** Automatic gizmo dimensions derived from canvas content bounds (fallback for tabs without explicit placement). */
+  const [tabDecalAutoSizes, setTabDecalAutoSizes] = useState<Record<string, { width: number; height: number }>>({});
+  const tabDecalAutoSizesRef = useRef<Record<string, { width: number; height: number }>>({});
   const tabVisibilityRef = useRef<Record<string, boolean>>(tabVisibility);
   const tabDecalPreviewsRef = useRef<Record<string, string>>(tabDecalPreviews);
   const tabDecalPlacementsRef = useRef<Record<string, DecalTransform>>(tabDecalPlacements);
@@ -713,6 +722,9 @@ const Creation = () => {
   useEffect(() => {
     tabPrintTypesRef.current = tabPrintTypes;
   }, [tabPrintTypes]);
+  useEffect(() => {
+    tabDecalAutoSizesRef.current = tabDecalAutoSizes;
+  }, [tabDecalAutoSizes]);
 
   const captureTabImage = useCallback(async (tabId: string): Promise<string | null> => {
     const inst = editorRefs.current[tabId];
@@ -723,16 +735,82 @@ const Creation = () => {
     try {
       inst.refresh?.();
     } catch { }
-    const dataUrl = inst.exportPNG?.();
-    const current = tabDecalPreviewsRef.current;
-    if (dataUrl && current[tabId] !== dataUrl) {
-      const next = { ...current, [tabId]: dataUrl };
-      tabDecalPreviewsRef.current = next;
-      setTabDecalPreviews(next);
-      return dataUrl;
+
+    const fullDataUrl = inst.exportPNG?.() ?? null;
+    const bounds = inst.getContentBounds?.() ?? null;
+
+    let finalDataUrl: string | null = fullDataUrl;
+
+    if (fullDataUrl && bounds) {
+      // Crop the exported PNG to the actual content region so the 3D texture
+      // fills the gizmo box completely (no transparent padding around the design).
+      try {
+        const img = new Image();
+        img.src = fullDataUrl;
+        await img.decode();
+        const pw = img.naturalWidth;
+        const ph = img.naturalHeight;
+        const cropX = Math.round(bounds.ratioLeft * pw);
+        const cropY = Math.round(bounds.ratioTop * ph);
+        const cropW = Math.max(1, Math.round(bounds.ratioW * pw));
+        const cropH = Math.max(1, Math.round(bounds.ratioH * ph));
+        const offscreen = document.createElement("canvas");
+        offscreen.width = cropW;
+        offscreen.height = cropH;
+        const ctx = offscreen.getContext("2d");
+        if (ctx) {
+          ctx.drawImage(img, cropX, cropY, cropW, cropH, 0, 0, cropW, cropH);
+          finalDataUrl = offscreen.toDataURL("image/png");
+        }
+      } catch {
+        // fall back to full canvas PNG on any error
+      }
+
+      // --------------- Gizmo sizing ---------------
+      // DECAL_DOMINANT_SIZE is the single reference parameter that controls
+      // how large decals appear on the 3D model. It sets the world-unit size
+      // of the dominant axis (width or height, whichever is larger).
+      // The other axis is scaled proportionally to preserve the crop aspect ratio.
+      //
+      //   Increase DECAL_DOMINANT_SIZE → bigger decals on the model.
+      //   Decrease DECAL_DOMINANT_SIZE → smaller decals on the model.
+      //
+      const DECAL_DOMINANT_SIZE = 0.85; // world units — change ONLY this value to resize all decals
+
+      const cropAspect = bounds.ratioH > 0 ? bounds.ratioW / bounds.ratioH : 1; // W/H of crop
+      let autoW: number, autoH: number;
+      if (cropAspect >= 1) {
+        // wider than tall — dominant axis is width
+        autoW = DECAL_DOMINANT_SIZE;
+        autoH = DECAL_DOMINANT_SIZE / cropAspect;
+      } else {
+        // taller than wide — dominant axis is height
+        autoH = DECAL_DOMINANT_SIZE;
+        autoW = DECAL_DOMINANT_SIZE * cropAspect;
+      }
+      const clamp = (v: number, lo: number, hi: number) => Math.min(hi, Math.max(lo, v));
+      autoW = clamp(autoW, 0.10, 1.50);
+      autoH = clamp(autoH, 0.10, 1.50);
+
+      const prev = tabDecalAutoSizesRef.current;
+      if (!prev[tabId] || Math.abs(prev[tabId].width - autoW) > 0.001 || Math.abs(prev[tabId].height - autoH) > 0.001) {
+        const next = { ...prev, [tabId]: { width: autoW, height: autoH } };
+        tabDecalAutoSizesRef.current = next;
+        setTabDecalAutoSizes(next);
+      }
     }
-    return current[tabId] ?? null;
-  }, [setTabDecalPreviews]);
+
+    if (finalDataUrl) {
+      const current = tabDecalPreviewsRef.current;
+      if (current[tabId] !== finalDataUrl) {
+        const next = { ...current, [tabId]: finalDataUrl };
+        tabDecalPreviewsRef.current = next;
+        setTabDecalPreviews(next);
+      }
+    }
+
+    return tabDecalPreviewsRef.current[tabId] ?? null;
+  }, [setTabDecalPreviews, setTabDecalAutoSizes]);
 
   const ensureTabHasDecalPreview = useCallback(async (tabId: string) => {
     const result = await captureTabImage(tabId);
@@ -756,13 +834,36 @@ const Creation = () => {
   const decalsFor3D = useMemo<ExternalDecalData[]>(() => {
     return canvasTabs
       .filter((tab) => tab.type === "2d" && tabVisibility[tab.id] && tabDecalPreviews[tab.id])
-      .map((tab) => ({
-        id: tab.id,
-        label: tab.name,
-        dataUrl: tabDecalPreviews[tab.id],
-        transform: tabDecalPlacements[tab.id] ?? null,
-      }));
-  }, [canvasTabs, tabDecalPreviews, tabVisibility, tabDecalPlacements]);
+      .map((tab) => {
+        const placement = tabDecalPlacements[tab.id] ?? null;
+        const autoSize = tabDecalAutoSizes[tab.id] ?? null;
+
+        // autoSize (derived from 2D canvas content bounds) ALWAYS controls width/height.
+        // placement only contributes position/normal/angle (where the user placed the decal in 3D).
+        // This prevents the engine's initial default size (0.3) from polluting tabDecalPlacements
+        // and permanently overriding the content-aware sizing.
+        let transform: DecalTransform | null = null;
+        if (autoSize) {
+          transform = {
+            width: autoSize.width,
+            height: autoSize.height,
+            position: placement?.position ?? null,
+            normal: placement?.normal ?? null,
+            angle: placement?.angle,
+            depth: placement?.depth,
+          };
+        } else if (placement) {
+          transform = placement;
+        }
+
+        return {
+          id: tab.id,
+          label: tab.name,
+          dataUrl: tabDecalPreviews[tab.id],
+          transform,
+        };
+      });
+  }, [canvasTabs, tabDecalPreviews, tabVisibility, tabDecalPlacements, tabDecalAutoSizes]);
 
   const viabilityAlertItems = useMemo(() => {
     return Object.entries(decalViabilityAlerts).map(([id, messages]) => {
@@ -1045,6 +1146,7 @@ const Creation = () => {
   const [cropModeActive, setCropModeActive] = useState(false);
   const [colorCutModeActive, setColorCutModeActive] = useState(false);
   const [effectsEditModeActive, setEffectsEditModeActive] = useState(false);
+  const [bgRemovingTabId, setBgRemovingTabId] = useState<string | null>(null);
   const toolbarTransitionTimeoutRef = useRef<NodeJS.Timeout | null>(null);
 
   // Detecta mudança de toolbar ativa (não de seleção geral) e aplica transição flip
@@ -1497,6 +1599,7 @@ const Creation = () => {
         project_key: payload.draftKey,
         data: payload,
         updated_at: payload.savedAt,
+        ephemeral_expires_at: payload.ephemeralExpiresAt ?? null,
       } as const;
 
       const { data: upserted, error } = await supabase
@@ -2147,6 +2250,7 @@ const Creation = () => {
                     baseColor={baseColor}
                     externalDecals={decalsFor3D}
                     onDecalsChange={handleDecalStateChange}
+                    decalZonesOverride={subtypeDecalZonesOverride}
                   />
                   {subtypePrintConstraints && (
                     <div className="absolute top-3 left-3 max-w-xs rounded border border-amber-300/70 bg-amber-50/85 px-2 py-1 text-[11px] text-amber-900">
@@ -2167,7 +2271,7 @@ const Creation = () => {
                       ))}
                     </div>
                   )}
-                  <div className="absolute bottom-3 left-3 text-xs text-gray-700 glass px-2 py-1 rounded">
+                  <div className="absolute bottom-3 left-3 text-xs text-gray-700 dark:text-gray-300 glass px-2 py-1 rounded">
                     Arraste para rotacionar · Scroll para zoom
                   </div>
                 </div>
@@ -2264,6 +2368,15 @@ const Creation = () => {
                                 zIndex: tab.id === activeCanvasTab ? 2 : 1,
                               }}
                             >
+                              {/* Overlay de loading restrito à tab onde ocorre a remoção de fundo */}
+                              {bgRemovingTabId === tab.id && (
+                                <div className="absolute inset-0 z-[100] flex flex-col items-center justify-center gap-3 bg-white/60 dark:bg-black/50 backdrop-blur-sm">
+                                  <svg className="h-8 w-8 animate-spin text-foreground/70" viewBox="0 0 24 24" fill="none">
+                                    <circle className="opacity-25" cx="12" cy="12" r="10" stroke="currentColor" strokeWidth="4" />
+                                    <path className="opacity-75" fill="currentColor" d="M4 12a8 8 0 018-8v8z" />
+                                  </svg>
+                                </div>
+                              )}
                               <div
                                 style={{
                                   position: "absolute",
@@ -2408,7 +2521,7 @@ const Creation = () => {
                                         ? editorRefs.current[activeCanvasTab]?.cancelEffectLasso?.()
                                         : editorRefs.current[activeCanvasTab]?.cancelEffectBrush?.()))
                                 }
-                                title="Cancelar (Esc ou Delete)"
+                                title="Cancelar (Esc)"
                               >
                                 <X className="w-4 h-4" />
                               </Button>
@@ -2450,6 +2563,7 @@ const Creation = () => {
                                 editor={{ current: editorRefs.current[activeCanvasTab] as Editor2DHandle }}
                                 visible={activeIs2D && (effectsEditModeActive || selectionKind === "image")}
                                 position="inline"
+                                onBgRemoveLoadingChange={(loading) => setBgRemovingTabId(loading ? activeCanvasTab : null)}
                               />
                             </div>
                           </div>

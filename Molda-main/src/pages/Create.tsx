@@ -287,6 +287,14 @@ const Create = () => {
           return;
         }
 
+        // Limpeza server-side: exclui rascunhos efêmeros expirados antes de buscar
+        await supabase
+          .from("project_drafts")
+          .delete()
+          .eq("user_id", user.id)
+          .not("ephemeral_expires_at", "is", null)
+          .lt("ephemeral_expires_at", new Date().toISOString());
+
         const { data, error } = await supabase
           .from("project_drafts")
           .select("id, project_key, data, updated_at")
@@ -795,8 +803,8 @@ const Create = () => {
 
   const CARD_SIZE = 400;
   const CARD_GAP = 40;
-  const STATIC_CARD_SIZE = 420;
-  const STATIC_CARD_GAP = 24;
+  const STATIC_CARD_SIZE = CARD_SIZE;
+  const STATIC_CARD_GAP = CARD_GAP;
 
   const renderStaticCards = (
     items: { id: string; label: string; description?: string; imageUrl?: string }[],
@@ -1017,18 +1025,22 @@ const Create = () => {
                           (id) => handleSelectSubtype(id)
                         )
                       : subtypeCarouselItems.length <= 3
-                        ? renderStaticCards(subtypeCarouselItems, selectedSubtype, (id) => handleSelectSubtype(id))
-                        : (
-                          <LinearInfiniteCarousel
-                            className="wizard-carousel"
-                            items={subtypeCarouselItems}
-                            selectedId={selectedSubtype}
-                            onSelect={(id: string) => handleSelectSubtype(id)}
-                            autoCenterSelected={searchActive}
-                            cardSize={CARD_SIZE}
-                            cardGapPx={CARD_GAP}
-                          />
-                        )}
+                      ? renderStaticCards(
+                          subtypeCarouselItems,
+                          selectedSubtype,
+                          (id) => handleSelectSubtype(id)
+                        )
+                      : (
+                        <LinearInfiniteCarousel
+                          className="wizard-carousel"
+                          items={subtypeCarouselItems}
+                          selectedId={selectedSubtype}
+                          onSelect={(id: string) => handleSelectSubtype(id)}
+                          autoCenterSelected={searchActive}
+                          cardSize={CARD_SIZE}
+                          cardGapPx={CARD_GAP}
+                        />
+                      )}
 
                     {selectedSubtypeConfig && (
                       <div className="mt-4 rounded-xl border border-amber-300/50 bg-amber-50/70 px-4 py-3 text-xs text-amber-900">

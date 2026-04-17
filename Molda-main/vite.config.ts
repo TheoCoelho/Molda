@@ -24,5 +24,6 @@ export default defineConfig(({ mode }) => ({
   },
   optimizeDeps: {
     include: ["three"],
+    exclude: ["@imgly/background-removal"],
   },
 }));

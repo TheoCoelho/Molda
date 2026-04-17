@@ -3,11 +3,13 @@ import { supabase } from "@/integrations/supabase/client";
 import { STORAGE_BUCKET } from "@/lib/supabaseClient";
 import { AVATAR_BUCKET } from "@/lib/constants/storage";
 import SocialPost, { SocialPostData } from "./SocialPost";
+import type { ExternalDecalData } from "@/types/decals";
 import { Loader2 } from "lucide-react";
 import { Button } from "@/components/ui/button";
 
 type SocialProfile = {
-  id: string;
+  id?: string | null;
+  user_id?: string | null;
   username: string;
   nickname: string;
   avatar_path: string | null;
@@ -43,6 +45,76 @@ interface SocialFeedProps {
   limit?: number;
 }
 
+function getProfileId(profile: SocialProfile): string {
+  return String(profile.id ?? profile.user_id ?? "").trim();
+}
+
+function readSignedUrl(entry: any): string {
+  return String(entry?.signedUrl ?? entry?.signedURL ?? "").trim();
+}
+
+function isUsableImageUrl(value: unknown): value is string {
+  if (typeof value !== "string") return false;
+  const raw = value.trim();
+  if (!raw) return false;
+  if (raw.startsWith("data:image/")) return true;
+  if (raw.startsWith("http://") || raw.startsWith("https://")) return true;
+  if (raw.startsWith("blob:")) return true;
+  return false;
+}
+
+function fallbackPiecePreview(baseColor?: string): string {
+  const safeColor = encodeURIComponent(baseColor || "#e0e0e0");
+  return `data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' width='400' height='400'%3E%3Crect fill='${safeColor}' width='400' height='400'/%3E%3Ctext x='50%25' y='50%25' text-anchor='middle' dy='.3em' fill='%23666' font-size='24'%3EPeça sem preview%3C/text%3E%3C/svg%3E`;
+}
+
+function extractPiecePreview(data: ProjectDraft["data"]): string {
+  const tabPreviews = data?.tabDecalPreviews || {};
+  const tabPreview = Object.values(tabPreviews).find(isUsableImageUrl);
+  if (tabPreview) return tabPreview;
+
+  const snapshots = (data as any)?.canvasSnapshots;
+  if (snapshots && typeof snapshots === "object") {
+    for (const value of Object.values(snapshots as Record<string, unknown>)) {
+      if (isUsableImageUrl(value)) return value;
+      if (value && typeof value === "object") {
+        const obj = value as Record<string, unknown>;
+        if (isUsableImageUrl(obj.previewUrl)) return obj.previewUrl;
+        if (isUsableImageUrl(obj.dataUrl)) return obj.dataUrl;
+      }
+    }
+  }
+
+  return fallbackPiecePreview(data?.baseColor);
+}
+
+function buildPieceExternalDecals(data: ProjectDraft["data"]): ExternalDecalData[] {
+  const tabs = data?.canvasTabs ?? [];
+  const previews = data?.tabDecalPreviews ?? {};
+  const visibility = data?.tabVisibility ?? {};
+  const placements = data?.tabDecalPlacements ?? {};
+
+  const fromTabs = tabs
+    .filter((tab) => tab.type === "2d" && visibility[tab.id] && previews[tab.id])
+    .map((tab) => ({
+      id: tab.id,
+      label: tab.name,
+      dataUrl: previews[tab.id] as string,
+      transform: placements[tab.id] ?? null,
+    } satisfies ExternalDecalData));
+
+  if (fromTabs.length > 0) return fromTabs;
+
+  return Object.entries(previews)
+    .filter(([, url]) => Boolean(url))
+    .map(([id, url]) => ({
+      id,
+      label: id,
+      dataUrl: url as string,
+      transform: placements[id] ?? null,
+    } satisfies ExternalDecalData));
+}
+
 export default function SocialFeed({ limit = 100 }: SocialFeedProps) {
   const [posts, setPosts] = useState<SocialPostData[]>([]);
   const [loading, setLoading] = useState(true);
@@ -53,11 +125,6 @@ export default function SocialFeed({ limit = 100 }: SocialFeedProps) {
   const getAvatarUrl = useCallback((avatarPath: string | null): string | undefined => {
     if (!avatarPath) return undefined;
     const { data } = supabase.storage.from(AVATAR_BUCKET).getPublicUrl(avatarPath);
-    return data.publicUrl;
-  }, []);
-
-  const getPreviewUrl = useCallback((storagePath: string): string => {
-    const { data } = supabase.storage.from(STORAGE_BUCKET).getPublicUrl(storagePath);
     return data.publicUrl;
   }, []);
 
@@ -87,7 +154,7 @@ export default function SocialFeed({ limit = 100 }: SocialFeedProps) {
       if (profilesError) throw profilesError;
 
       const validProfiles = (profiles as SocialProfile[])?.filter(
-        (p) => (p.designs_count > 0 || p.pieces_count > 0) && p.id
+        (p) => (p.designs_count > 0 || p.pieces_count > 0) && Boolean(getProfileId(p))
       ) || [];
 
       console.log(`[SocialFeed] Encontrados ${validProfiles.length} perfis com conteúdo`);
@@ -96,25 +163,46 @@ export default function SocialFeed({ limit = 100 }: SocialFeedProps) {
       const debugInfo: Record<string, { designs: number; pieces: number }> = {};
       for (const profile of validProfiles) {
         try {
+          const profileId = getProfileId(profile);
+
           // Carrega designs públicos
           const { data: designItems, error: designsError } = await supabase.rpc(
             "get_public_gallery_items",
             {
-              target_user_id: profile.id,
+              target_user_id: profileId,
               limit_count: 50,
             }
           );
 
           if (!designsError && designItems) {
-            const designPosts = (designItems as GalleryItem[])
+            const designRows = designItems as GalleryItem[];
+            const designPaths = designRows.map((item) => item.storage_path).filter(Boolean);
+
+            let signedByPath: Record<string, string> = {};
+            if (designPaths.length > 0) {
+              const { data: signedData } = await supabase.storage
+                .from(STORAGE_BUCKET)
+                .createSignedUrls(designPaths, 60 * 60 * 24 * 7);
+              if (signedData) {
+                for (const entry of signedData as any[]) {
+                  const signed = readSignedUrl(entry);
+                  if (signed) signedByPath[String(entry.path)] = signed;
+                }
+              }
+            }
+
+            const designPosts = designRows
               .map((item): SocialPostData => ({
                 id: item.storage_path,
                 type: "design",
-                previewUrl: getPreviewUrl(item.storage_path),
+                previewUrl:
+                  signedByPath[item.storage_path] ||
+                  supabase.storage.from(STORAGE_BUCKET).getPublicUrl(item.storage_path).data.publicUrl ||
+                  "",
                 title: item.design_name || "Design sem nome",
                 date: formatDate(item.updated_at),
                 designValue: item.design_value,
-                userId: profile.id,
+                userId: profileId,
                 username: profile.username,
                 nickname: profile.nickname,
                 userAvatar: getAvatarUrl(profile.avatar_path),
@@ -139,7 +227,7 @@ export default function SocialFeed({ limit = 100 }: SocialFeedProps) {
           const { data: pieceItems, error: piecesError } = await supabase.rpc(
             "get_public_project_drafts",
             {
-              target_user_id: profile.id,
+              target_user_id: profileId,
               limit_count: 50,
             }
           );
@@ -148,23 +236,9 @@ export default function SocialFeed({ limit = 100 }: SocialFeedProps) {
             console.log(`[SocialFeed] RPC retornou ${(pieceItems as any[]).length} peças para ${profile.nickname}`);
             
             const piecePosts = (pieceItems as ProjectDraft[])
-              .map((item, idx): SocialPostData | null => {
-                // Tenta obter a primeira preview de decal disponível
+              .map((item): SocialPostData => {
                 const data = item.data || {};
-                const tabPreviews = data.tabDecalPreviews || {};
-                const canvasSnapshots = (data as any).canvasSnapshots || {};
-                
-                // Prioridade: canvasSnapshots > tabDecalPreviews
-                let firstPreview = Object.values(canvasSnapshots)[0] as string || 
-                                   Object.values(tabPreviews)[0] as string || "";
-
-                // Se não tem preview, tenta usar baseColor para criar um placeholder
-                if (!firstPreview || !firstPreview.trim()) {
-                  const baseColor = data.baseColor || "#e0e0e0";
-                  // Cria um canvas SVG com a cor base e um ícone
-                  firstPreview = `data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' width='400' height='400'%3E%3Crect fill='${encodeURIComponent(baseColor)}' width='400' height='400'/%3E%3Ctext x='50%25' y='50%25' text-anchor='middle' dy='.3em' fill='%23666' font-size='24'%3EPeça sem preview%3C/text%3E%3C/svg%3E`;
-                  console.warn(`[SocialFeed] Peça ${item.id} sem preview - usando cor base ${data.baseColor}`);
-                }
+                const firstPreview = extractPiecePreview(data);
 
                 return {
                   id: item.id,
@@ -172,10 +246,17 @@ export default function SocialFeed({ limit = 100 }: SocialFeedProps) {
                   previewUrl: firstPreview,
                   title: getProjectDisplayName(data.projectName),
                   date: formatDate(item.updated_at),
-                  userId: profile.id,
+                  userId: profileId,
                   username: profile.username,
                   nickname: profile.nickname,
                   userAvatar: getAvatarUrl(profile.avatar_path),
+                  pieceBaseColor: data.baseColor || "#ffffff",
+                  pieceSelection: {
+                    part: data.part ?? null,
+                    type: data.type ?? null,
+                    subtype: data.subtype ?? null,
+                  },
+                  pieceExternalDecals: buildPieceExternalDecals(data),
                 };
               });
             
@@ -187,7 +268,7 @@ export default function SocialFeed({ limit = 100 }: SocialFeedProps) {
             console.warn(`[SocialFeed] Erro ao carregar peças de ${profile.nickname}:`, piecesError);
           }
         } catch (err) {
-          console.warn(`Erro ao carregar posts do usuário ${profile.id}:`, err);
+          console.warn(`Erro ao carregar posts do usuário ${getProfileId(profile)}:`, err);
         }
       }
 
@@ -221,7 +302,7 @@ export default function SocialFeed({ limit = 100 }: SocialFeedProps) {
     } finally {
       setLoading(false);
     }
-  }, [limit, getAvatarUrl, getPreviewUrl]);
+  }, [limit, getAvatarUrl]);
 
   useEffect(() => {
     loadPublicPosts();

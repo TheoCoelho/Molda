@@ -19,12 +19,14 @@
 alter table public.orders enable row level security;
 
 -- Política: Usuários podem ver seus próprios pedidos
+drop policy if exists "Usuários podem ver seus próprios pedidos" on public.orders;
 create policy "Usuários podem ver seus próprios pedidos"
   on public.orders
   for select
   using (auth.uid() = user_id);
 
 -- Política: Admin pode ver todos os pedidos
+drop policy if exists "Admin pode ver todos os pedidos" on public.orders;
 create policy "Admin pode ver todos os pedidos"
   on public.orders
   for select
@@ -33,6 +35,7 @@ create policy "Admin pode ver todos os pedidos"
   );
 
 -- Política: Factory users podem ver todos os pedidos
+drop policy if exists "Factory users podem ver todos os pedidos" on public.orders;
 create policy "Factory users podem ver todos os pedidos"
   on public.orders
   for select
@@ -41,12 +44,14 @@ create policy "Factory users podem ver todos os pedidos"
   );
 
 -- Política: Apenas o customer pode criar um pedido para si mesmo
+drop policy if exists "Usuários podem criar seus próprios pedidos" on public.orders;
 create policy "Usuários podem criar seus próprios pedidos"
   on public.orders
   for insert
   with check (auth.uid() = user_id);
 
 -- Política: Factory users podem atualizar pedidos
+drop policy if exists "Factory users podem atualizar pedidos" on public.orders;
 create policy "Factory users podem atualizar pedidos"
   on public.orders
   for update
@@ -58,6 +63,7 @@ create policy "Factory users podem atualizar pedidos"
   );
 
 -- Política: Admin pode atualizar qualquer pedido
+drop policy if exists "Admin pode atualizar pedidos" on public.orders;
 create policy "Admin pode atualizar pedidos"
   on public.orders
   for update
@@ -72,6 +78,7 @@ create policy "Admin pode atualizar pedidos"
 alter table public.order_events enable row level security;
 
 -- Política: Usuários podem ver eventos de seus próprios pedidos
+drop policy if exists "Usuários podem ver eventos de seus pedidos" on public.order_events;
 create policy "Usuários podem ver eventos de seus pedidos"
   on public.order_events
   for select
@@ -82,6 +89,7 @@ create policy "Usuários podem ver eventos de seus pedidos"
   );
 
 -- Política: Factory users veem todos os eventos
+drop policy if exists "Factory users veem todos os eventos" on public.order_events;
 create policy "Factory users veem todos os eventos"
   on public.order_events
   for select
@@ -90,6 +98,7 @@ create policy "Factory users veem todos os eventos"
   );
 
 -- Política: Admin veem todos os eventos
+drop policy if exists "Admin veem todos os eventos" on public.order_events;
 create policy "Admin veem todos os eventos"
   on public.order_events
   for select
@@ -98,6 +107,7 @@ create policy "Admin veem todos os eventos"
   );
 
 -- Política: Factory users podem inserir eventos
+drop policy if exists "Factory users podem criar eventos" on public.order_events;
 create policy "Factory users podem criar eventos"
   on public.order_events
   for insert
@@ -156,12 +166,13 @@ begin
   if new.order_number is null then
     v_year := extract(year from now())::text;
     
-    -- Pega o próximo número sequencial do ano
-    select coalesce(count(*)::int, 0) + 1 into v_sequence
+    -- Pega o próximo número sequencial do ano a partir do maior número já emitido
+    select coalesce(max(right(order_number, 6)::int), 0) + 1 into v_sequence
     from public.orders
-    where order_number like v_year || '-%';
+    where order_number like ('ORD-' || v_year || '-%')
+      and right(order_number, 6) ~ '^[0-9]{6}$';
     
-    new.order_number := format('ORD-%s-%06d', v_year, v_sequence);
+    new.order_number := format('ORD-%s-%s', v_year, lpad(v_sequence::text, 6, '0'));
   end if;
   
   return new;

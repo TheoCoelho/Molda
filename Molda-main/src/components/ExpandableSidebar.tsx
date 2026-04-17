@@ -5,6 +5,7 @@ import { Input } from "../components/ui/input";
 import { Label } from "../components/ui/label";
 import { Textarea } from "../components/ui/textarea";
 import UploadGallery from "../components/UploadGallery";
+import DesignFinder from "../components/DesignFinder";
 import { useRecentFonts } from "../hooks/use-recent-fonts";
 import {
   Settings,
@@ -322,6 +323,7 @@ const ExpandableSidebar: React.FC<ExpandableSidebarProps> = (props) => {
 
   const [isExpanded, setIsExpanded] = useState(true);
   const [activeSection, setActiveSection] = useState<SectionId>("settings");
+  const [uploadSubTab, setUploadSubTab] = useState<"encontrar" | "adicionar">("encontrar");
 
   useEffect(() => onExpandChange?.(isExpanded), [isExpanded, onExpandChange]);
 
@@ -352,7 +354,7 @@ const ExpandableSidebar: React.FC<ExpandableSidebarProps> = (props) => {
         }`}
     >
       {/* Coluna de ícones */}
-      <div className="w-14 flex flex-col bg-transparent border-r border-gray-200 h-full pt-4 pb-0">
+      <div className="w-14 flex flex-col bg-transparent border-r border-gray-200 dark:border-border h-full pt-4 pb-0">
         <div className="flex-1 flex flex-col items-stretch justify-evenly gap-2">
           {[
             { id: "settings", icon: Settings, label: "Configurações" },
@@ -369,15 +371,15 @@ const ExpandableSidebar: React.FC<ExpandableSidebarProps> = (props) => {
                 key={s.id}
                 type="button"
                 onClick={() => handleIconClick(s.id as SectionId)}
-                className="group mx-2 h-10 w-10 rounded-xl flex items-center justify-center transition bg-transparent hover:bg-black/5 hover:shadow-[0_8px_24px_-12px_rgba(0,0,0,0.25)] hover:scale-[1.16] focus:outline-none focus-visible:outline-none"
+                className="group mx-2 h-10 w-10 rounded-xl flex items-center justify-center transition bg-transparent hover:bg-black/5 dark:hover:bg-white/10 hover:shadow-[0_8px_24px_-12px_rgba(0,0,0,0.25)] hover:scale-[1.16] focus:outline-none focus-visible:outline-none"
                 aria-label={s.label}
                 aria-pressed={isActive}
                 title={s.label}
               >
                 <Icon
                   className={`w-5 h-5 transition-all ${isActive
-                    ? "text-black [filter:drop-shadow(0_0_10px_rgba(0,0,0,.40))] scale-[1.30]"
-                    : "text-black/70 group-hover:text-black"
+                    ? "text-black dark:text-white [filter:drop-shadow(0_0_10px_rgba(0,0,0,.40))] dark:[filter:drop-shadow(0_0_10px_rgba(255,255,255,.30))] scale-[1.30]"
+                    : "text-black/70 dark:text-white/70 group-hover:text-black dark:group-hover:text-white"
                     }`}
                 />
               </button>
@@ -391,7 +393,7 @@ const ExpandableSidebar: React.FC<ExpandableSidebarProps> = (props) => {
         <div
           className={`flex-1 min-w-0 min-h-0 max-h-full overflow-hidden flex flex-col`}
         >
-          <div className={activeSection === "brush" ? "flex h-full flex-1 min-h-0 max-h-full flex-col px-2" : "flex-1 overflow-y-auto rounded-2xl p-4 lg:p-6 pb-2"}>
+          <div className={activeSection === "brush" ? "flex h-full flex-1 min-h-0 max-h-full flex-col px-2" : activeSection === "upload" ? "flex-1 overflow-hidden flex flex-col" : "flex-1 overflow-y-auto rounded-2xl p-4 lg:p-6 pb-2"}>
             {activeSection === "settings" && (
               <SettingsContent
                 projectId={projectId}
@@ -410,22 +412,60 @@ const ExpandableSidebar: React.FC<ExpandableSidebarProps> = (props) => {
               />
             )}
             {activeSection === "upload" && (
-              <UploadGallery
-                onImageInsert={(src, opts) => {
-                  console.log(`[ExpandableSidebar] Image inserted, current tool: ${tool}`);
-                  // Desativar ferramentas de desenho quando inserir imagem
-                  if (tool !== "select" && tool !== "text") {
-                    console.log(`[ExpandableSidebar] Deactivating tool ${tool} -> select on image insert (this should reset cursor)`);
-                    setTool("select");
-                  } else {
-                    console.log(`[ExpandableSidebar] Tool is already ${tool}, no need to change`);
-                  }
+              <div className="flex flex-col h-full min-h-0">
+                {/* Sub-tabs — full width */}
+                <div className="flex shrink-0 border-b border-black/10 dark:border-white/10">
+                  <button
+                    type="button"
+                    onClick={() => setUploadSubTab("encontrar")}
+                    className={`flex-1 py-2.5 text-xs font-medium transition border-b-2 -mb-px ${
+                      uploadSubTab === "encontrar"
+                        ? "border-black dark:border-white text-black dark:text-white"
+                        : "border-transparent text-black/45 dark:text-white/45 hover:text-black dark:hover:text-white"
+                    }`}
+                  >
+                    Encontrar
+                  </button>
+                  <button
+                    type="button"
+                    onClick={() => setUploadSubTab("adicionar")}
+                    className={`flex-1 py-2.5 text-xs font-medium transition border-b-2 -mb-px ${
+                      uploadSubTab === "adicionar"
+                        ? "border-black dark:border-white text-black dark:text-white"
+                        : "border-transparent text-black/45 dark:text-white/45 hover:text-black dark:hover:text-white"
+                    }`}
+                  >
+                    Adicionar
+                  </button>
+                </div>
 
-                  // Call the original onImageInsert (which adds to canvas and should trigger cancelContinuousLine)
-                  onImageInsert?.(src, opts);
-                  onImageInserted?.();
-                }}
-              />
+                {/* Content */}
+                <div className="flex-1 overflow-y-auto p-4 lg:p-5 pb-2">
+                  {uploadSubTab === "encontrar" ? (
+                    <DesignFinder
+                      onImageInsert={(src, opts) => {
+                        if (tool !== "select" && tool !== "text") setTool("select");
+                        onImageInsert?.(src, opts);
+                        onImageInserted?.();
+                      }}
+                    />
+                  ) : (
+                    <UploadGallery
+                      onImageInsert={(src, opts) => {
+                        console.log(`[ExpandableSidebar] Image inserted, current tool: ${tool}`);
+                        if (tool !== "select" && tool !== "text") {
+                          console.log(`[ExpandableSidebar] Deactivating tool ${tool} -> select on image insert (this should reset cursor)`);
+                          setTool("select");
+                        } else {
+                          console.log(`[ExpandableSidebar] Tool is already ${tool}, no need to change`);
+                        }
+                        onImageInsert?.(src, opts);
+                        onImageInserted?.();
+                      }}
+                    />
+                  )}
+                </div>
+              </div>
             )}
             {activeSection === "brush" && (
               <BrushSectionAccordion
@@ -455,14 +495,14 @@ const ExpandableSidebar: React.FC<ExpandableSidebarProps> = (props) => {
             )}
             {activeSection === "image" && (
               <div className="space-y-4">
-                <h3 className="text-lg font-semibold text-gray-800">Adesivos</h3>
-                <div className="text-sm text-gray-500">Em breve.</div>
+                <h3 className="text-lg font-semibold text-gray-800 dark:text-gray-100">Adesivos</h3>
+                <div className="text-sm text-gray-500 dark:text-gray-400">Em breve.</div>
               </div>
             )}
             {activeSection === "cut" && (
               <div className="space-y-4">
-                <h3 className="text-lg font-semibold text-gray-800">Corte</h3>
-                <div className="text-sm text-gray-500">Em breve.</div>
+                <h3 className="text-lg font-semibold text-gray-800 dark:text-gray-100">Corte</h3>
+                <div className="text-sm text-gray-500 dark:text-gray-400">Em breve.</div>
               </div>
             )}
           </div>
@@ -555,7 +595,7 @@ function SettingsContent(props: {
 
     return (
     <div className="space-y-4">
-      <h3 className="text-lg font-semibold text-gray-800">Configurações</h3>
+      <h3 className="text-lg font-semibold text-gray-800 dark:text-gray-100">Configurações</h3>
       <div>
         <Label htmlFor="project-name">Nome do Projeto</Label>
         <Input id="project-name" value={projectName} onChange={(e) => setProjectName(e.target.value)} placeholder={placeholderName} />
@@ -570,7 +610,7 @@ function SettingsContent(props: {
       <div className="grid grid-cols-2 gap-2">
         <div>
           <Label htmlFor="size">Tamanho</Label>
-          <select id="size" className="w-full px-2 py-2 border rounded text-sm" value={size} onChange={(e) => setSize(e.target.value)}>
+          <select id="size" className="w-full px-2 py-2 border rounded text-sm bg-background text-foreground" value={size} onChange={(e) => setSize(e.target.value)}>
             <option>PP</option>
             <option>P</option>
             <option>M</option>
@@ -591,7 +631,7 @@ function SettingsContent(props: {
           ) : (
             <select
               id="fabric"
-              className="w-full px-2 py-2 border rounded text-sm"
+              className="w-full px-2 py-2 border rounded text-sm bg-background text-foreground"
               value={dbMaterials.length > 0 ? selectedMaterialId : fabric}
               onChange={(e) => {
                 const material = dbMaterials.find((m) => m.id === e.target.value);
@@ -617,26 +657,26 @@ function SettingsContent(props: {
       
       {visibleTabs && visibleTabs.length > 0 && (
         <div className="mt-6 -mx-4 lg:-mx-6">
-          <h4 className="text-md font-semibold text-gray-800 mb-3 border-b pb-2 px-4 lg:px-6">Técnicas de Estamparia</h4>
+          <h4 className="text-md font-semibold text-gray-800 dark:text-gray-100 mb-3 border-b pb-2 px-4 lg:px-6">Técnicas de Estamparia</h4>
           <div className="space-y-4 px-4 lg:px-6">
             {visibleTabs.map((tab) => (
-              <div key={tab.id} className="flex items-stretch bg-gray-50 rounded-lg border overflow-hidden">
+              <div key={tab.id} className="flex items-stretch bg-gray-50 dark:bg-white/5 rounded-lg border overflow-hidden">
                 {/* Preview Thumbnail */}
-                <div className="w-[100px] flex-shrink-0 bg-white border-r p-0 overflow-hidden flex items-center justify-center">
+                <div className="w-[100px] flex-shrink-0 bg-white dark:bg-white/10 border-r p-0 overflow-hidden flex items-center justify-center">
                   {tab.dataUrl ? (
                     <img src={tab.dataUrl} alt={tab.name} className="w-full h-full object-cover" />
                   ) : (
-                    <span className="text-xs text-gray-400 p-2">Sem Img</span>
+                    <span className="text-xs text-gray-400 dark:text-gray-500 p-2">Sem Img</span>
                   )}
                 </div>
                 
                 {/* Info & Select */}
                 <div className="flex-1 min-w-0 p-3">
-                  <p className="text-sm font-semibold text-gray-800 truncate mb-1.5" title={tab.name}>
+                  <p className="text-sm font-semibold text-gray-800 dark:text-gray-100 truncate mb-1.5" title={tab.name}>
                     {tab.name}
                   </p>
                   <select
-                    className="w-full px-2 py-1.5 border rounded text-xs bg-white text-gray-700 focus:outline-none focus:ring-1 focus:ring-black cursor-pointer"
+                    className="w-full px-2 py-1.5 border rounded text-xs bg-white dark:bg-card text-gray-700 dark:text-gray-200 focus:outline-none focus:ring-1 focus:ring-black dark:focus:ring-white/30 cursor-pointer"
                     value={(() => {
                       const cur = tabPrintTypes?.[tab.id] ?? "";
                       if (allowedMethods.length === 0) return "";
@@ -889,7 +929,7 @@ function BrushSectionAccordion(props: {
         {/* Moldes (carimbos) */}
         <AccordionItem title="Moldes" icon={<Circle className="w-4 h-4" />} open={openKey === "moldes"} onToggle={() => toggle("moldes")}>
           <div className="mt-2">
-            <div className="text-xs text-gray-600 mb-2">Selecione um molde e clique/arraste no canvas.</div>
+            <div className="text-xs text-gray-600 dark:text-gray-400 mb-2">Selecione um molde e clique/arraste no canvas.</div>
 
             <div className="max-h-64 overflow-y-auto overflow-x-hidden px-1 scrollbar-soft">
               <div className="grid grid-cols-3 gap-3 justify-items-center">
@@ -937,7 +977,7 @@ function BrushSectionAccordion(props: {
           {/* Barra de pesquisa */}
           <div className="mt-2 mb-3">
             <div className="relative">
-              <Search className="absolute left-3 top-1/2 transform -translate-y-1/2 w-4 h-4 text-gray-400" />
+              <Search className="absolute left-3 top-1/2 transform -translate-y-1/2 w-4 h-4 text-gray-400 dark:text-gray-500" />
               <Input
                 type="text"
                 placeholder="Pesquisar formas..."

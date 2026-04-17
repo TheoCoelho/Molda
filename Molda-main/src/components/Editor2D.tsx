@@ -232,6 +232,9 @@ export type Editor2DHandle = {
   isColorCutActive?: () => boolean;
   onColorCutModeChange?: (cb: (active: boolean) => void) => void;
 
+  // ==== Remoção de fundo por IA ====
+  removeBackground?: () => Promise<void>;
+
   toJSON: () => string;
   loadFromJSON: (json: string) => Promise<void>;
   deleteSelection: () => void;
@@ -271,6 +274,13 @@ export type Editor2DHandle = {
   waitForIdle: () => Promise<void>;
   /** Aplica um degradê (GradientFill) como fill do objeto selecionado. */
   applyGradientToSelection?: (gradient: GradientFill) => void;
+  /**
+   * Retorna o bounding box de todos os objetos presentes no canvas, como
+   * proporção do tamanho do canvas (0–1 em cada eixo), incluindo a origem do
+   * crop (ratioLeft/ratioTop). Retorna null se não houver objetos.
+   * Útil para recortar o PNG exportado ao conteúdo real e redimensionar o gizmo.
+   */
+  getContentBounds?: () => { ratioLeft: number; ratioTop: number; ratioW: number; ratioH: number } | null;
 };
 
 type Props = {
@@ -472,6 +482,62 @@ function loadFabricRuntime(): Promise<any> {
 // Cross-canvas clipboard shared by all Editor2D instances on the page.
 // Storing it at module level allows Ctrl+C on one canvas tab and Ctrl+V on another.
 let _globalFabricClipboard: any = null;
+
+// ── Background-removal Web Worker ───────────────────────────────────────────
+// The singleton worker is created on first use and reused for subsequent calls.
+// Running inference in a Worker ensures the main thread / UI stays responsive.
+let _bgWorker: Worker | null = null;
+let _bgWorkerReqId = 0;
+const _bgWorkerCallbacks = new Map<
+  number,
+  { resolve: (b: Blob) => void; reject: (e: Error) => void }
+>();
+
+function _getOrCreateBgWorker(): Worker {
+  if (!_bgWorker) {
+    _bgWorker = new Worker(
+      new URL("../workers/bg-removal.worker.ts", import.meta.url),
+      { type: "module" }
+    );
+    _bgWorker.onmessage = (e: MessageEvent) => {
+      const { id, ok, buffer, error } = e.data as {
+        id: number;
+        ok: boolean;
+        buffer?: ArrayBuffer;
+        error?: string;
+      };
+      const cb = _bgWorkerCallbacks.get(id);
+      if (!cb) return;
+      _bgWorkerCallbacks.delete(id);
+      if (ok && buffer) {
+        cb.resolve(new Blob([buffer], { type: "image/png" }));
+      } else {
+        cb.reject(new Error(error ?? "unknown worker error"));
+      }
+    };
+    _bgWorker.onerror = () => {
+      for (const cb of _bgWorkerCallbacks.values()) {
+        cb.reject(new Error("bg-removal worker crashed"));
+      }
+      _bgWorkerCallbacks.clear();
+      _bgWorker = null; // allow recreation on next attempt
+    };
+  }
+  return _bgWorker;
+}
+
+function _removeBackgroundInWorker(blob: Blob): Promise<Blob> {
+  return new Promise((resolve, reject) => {
+    const id = ++_bgWorkerReqId;
+    _bgWorkerCallbacks.set(id, { resolve, reject });
+    const worker = _getOrCreateBgWorker();
+    blob
+      .arrayBuffer()
+      .then((buffer) => worker.postMessage({ id, buffer }, [buffer]))
+      .catch(reject);
+  });
+}
+// ────────────────────────────────────────────────────────────────────────────
 
 const Editor2D = forwardRef<Editor2DHandle, Props>(function Editor2D(
   {
@@ -6608,6 +6674,65 @@ const Editor2D = forwardRef<Editor2DHandle, Props>(function Editor2D(
     return "";
   };
 
+  /**
+   * Computes the union bounding box of all objects on the canvas and returns
+   * it as ratios of the canvas dimensions (0–1), including the crop origin.
+   * A small padding is included so strokes at the edge are not clipped.
+   * Returns null when the canvas has no objects.
+   */
+  const getContentBounds = (): { ratioLeft: number; ratioTop: number; ratioW: number; ratioH: number } | null => {
+    const c = canvasRef.current as any;
+    if (!c) return null;
+    const objects: any[] = (typeof c.getObjects === "function" ? c.getObjects() : []) ?? [];
+    if (!objects.length) return null;
+
+    const canvasW: number = typeof c.getWidth === "function" ? c.getWidth() : (c.width ?? 1);
+    const canvasH: number = typeof c.getHeight === "function" ? c.getHeight() : (c.height ?? 1);
+    if (canvasW <= 0 || canvasH <= 0) return null;
+
+    let minX = Infinity, minY = Infinity, maxX = -Infinity, maxY = -Infinity;
+
+    for (const obj of objects) {
+      if (!obj || obj.visible === false) continue;
+      try {
+        const br = typeof obj.getBoundingRect === "function"
+          ? obj.getBoundingRect(true, true)
+          : null;
+        if (!br) continue;
+        const left = Number(br.left ?? 0);
+        const top = Number(br.top ?? 0);
+        const width = Number(br.width ?? 0);
+        const height = Number(br.height ?? 0);
+        if (!Number.isFinite(left) || !Number.isFinite(top) || !Number.isFinite(width) || !Number.isFinite(height)) continue;
+        if (left < minX) minX = left;
+        if (top < minY) minY = top;
+        if (left + width > maxX) maxX = left + width;
+        if (top + height > maxY) maxY = top + height;
+      } catch { }
+    }
+
+    if (!Number.isFinite(minX) || !Number.isFinite(maxX)) return null;
+
+    const contentW = Math.max(0, maxX - minX);
+    const contentH = Math.max(0, maxY - minY);
+    if (contentW <= 0 || contentH <= 0) return null;
+
+    // Padding so strokes/shadows at the edge aren't clipped and the gizmo has breathing room
+    const padX = Math.min(canvasW * 0.08, Math.max(8, contentW * 0.10));
+    const padY = Math.min(canvasH * 0.08, Math.max(8, contentH * 0.10));
+    const cropLeft = Math.max(0, minX - padX);
+    const cropTop = Math.max(0, minY - padY);
+    const cropRight = Math.min(canvasW, maxX + padX);
+    const cropBottom = Math.min(canvasH, maxY + padY);
+
+    return {
+      ratioLeft: cropLeft / canvasW,
+      ratioTop: cropTop / canvasH,
+      ratioW: (cropRight - cropLeft) / canvasW,
+      ratioH: (cropBottom - cropTop) / canvasH,
+    };
+  };
+
   const selectObjectAt = (pt: { x: number; y: number; containerWidth: number; containerHeight: number }): boolean => {
     const c: any = canvasRef.current as any;
     const fabricLocal: any = fabricRef.current as any;
@@ -10804,6 +10929,89 @@ const Editor2D = forwardRef<Editor2DHandle, Props>(function Editor2D(
     onColorCutModeChange: (cb) => {
       colorCutModeListenersRef.current.add(cb);
     },
+    removeBackground: async () => {
+      const c: any = canvasRef.current;
+      if (!c) return;
+
+      const imgs = getSelectedImageObjects();
+      if (imgs.length !== 1) {
+        console.warn("[removeBackground] Selecione exatamente 1 imagem.");
+        return;
+      }
+      const img = imgs[0];
+
+      try {
+        // Pega o elemento HTML já carregado pelo Fabric — evita fetch/CORS
+        const el: HTMLImageElement | null =
+          img._originalElement || img._element || null;
+
+        let blob: Blob | null = null;
+
+        if (el) {
+          // Abordagem 1: desenha o elemento no canvas offscreen → blob PNG
+          const w = el.naturalWidth || (el as any).width || 512;
+          const h = el.naturalHeight || (el as any).height || 512;
+          const offscreen = document.createElement("canvas");
+          offscreen.width = w;
+          offscreen.height = h;
+          const ctx2d = offscreen.getContext("2d");
+          if (ctx2d) {
+            try {
+              ctx2d.drawImage(el, 0, 0);
+              blob = await new Promise<Blob | null>((res) => {
+                offscreen.toBlob((b) => res(b), "image/png");
+              });
+            } catch {
+              // canvas tainted — tenta pelo src abaixo
+            }
+          }
+        }
+
+        // Abordagem 2 (fallback): usa o src da imagem
+        if (!blob) {
+          const src: string | undefined =
+            (img as any).__moldaOriginalSrc ||
+            (typeof img?.getSrc === "function" ? img.getSrc() : undefined) ||
+            img?._originalElement?.src ||
+            img?._element?.src;
+          if (!src) {
+            console.error("[removeBackground] Sem src acessível na imagem.");
+            return;
+          }
+          const res = await fetch(src);
+          blob = await res.blob();
+        }
+
+        // Processa no Worker — a main thread / UI NÃO trava durante a inferência ONNX
+        const resultBlob = await _removeBackgroundInWorker(blob);
+
+        const dataUrl = await new Promise<string>((resolve, reject) => {
+          const reader = new FileReader();
+          reader.onload = () => resolve(reader.result as string);
+          reader.onerror = reject;
+          reader.readAsDataURL(resultBlob);
+        });
+
+        await new Promise<void>((resolve) => {
+          img.setSrc(
+            dataUrl,
+            () => {
+              // Garante que o boundingBox está correto após troca de src
+              try { img.setCoords?.(); } catch { }
+              try { c.requestRenderAll?.(); } catch { }
+              resolve();
+            },
+            { crossOrigin: "anonymous" }
+          );
+        });
+
+        historyRef.current?.push("removeBackground");
+        emitHistory();
+      } catch (err) {
+        console.error("[removeBackground] falhou:", err);
+        throw err; // propaga para o .catch() do caller exibir o toast de erro
+      }
+    },
     onCropModeChange: (cb) => {
       cropModeListenersRef.current.add(cb);
     },
@@ -10832,6 +11040,7 @@ const Editor2D = forwardRef<Editor2DHandle, Props>(function Editor2D(
     refresh,
     listUsedFonts,
     waitForIdle,
+    getContentBounds,
   }));
 
   // Inicialização principal

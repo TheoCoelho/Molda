@@ -209,6 +209,7 @@ export async function initDecalDemo(container: HTMLElement, opts?: InitDecalDemo
   };
 
   let root: THREE.Object3D | null = null;
+  let modelBounds: THREE.Box3 | null = null;
   let projector: ProjectorLike | null = null;
   const textureLoader = new THREE.TextureLoader();
 
@@ -1540,19 +1541,32 @@ export async function initDecalDemo(container: HTMLElement, opts?: InitDecalDemo
         const xLocal = x * c + y * s;
         const yLocal = -x * s + y * c;
 
-        const dx = startHandleLocal.x - xLocal;
-        const dy = startHandleLocal.y - yLocal;
+        const deltaX = xLocal - startHandleLocal.x;
+        const deltaY = yLocal - startHandleLocal.y;
 
-        if (dragMode === "scale-tm" || dragMode === "scale-bm") {
-          decalWidth = startW;
-          decalHeight = Math.max(1e-4, startH + 2 * dy);
-        } else if (dragMode === "scale-ml" || dragMode === "scale-mr") {
-          decalWidth = Math.max(1e-4, startW + 2 * dx);
-          decalHeight = startH;
-        } else {
-          decalWidth = Math.max(1e-4, startW + 2 * dx);
-          decalHeight = Math.max(1e-4, startH + 2 * dy);
+        let widthDelta = 0;
+        let heightDelta = 0;
+
+        if (dragMode === "scale-mr") widthDelta = 2 * deltaX;
+        else if (dragMode === "scale-ml") widthDelta = -2 * deltaX;
+        else if (dragMode === "scale-tm") heightDelta = 2 * deltaY;
+        else if (dragMode === "scale-bm") heightDelta = -2 * deltaY;
+        else if (dragMode === "scale-tr") {
+          widthDelta = 2 * deltaX;
+          heightDelta = 2 * deltaY;
+        } else if (dragMode === "scale-tl") {
+          widthDelta = -2 * deltaX;
+          heightDelta = 2 * deltaY;
+        } else if (dragMode === "scale-br") {
+          widthDelta = 2 * deltaX;
+          heightDelta = -2 * deltaY;
+        } else if (dragMode === "scale-bl") {
+          widthDelta = -2 * deltaX;
+          heightDelta = -2 * deltaY;
         }
+
+        decalWidth = Math.max(1e-4, startW + widthDelta);
+        decalHeight = Math.max(1e-4, startH + heightDelta);
         decalDepth = computeBaseDepth(decalWidth, decalHeight);
       }
     }
@@ -1772,6 +1786,7 @@ export async function initDecalDemo(container: HTMLElement, opts?: InitDecalDemo
       modelContainer.add(root);
 
       const bbox = new THREE.Box3().setFromObject(root);
+      modelBounds = bbox.clone();
       const size = bbox.getSize(new THREE.Vector3());
       const center = bbox.getCenter(new THREE.Vector3());
 
@@ -1900,7 +1915,55 @@ export async function initDecalDemo(container: HTMLElement, opts?: InitDecalDemo
   }
 
   function collectDecalState() {
+    const minDecalAreaCm2 = 5;
+
     return Array.from(decals.values()).map((record) => ({
+      ...(function () {
+        const warnings: string[] = [];
+        const approxAreaCm2 = Math.max(0, record.width * 100) * Math.max(0, record.height * 100);
+        if (approxAreaCm2 > 0 && approxAreaCm2 < minDecalAreaCm2) {
+          warnings.push("min_area_violation");
+        }
+
+        let normalizedPosition: { x: number; y: number; z: number } | null = null;
+        if (modelBounds && !modelBounds.isEmpty()) {
+          const size = modelBounds.getSize(new THREE.Vector3());
+          const safe = new THREE.Vector3(
+            Math.max(size.x, 1e-6),
+            Math.max(size.y, 1e-6),
+            Math.max(size.z, 1e-6)
+          );
+          normalizedPosition = {
+            x: (record.center.x - modelBounds.min.x) / safe.x,
+            y: (record.center.y - modelBounds.min.y) / safe.y,
+            z: (record.center.z - modelBounds.min.z) / safe.z,
+          };
+
+          if (normalizedPosition.y >= 0.82) {
+            warnings.push("neck_zone_risk");
+          }
+
+          if (
+            Math.abs((normalizedPosition.x - 0.5) * 2) >= 0.55 &&
+            normalizedPosition.y >= 0.45 &&
+            normalizedPosition.y <= 0.72
+          ) {
+            warnings.push("underarm_zone_risk");
+          }
+        }
+
+        if (Math.abs(record.normal.x) > 0.72 || Math.abs(record.normal.z) > 0.95) {
+          warnings.push("relief_overlap_risk");
+        }
+
+        return {
+          viability: {
+            approxAreaCm2,
+            normalizedPosition,
+            warnings,
+          },
+        };
+      })(),
       id: record.id,
       position: {
         x: record.center.x,
