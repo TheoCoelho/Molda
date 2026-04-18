@@ -30,12 +30,13 @@ import {
   Search,
 } from "lucide-react";
 // Novo ícone para a seção de ferramentas
-import { Wrench } from "lucide-react";
+import { Wrench, Sparkles } from "lucide-react";
 import FontPicker from "../components/FontPicker";
 import { FONT_LIBRARY } from "../fonts/library";
 import { generateCreativeName } from "../lib/creativeNames";
 
-import type { BrushVariant } from "./Editor2D";
+import type { BrushVariant, Editor2DHandle } from "./Editor2D";
+import ShapeEffectsPanel from "./ShapeEffectsPanel";
 
 // Componentes SVG customizados para formas
 type ShapeIconType = "rect" | "ellipse" | "triangle" | "polygon" | "star" | "diamond" | "pentagon" | "octagon" | "cross" | "heart" | "arrow" | "lightning" | "drop" | "moon" | "star6";
@@ -276,9 +277,25 @@ interface ExpandableSidebarProps {
 
   /** contador “pingado” pelo Editor2D quando um IText é selecionado */
   autoOpenTextPanelCounter?: number;
+
+  // ── Efeitos de forma ──────────────────────────────────────────────────
+  /** Quando true, mostra o ícone de Efeitos na sidebar (SVG/outro selecionado) */
+  showEffectsSection?: boolean;
+  /** Incrementar para abrir a seção de efeitos programaticamente */
+  autoOpenEffectsSectionCounter?: number;
+  /** Incrementar para fechar a seção de efeitos programaticamente */
+  closeEffectsSectionCounter?: number;
+  /** Chamado quando a seção de efeitos é aberta ou fechada */
+  onEffectsSectionChange?: (open: boolean) => void;
+  /** Ref para o editor ativo (necessário para aplicar efeitos) */
+  editor2DRef?: { current: Editor2DHandle | undefined | null };
+  canUndo?: boolean;
+  canRedo?: boolean;
+  onUndo?: () => void;
+  onRedo?: () => void;
 }
 
-type SectionId = "settings" | "upload" | "brush" | "image" | "cut";
+type SectionId = "settings" | "upload" | "brush" | "image" | "cut" | "effects";
 
 const ExpandableSidebar: React.FC<ExpandableSidebarProps> = (props) => {
   const {
@@ -319,6 +336,15 @@ const ExpandableSidebar: React.FC<ExpandableSidebarProps> = (props) => {
     addText,
     applyTextStyle,
     autoOpenTextPanelCounter,
+    showEffectsSection,
+    autoOpenEffectsSectionCounter,
+    closeEffectsSectionCounter,
+    onEffectsSectionChange,
+    editor2DRef,
+    canUndo,
+    canRedo,
+    onUndo,
+    onRedo,
   } = props;
 
   const [isExpanded, setIsExpanded] = useState(true);
@@ -327,17 +353,37 @@ const ExpandableSidebar: React.FC<ExpandableSidebarProps> = (props) => {
 
   useEffect(() => onExpandChange?.(isExpanded), [isExpanded, onExpandChange]);
 
+  // Abrir seção de efeitos ao receber sinal externo
+  useEffect(() => {
+    if (!autoOpenEffectsSectionCounter) return;
+    setActiveSection("effects");
+    setIsExpanded(true);
+    onEffectsSectionChange?.(true);
+  }, [autoOpenEffectsSectionCounter]); // eslint-disable-line react-hooks/exhaustive-deps
+
+  // Fechar seção de efeitos ao receber sinal externo
+  useEffect(() => {
+    if (!closeEffectsSectionCounter) return;
+    if (activeSection === "effects") {
+      setActiveSection("settings");
+      onEffectsSectionChange?.(false);
+    }
+  }, [closeEffectsSectionCounter]); // eslint-disable-line react-hooks/exhaustive-deps
+
   const handleIconClick = (id: SectionId) => {
     console.log(`[ExpandableSidebar] Changing section from ${activeSection} to ${id}, current tool: ${tool}`);
 
-    if (id === activeSection) setIsExpanded((prev) => !prev);
-    else {
+    if (id === activeSection) {
+      const willCollapse = isExpanded;
+      setIsExpanded((prev) => !prev);
+      if (willCollapse && id === "effects") onEffectsSectionChange?.(false);
+    } else {
+      // Notificar fechamento se estava em efeitos
+      if (activeSection === "effects") onEffectsSectionChange?.(false);
       // Desativar ferramentas de desenho quando mudar para outras seções
       if (id !== "brush" && tool !== "select" && tool !== "text") {
         console.log(`[ExpandableSidebar] Deactivating tool ${tool} -> select (section change should reset cursor)`);
         setTool("select");
-
-        // Small delay to ensure the tool change is processed by Editor2D
         setTimeout(() => {
           console.log(`[ExpandableSidebar] Tool change processed, cursor should now be default`);
         }, 100);
@@ -385,6 +431,25 @@ const ExpandableSidebar: React.FC<ExpandableSidebarProps> = (props) => {
               </button>
             );
           })}
+          {/* Botão de Efeitos — só visível quando um SVG/objeto está selecionado ou seção já está ativa */}
+          {(showEffectsSection || activeSection === "effects") && (
+            <button
+              type="button"
+              onClick={() => handleIconClick("effects")}
+              className="group mx-2 h-10 w-10 rounded-xl flex items-center justify-center transition bg-transparent hover:bg-black/5 dark:hover:bg-white/10 hover:shadow-[0_8px_24px_-12px_rgba(0,0,0,0.25)] hover:scale-[1.16] focus:outline-none focus-visible:outline-none"
+              aria-label="Efeitos"
+              aria-pressed={activeSection === "effects"}
+              title="Efeitos"
+            >
+              <Sparkles
+                className={`w-5 h-5 transition-all ${
+                  activeSection === "effects"
+                    ? "text-violet-600 dark:text-violet-400 [filter:drop-shadow(0_0_8px_rgba(124,58,237,.5))] scale-[1.30]"
+                    : "text-black/70 dark:text-white/70 group-hover:text-violet-600 dark:group-hover:text-violet-400"
+                }`}
+              />
+            </button>
+          )}
         </div>
       </div>
 
@@ -393,7 +458,7 @@ const ExpandableSidebar: React.FC<ExpandableSidebarProps> = (props) => {
         <div
           className={`flex-1 min-w-0 min-h-0 max-h-full overflow-hidden flex flex-col`}
         >
-          <div className={activeSection === "brush" ? "flex h-full flex-1 min-h-0 max-h-full flex-col px-2" : activeSection === "upload" ? "flex-1 overflow-hidden flex flex-col" : "flex-1 overflow-y-auto rounded-2xl p-4 lg:p-6 pb-2"}>
+          <div className={activeSection === "brush" ? "flex h-full flex-1 min-h-0 max-h-full flex-col px-2" : activeSection === "upload" ? "flex-1 overflow-hidden flex flex-col" : activeSection === "effects" ? "flex-1 overflow-y-auto p-3" : "flex-1 overflow-y-auto rounded-2xl p-4 lg:p-6 pb-2"}>
             {activeSection === "settings" && (
               <SettingsContent
                 projectId={projectId}
@@ -504,6 +569,21 @@ const ExpandableSidebar: React.FC<ExpandableSidebarProps> = (props) => {
                 <h3 className="text-lg font-semibold text-gray-800 dark:text-gray-100">Corte</h3>
                 <div className="text-sm text-gray-500 dark:text-gray-400">Em breve.</div>
               </div>
+            )}
+            {activeSection === "effects" && editor2DRef && (
+              <ShapeEffectsPanel
+                editor={editor2DRef}
+                visible={true}
+                onUndo={onUndo}
+                onRedo={onRedo}
+                canUndo={canUndo}
+                canRedo={canRedo}
+                className="flex flex-col gap-3 select-none w-full"
+                onClose={() => {
+                  setActiveSection("settings");
+                  onEffectsSectionChange?.(false);
+                }}
+              />
             )}
           </div>
         </div>

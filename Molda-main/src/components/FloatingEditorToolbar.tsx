@@ -13,6 +13,7 @@ import {
   Circle,
   Minus,
   Eye,
+  Sparkles,
 } from "lucide-react";
 type Props = {
   // Undo/Redo (ligação com Editor2D)
@@ -45,7 +46,7 @@ type Props = {
   setTool: (t: "select" | "brush" | "line" | "curve" | "text" | "stamp") => void;
 
   /** Tipo de seleção atual (para determinar se há forma selecionada) */
-  selectionKind?: "none" | "text" | "image" | "other";
+  selectionKind?: "none" | "text" | "image" | "svg" | "other";
 
   /** Handle imperativo do Editor2D (opcional, usado para delete e histórico) */
   editor2DRef?: {
@@ -55,6 +56,9 @@ type Props = {
 
   /** Callback para aplicar gradiente à seleção atual */
   onApplyGradient?: (gradient: GradientFill) => void;
+
+  /** Callback para abrir painel de efeitos de forma (SVG/other) */
+  onOpenShapeEffects?: () => void;
 };
 
 /** ===== Utils ===== */
@@ -135,6 +139,7 @@ export default function FloatingEditorToolbar({
   onRedo,
   canUndo,
   canRedo,
+  onOpenShapeEffects,
 }: Props) {
   // refs e medidas
   const barRef = useRef<HTMLDivElement>(null);
@@ -488,7 +493,7 @@ export default function FloatingEditorToolbar({
           )}
 
           {/* 3) Largura - aparece para lápis, linhas/curvas e ao selecionar formas */}
-          {(tool === "brush" || tool === "line" || tool === "curve" || (tool === "select" && selectionKind !== "image")) && (
+          {(tool === "brush" || tool === "line" || tool === "curve" || (tool === "select" && selectionKind !== "image" && selectionKind !== "svg")) && (
             <div className="h-9 min-w-[min(220px,90vw)] px-3 flex items-center gap-2 shadow rounded-xl glass-strong">
               <div className="flex flex-col gap-0.5 opacity-60">
                 <Minus className="h-2 w-3" strokeWidth={1} />
@@ -552,6 +557,23 @@ export default function FloatingEditorToolbar({
           >
             <Redo2 className="h-4 w-4" />
           </button>
+
+          {/* Separador */}
+          <div className="mx-1 h-6 w-px bg-black/10 dark:bg-white/15" />
+
+          {/* Efeitos — visível quando forma/SVG está selecionado */}
+          {onOpenShapeEffects && (
+            <button
+              type="button"
+              aria-label="Efeitos de forma"
+              className="h-9 px-3 flex items-center gap-1.5 rounded-xl border border-violet-400 bg-violet-50 dark:bg-violet-900/30 hover:bg-violet-100 dark:hover:bg-violet-800/40 text-violet-600 dark:text-violet-400 shadow transition"
+              onClick={onOpenShapeEffects}
+              title="Efeitos de forma"
+            >
+              <Sparkles className="h-4 w-4" />
+              <span className="text-xs font-medium">Efeitos</span>
+            </button>
+          )}
 
           {/* Separador */}
           <div className="mx-1 h-6 w-px bg-black/10 dark:bg-white/15" />

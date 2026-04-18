@@ -40,7 +40,7 @@ import { toast } from "sonner";
 import { normalizeDbDecalZones, type ModelDecalZone } from "../lib/models";
 
 type CanvasTab = { id: string; name: string; type: "2d" | "3d" };
-type SelectionKind = "none" | "text" | "image" | "other";
+type SelectionKind = "none" | "text" | "image" | "svg" | "other";
 type DraftPayload = {
   projectName: string;
   baseColor: string;
@@ -1150,6 +1150,8 @@ const Creation = () => {
   const [colorCutModeActive, setColorCutModeActive] = useState(false);
   const [effectsEditModeActive, setEffectsEditModeActive] = useState(false);
   const [bgRemovingTabId, setBgRemovingTabId] = useState<string | null>(null);
+  const [openEffectsSectionCounter, setOpenEffectsSectionCounter] = useState(0);
+  const [closeEffectsSectionCounter, setCloseEffectsSectionCounter] = useState(0);
   const toolbarTransitionTimeoutRef = useRef<NodeJS.Timeout | null>(null);
 
   // Detecta mudança de toolbar ativa (não de seleção geral) e aplica transição flip
@@ -1394,10 +1396,18 @@ const Creation = () => {
       setCanSaveSelectedImage(false);
       setCropModeActive(false);
       setColorCutModeActive(false);
+      setCloseEffectsSectionCounter((c) => c + 1);
       return;
     }
     updateSelectionInfo();
   }, [activeIs2D, updateSelectionInfo]);
+
+  // Fechar seção de efeitos quando o objeto selecionado não é mais svg/other
+  useEffect(() => {
+    if (selectionKind !== "svg" && selectionKind !== "other") {
+      setCloseEffectsSectionCounter((c) => c + 1);
+    }
+  }, [selectionKind]);
 
   useEffect(() => {
     if (!activeIs2D) {
@@ -1997,6 +2007,14 @@ const Creation = () => {
                 }
                 await editorRefs.current[activeCanvasTab]?.setActiveTextStyle({ ...patch, from: "font-picker" });
               }}
+              showEffectsSection={selectionKind === "svg" || selectionKind === "other"}
+              autoOpenEffectsSectionCounter={openEffectsSectionCounter}
+              closeEffectsSectionCounter={closeEffectsSectionCounter}
+              editor2DRef={{ current: editorRefs.current[activeCanvasTab] as Editor2DHandle | undefined }}
+              canUndo={canUndo}
+              canRedo={canRedo}
+              onUndo={activeIs2D ? () => editorRefs.current[activeCanvasTab]?.undo?.() : undefined}
+              onRedo={activeIs2D ? () => editorRefs.current[activeCanvasTab]?.redo?.() : undefined}
             />
           </div>
 
@@ -2604,6 +2622,7 @@ const Creation = () => {
                                 canUndo={canUndo}
                                 canRedo={canRedo}
                                 onApplyGradient={(gradient) => editorRefs.current[activeCanvasTab]?.applyGradientToSelection?.(gradient)}
+                                onOpenShapeEffects={selectionKind === "svg" || selectionKind === "other" ? () => setOpenEffectsSectionCounter((c) => c + 1) : undefined}
                               />
                             </div>
                           </div>
