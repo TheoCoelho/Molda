@@ -153,6 +153,12 @@ export type ShapeEffectParams =
       distance: number;
       color1: string;
       color2: string;
+    }
+  | {
+      kind: "grain";
+      amount: number;
+      size: number;
+      monochrome: boolean;
     };
 
 type EffectEditTool = "brush" | "lasso";
@@ -10916,6 +10922,8 @@ const Editor2D = forwardRef<Editor2DHandle, Props>(function Editor2D(
         return effect.distance * 3 + 10;
       case "falha":
         return effect.distance * 2 + 10;
+      case "grain":
+        return Math.ceil(effect.size * 0.3) + 4;
       default:
         return 0;
     }
@@ -10934,6 +10942,47 @@ const Editor2D = forwardRef<Editor2DHandle, Props>(function Editor2D(
    *     Correção: setar obj.padding = effectPadding.
    */
   function installShapeEffect(obj: any, fabric: any, effect: ShapeEffectParams | null) {
+    const drawNoiseOverlay = (
+      ctx: CanvasRenderingContext2D,
+      amount: number,
+      size: number,
+      monochrome: boolean
+    ) => {
+      const tile = Math.max(24, Math.min(128, Math.round(size * 1.6)));
+      const c = document.createElement("canvas");
+      c.width = tile;
+      c.height = tile;
+      const pctx = c.getContext("2d");
+      if (!pctx) return;
+
+      const img = pctx.createImageData(tile, tile);
+      const d = img.data;
+      const alpha = Math.max(0, Math.min(255, Math.round((amount / 100) * 170)));
+      for (let i = 0; i < d.length; i += 4) {
+        if (monochrome) {
+          const v = Math.floor(Math.random() * 255);
+          d[i] = v;
+          d[i + 1] = v;
+          d[i + 2] = v;
+        } else {
+          d[i] = Math.floor(Math.random() * 255);
+          d[i + 1] = Math.floor(Math.random() * 255);
+          d[i + 2] = Math.floor(Math.random() * 255);
+        }
+        d[i + 3] = alpha;
+      }
+      pctx.putImageData(img, 0, 0);
+
+      const pattern = ctx.createPattern(c, "repeat");
+      if (!pattern) return;
+
+      ctx.save();
+      ctx.globalCompositeOperation = "source-atop";
+      ctx.fillStyle = pattern;
+      ctx.fillRect(-4096, -4096, 8192, 8192);
+      ctx.restore();
+    };
+
     // ── 1) Remover efeito anterior ─────────────────────────────────────────
     if (obj.__shapeEffectRestoreRender) {
       obj._render = obj.__shapeEffectRestoreRender;
@@ -11047,6 +11096,11 @@ const Editor2D = forwardRef<Editor2DHandle, Props>(function Editor2D(
             `drop-shadow(${-dx2}px ${-dy2}px 0px ${ef.color1}bb)`,
             `drop-shadow(${dx2}px ${dy2}px 0px ${ef.color2}bb)`,
           ].join(" ");
+        } else if (ef.kind === "grain") {
+          originalRender(ctx);
+          drawNoiseOverlay(ctx, ef.amount, ef.size, ef.monochrome);
+          ctx.restore();
+          return;
         }
 
         originalRender(ctx);
@@ -12070,6 +12124,16 @@ const Editor2D = forwardRef<Editor2DHandle, Props>(function Editor2D(
 
         setCanvasReady(true);
         console.log("[Editor2D] Canvas ready set to true");
+
+        // Wire up ResizeObserver so the Fabric canvas tracks its host div when the
+        // window moves to a different (smaller) monitor or the layout changes.
+        if (hostRef.current && typeof ResizeObserver !== "undefined") {
+          const ro = new ResizeObserver(() => {
+            try { ensureCanvasSize(); } catch { }
+          });
+          ro.observe(hostRef.current);
+          roRef.current = ro;
+        }
 
       } catch (err) {
         console.error("[Editor2D] init: erro", err);
