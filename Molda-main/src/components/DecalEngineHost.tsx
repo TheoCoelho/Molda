@@ -119,7 +119,9 @@ export default function DecalEngineHost({
           gizmoTheme: DEFAULT_GIZMO_THEME,
           model: modelParam,
           hideMenu: true,
-          decalZones: finalDecalZones,
+          decalMode: "mesh", // DecalGeometry: corta e adapta à superfície perfeitamente
+          lockAspectRatio: true,
+          preferFlatProjection: false,
         });
         if (cancelled) return;
         apiRef.current = handle;

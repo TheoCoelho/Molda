@@ -161,8 +161,9 @@ export default class ProjectedTextureDecal {
       depthTest: true,
       depthWrite: false,
       polygonOffset: true,
-      polygonOffsetFactor: -4,
-      polygonOffsetUnits: -4,
+      polygonOffsetFactor: -16,
+      polygonOffsetUnits: -16,
+      toneMapped: false,
     });
   }
 
@@ -200,6 +201,8 @@ export default class ProjectedTextureDecal {
     // O shader receberá vWorldPosition correto através da matrixWorld do mesh
     this.mesh.matrix.copy(target.matrixWorld);
     this.mesh.matrixAutoUpdate = false;
+
+    return this.mesh;
   }
 
   setTexture(tex: THREE.Texture) {
