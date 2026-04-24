@@ -801,8 +801,8 @@ const Create = () => {
   };
 
 
-  const CARD_SIZE = 400;
-  const CARD_GAP = 40;
+  const CARD_SIZE = 300;
+  const CARD_GAP = 24;
   const STATIC_CARD_SIZE = CARD_SIZE;
   const STATIC_CARD_GAP = CARD_GAP;
 
@@ -1042,17 +1042,7 @@ const Create = () => {
                         />
                       )}
 
-                    {selectedSubtypeConfig && (
-                      <div className="mt-4 rounded-xl border border-amber-300/50 bg-amber-50/70 px-4 py-3 text-xs text-amber-900">
-                        <p className="font-semibold">Referencia de estampa da peca</p>
-                        <p className="mt-1">
-                          Area util: {selectedSubtypeConfig.print_area_width_cm ?? "-"} x {selectedSubtypeConfig.print_area_height_cm ?? "-"} cm
-                        </p>
-                        <p>
-                          Area minima recomendada: {selectedSubtypeConfig.min_decal_area_cm2 ?? 5} cm²
-                        </p>
-                      </div>
-                    )}
+
                   </div>
                 )}
               </div>

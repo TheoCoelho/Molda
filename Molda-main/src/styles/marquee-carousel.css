@@ -133,6 +133,40 @@
   margin-inline: auto;
 }
 
+/* -------------------------------------------------------
+   Wizard carousel: cancela todos os efeitos de escala/zoom
+   do carrossel para manter o mesmo visual dos cards estáticos
+   ------------------------------------------------------- */
+.wizard-carousel .marquee-cell {
+  transform: none;
+  opacity: 1;
+  filter: none;
+}
+.wizard-carousel .marquee-cell:hover {
+  transform: translateY(-2px);
+  opacity: 1;
+  filter: none;
+}
+.wizard-carousel .marquee-cell.is-selected {
+  transform: none;
+  opacity: 1;
+  filter: none;
+}
+.wizard-carousel .marquee-cell.is-centered {
+  background: color-mix(in srgb, hsl(var(--foreground)) 18%, hsl(var(--background)));
+  border-color: hsl(var(--border));
+  box-shadow: 0 12px 24px -18px hsl(var(--foreground) / 0.25);
+  animation: none;
+  transform: none;
+}
+.wizard-carousel .marquee-cell.is-edge {
+  opacity: 1;
+}
+.wizard-carousel .marquee-cell.is-dimmed {
+  opacity: 0.6;
+  filter: saturate(0.85);
+}
+
 @keyframes carouselFlipIn {
   from {
     transform: scale(var(--center-scale, 1)) rotateY(45deg);

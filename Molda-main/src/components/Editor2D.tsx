@@ -8,6 +8,7 @@ import React, {
 } from "react";
 import HistoryManager from "../lib/HistoryManager";
 import { installFabricEraser } from "../lib/fabricEraser";
+import { incrementFontPopularity } from "../api/fontPopularity";
 import { applyGizmoThemeToFabric, DEFAULT_GIZMO_THEME } from "../../../gizmo-theme";
 
 // Tipos alinhados com ExpandableSidebar
@@ -124,6 +125,49 @@ export type ImageEffects = {
   amount: number; // 0-1 intensidade
 };
 
+// ── Shape Effects ────────────────────────────────────────────────────────────
+
+/** Efeitos visuais aplicáveis a formas/SVG (Projetada, Brilhante, Eco, Falha) */
+export type ShapeEffectParams =
+  | {
+      kind: "projetada";
+      direction: number;    // -180 a 180 graus
+      distance: number;     // 0 a 60
+      blur: number;         // 0 a 30
+      transparency: number; // 0 a 100
+      color: string;        // hex
+    }
+  | {
+      kind: "brilhante";
+      intensity: number;    // 0 a 100
+      color: string;
+    }
+  | {
+      kind: "eco";
+      direction: number;
+      distance: number;
+      color: string;
+    }
+  | {
+      kind: "falha";
+      direction: number;
+      distance: number;
+      color1: string;
+      color2: string;
+    }
+  // ── Efeitos Avançados (preset, apenas intensidade) ─────────────────────────
+  | { kind: "radioativo"; intensity: number }
+  | { kind: "retro";      intensity: number }
+  | { kind: "meianoite";  intensity: number }
+  | { kind: "malibu";     intensity: number }
+  | { kind: "croma";      intensity: number }
+  | { kind: "digital";    intensity: number }
+  | { kind: "aura";       intensity: number }
+  | { kind: "vhs";        intensity: number }
+  | { kind: "pordosol";   intensity: number }
+  | { kind: "metalico";   intensity: number }
+  | { kind: "laser";      intensity: number };
+
 type EffectEditTool = "brush" | "lasso";
 
 /** Informações sobre a seleção atual para context menu */
@@ -155,7 +199,7 @@ export type Editor2DHandle = {
   /** Seleciona o objeto no ponto (coords relativas ao container) — útil para clique direito/context menu. */
   selectObjectAt?: (pt: { x: number; y: number; containerWidth: number; containerHeight: number }) => boolean;
   /** Retorna o tipo atual de seleção (sincrono). */
-  getSelectionKind?: () => "none" | "text" | "image" | "other";
+  getSelectionKind?: () => "none" | "text" | "image" | "svg" | "other";
   addShape: (
     shape: ShapeKind,
     style?: {
@@ -274,6 +318,11 @@ export type Editor2DHandle = {
   waitForIdle: () => Promise<void>;
   /** Aplica um degradê (GradientFill) como fill do objeto selecionado. */
   applyGradientToSelection?: (gradient: GradientFill) => void;
+
+  // ==== Shape Effects (Projetada, Brilhante, Eco, Falha) ====
+  applyShapeEffect?: (effect: ShapeEffectParams) => void;
+  getActiveShapeEffect?: () => ShapeEffectParams | null;
+  removeShapeEffect?: () => void;
   /**
    * Retorna o bounding box de todos os objetos presentes no canvas, como
    * proporção do tamanho do canvas (0–1 em cada eixo), incluindo a origem do
@@ -6987,6 +7036,10 @@ const Editor2D = forwardRef<Editor2DHandle, Props>(function Editor2D(
     try {
       window.dispatchEvent(new CustomEvent("editor2d:fontUsed", { detail: { fontFamily: family } }));
     } catch { }
+
+    void incrementFontPopularity(family).catch((error) => {
+      console.warn("[Editor2D] failed to increment font popularity:", error);
+    });
   };
 
   const setActiveTextStyle = async (patch: TextStyle & { from?: "font-picker" | "inspector" | "gradient-live" }) => {
@@ -10431,7 +10484,7 @@ const Editor2D = forwardRef<Editor2DHandle, Props>(function Editor2D(
   };
 
 
-  const computeSelectionKind = (): "none" | "text" | "image" | "other" => {
+  const computeSelectionKind = (): "none" | "text" | "image" | "svg" | "other" => {
     const c = canvasRef.current as any;
     if (!c) return "none";
     const active: any = c.getActiveObject && c.getActiveObject();
@@ -10474,6 +10527,53 @@ const Editor2D = forwardRef<Editor2DHandle, Props>(function Editor2D(
 
     const isImageSelection = activeObjects.every((o) => allLeavesAreImages(o));
     if (isImageSelection) return "image";
+
+    // Detecta objetos vetoriais/SVG (formas de addShape, SVG importado, etc.)
+    // Brush strokes sempre têm __brushMeta — excluídos desta detecção.
+    const SVG_ELEMENT_TYPES = ["path", "rect", "circle", "ellipse", "polygon", "polyline", "line"];
+    const isSvgGroup = (obj: any): boolean => {
+      if (!obj) return false;
+      const t = String(obj?.type || "").toLowerCase();
+
+      // SVG images loaded via addImage (já retornado como "image" pelo allLeavesAreImages,
+      // mas verificamos a source como fallback caso chegue aqui)
+      if (t === "image") {
+        const src: string = (obj as any).__moldaOriginalSrc || "";
+        const lower = src.toLowerCase().split("?")[0];
+        return lower.includes("image/svg") || lower.endsWith(".svg");
+      }
+
+      // Brush strokes têm __brushMeta — nunca são SVG
+      if ((obj as any).__brushMeta) return false;
+
+      // Formas primitivas Fabric (addShape: Rect, Polygon, Path, Circle, etc.)
+      // Se não têm stroke visível (modo preenchido), o slider de espessura é irrelevante.
+      // Se têm stroke (modo contorno), mostramos o slider → retorna false.
+      if (SVG_ELEMENT_TYPES.includes(t)) {
+        const hasVisibleStroke =
+          obj.stroke != null &&
+          obj.stroke !== "" &&
+          obj.stroke !== "null" &&
+          obj.strokeWidth > 0;
+        return !hasVisibleStroke;
+      }
+
+      // Grupo SVG: grupo cujos filhos são todos elementos vetoriais (sem brushMeta)
+      if (t === "group") {
+        const children: any[] = Array.isArray(obj._objects) ? obj._objects : [];
+        if (children.length === 0) return false;
+        return children.every((c) => {
+          if ((c as any).__brushMeta) return false;
+          const ct = String(c?.type || "").toLowerCase();
+          return SVG_ELEMENT_TYPES.includes(ct) || ct === "group";
+        });
+      }
+
+      return false;
+    };
+
+    const isAllSvg = activeObjects.every((o) => isSvgGroup(o));
+    if (isAllSvg) return "svg";
 
     return "other";
   };
@@ -10816,6 +10916,262 @@ const Editor2D = forwardRef<Editor2DHandle, Props>(function Editor2D(
     }
   };
 
+  // ── Shape Effects ──────────────────────────────────────────────────────────
+
+  /** Calcula o padding necessário (em unidades locais do objeto) para o efeito não ser cortado. */
+  function getEffectPadding(effect: ShapeEffectParams): number {
+    switch (effect.kind) {
+      case "projetada": {
+        const rad = (effect.direction * Math.PI) / 180;
+        const adx = Math.abs(Math.cos(rad)) * effect.distance;
+        const ady = Math.abs(Math.sin(rad)) * effect.distance;
+        return Math.ceil(adx + ady + effect.blur * 4) + 10;
+      }
+      case "brilhante":
+        return Math.ceil(effect.intensity * 1.8) + 10;
+      case "eco":
+        return effect.distance * 3 + 10;
+      case "falha":
+        return effect.distance * 2 + 10;
+      // Avançados com glow que extrapola o objeto:
+      case "radioativo":
+        return Math.ceil(effect.intensity * 0.32) + 10;
+      case "malibu":
+        return Math.ceil(effect.intensity * 0.28) + 8;
+      case "croma":
+        return Math.ceil(effect.intensity * 0.20) + 5;
+      case "aura":
+        return Math.ceil(effect.intensity * 0.45) + 10;
+      case "vhs":
+        return Math.ceil(effect.intensity * 0.08) + 5;
+      case "laser":
+        return Math.ceil(effect.intensity * 0.28) + 5;
+      // Avançados só filtro de cor (sem extrapolação):
+      case "retro":
+      case "meianoite":
+      case "digital":
+      case "pordosol":
+      case "metalico":
+        return 0;
+      default:
+        return 0;
+    }
+  }
+
+  /**
+   * Instala (ou remove) um efeito visual num objeto Fabric.
+   *
+   * Dois problemas precisam ser resolvidos juntos:
+   *  1) O cache canvas do objeto (onde _render desenha) tem exatamente o tamanho
+   *     do objeto → efeitos que ultrapassam a borda são cortados.
+   *     Correção: sobrescrever _getCacheCanvasDimensions para devolver um canvas
+   *     maior. O Fabric recalcula cacheTranslationX/Y a partir de (canvas.width/2)
+   *     e mantém o objeto centralizado — o espaço extra é distribuído igualmente.
+   *  2) O gizmo (alças de seleção) também usa apenas width/height do objeto.
+   *     Correção: setar obj.padding = effectPadding.
+   */
+  function installShapeEffect(obj: any, fabric: any, effect: ShapeEffectParams | null) {
+    // ── 1) Remover efeito anterior ─────────────────────────────────────────
+    if (obj.__shapeEffectRestoreRender) {
+      obj._render = obj.__shapeEffectRestoreRender;
+      delete obj.__shapeEffectRestoreRender;
+    }
+    if (obj.__shapeEffectRestoreGetCacheDims) {
+      obj._getCacheCanvasDimensions = obj.__shapeEffectRestoreGetCacheDims;
+      delete obj.__shapeEffectRestoreGetCacheDims;
+    }
+    if (obj.__shapeEffectHadShadow) {
+      obj.shadow = null;
+      delete obj.__shapeEffectHadShadow;
+    }
+    obj.__shapeEffect = null;
+
+    // Restaurar padding original
+    if (typeof obj.__shapeEffectOriginalPadding === "number") {
+      obj.padding = obj.__shapeEffectOriginalPadding;
+      delete obj.__shapeEffectOriginalPadding;
+    }
+
+    obj.dirty = true;
+    obj.setCoords?.();
+
+    if (!effect) return;
+
+    obj.__shapeEffect = effect;
+
+    const effectPadding = getEffectPadding(effect);
+
+    // ── 2) Expandir gizmo (alças) ─────────────────────────────────────────
+    obj.__shapeEffectOriginalPadding = obj.padding ?? 0;
+    obj.padding = effectPadding;
+
+    // ── 3) Expandir cache canvas ──────────────────────────────────────────
+    // _getCacheCanvasDimensions retorna { width, height, zoomX, zoomY, x, y }
+    // width/height = tamanho pixel do canvas; x/y = dimensão de desenho (usados
+    // para calcular cacheTranslationX/Y). Aumentamos apenas width/height para
+    // dar margem ao efeito sem deslocar o objeto.
+    if (typeof obj._getCacheCanvasDimensions === "function") {
+      const originalGetCacheDims = obj._getCacheCanvasDimensions.bind(obj);
+      obj.__shapeEffectRestoreGetCacheDims = obj._getCacheCanvasDimensions;
+      obj._getCacheCanvasDimensions = function () {
+        const dims = originalGetCacheDims();
+        const zX = dims.zoomX ?? 1;
+        const zY = dims.zoomY ?? 1;
+        // effectPadding está em unidades locais; no cache canvas, cada unidade
+        // local ocupa zoomX/zoomY pixels (resolução do cache).
+        const padX = Math.ceil(effectPadding * 2 * zX);
+        const padY = Math.ceil(effectPadding * 2 * zY);
+        return {
+          ...dims,
+          width: dims.width + padX,
+          height: dims.height + padY,
+          // x e y propositalmente NÃO são alterados: Fabric usa x/y para
+          // cacheTranslationX/Y = round(canvas.width/2 - x/2) + x/2,
+          // então a expansão de width/height move o centro para o meio da
+          // margem extra, centralizando o objeto no canvas maior. ✓
+        };
+      };
+    }
+
+    // ── 4) Instalar rendering do efeito ──────────────────────────────────
+    if (effect.kind === "projetada") {
+      const rad = (effect.direction * Math.PI) / 180;
+      const dx = Math.cos(rad) * effect.distance;
+      const dy = Math.sin(rad) * effect.distance;
+      const alpha = 1 - effect.transparency / 100;
+      const col = effect.color;
+      const m = /^#([0-9a-f]{2})([0-9a-f]{2})([0-9a-f]{2})$/i.exec(col);
+      const shadowColor = m
+        ? `rgba(${parseInt(m[1], 16)},${parseInt(m[2], 16)},${parseInt(m[3], 16)},${alpha.toFixed(2)})`
+        : col;
+      obj.shadow = new fabric.Shadow({
+        color: shadowColor,
+        blur: effect.blur * 2,
+        offsetX: Math.round(dx),
+        offsetY: Math.round(dy),
+      });
+      obj.__shapeEffectHadShadow = true;
+    } else {
+      // brilhante / eco / falha → ctx.filter drop-shadow dentro do cache expandido
+      const originalRender = obj._render.bind(obj);
+      obj.__shapeEffectRestoreRender = obj._render;
+
+      obj._render = function (ctx: CanvasRenderingContext2D) {
+        const ef: ShapeEffectParams | null = this.__shapeEffect;
+        if (!ef || ef.kind === "projetada") {
+          originalRender(ctx);
+          return;
+        }
+
+        ctx.save();
+
+        if (ef.kind === "brilhante") {
+          const b = Math.round(ef.intensity * 0.6);
+          ctx.filter = `drop-shadow(0px 0px ${b}px ${ef.color}) drop-shadow(0px 0px ${Math.round(b * 0.5)}px ${ef.color})`;
+        } else if (ef.kind === "eco") {
+          const rad2 = (ef.direction * Math.PI) / 180;
+          const dx2 = Math.round(Math.cos(rad2) * ef.distance);
+          const dy2 = Math.round(Math.sin(rad2) * ef.distance);
+          ctx.filter = [
+            `drop-shadow(${dx2 * 2}px ${dy2 * 2}px 0px ${ef.color}55)`,
+            `drop-shadow(${dx2}px ${dy2}px 0px ${ef.color}99)`,
+          ].join(" ");
+        } else if (ef.kind === "falha") {
+          const rad2 = (ef.direction * Math.PI) / 180;
+          const dx2 = Math.round(Math.cos(rad2) * ef.distance);
+          const dy2 = Math.round(Math.sin(rad2) * ef.distance);
+          ctx.filter = [
+            `drop-shadow(${-dx2}px ${-dy2}px 0px ${ef.color1}bb)`,
+            `drop-shadow(${dx2}px ${dy2}px 0px ${ef.color2}bb)`,
+          ].join(" ");
+        // ── Avançados ────────────────────────────────────────────────────────
+        } else if (ef.kind === "radioativo") {
+          const b1 = Math.round(ef.intensity * 0.32);
+          const b2 = Math.round(ef.intensity * 0.16);
+          ctx.filter = `drop-shadow(0 0 ${b1}px rgba(57,255,20,0.9)) drop-shadow(0 0 ${b2}px rgba(0,204,68,0.8)) saturate(1.4)`;
+        } else if (ef.kind === "retro") {
+          const sep = (0.1 + (ef.intensity / 100) * 0.8).toFixed(2);
+          const sat = (1.2 + (ef.intensity / 100) * 0.8).toFixed(2);
+          ctx.filter = `sepia(${sep}) saturate(${sat}) contrast(1.25) brightness(1.05)`;
+        } else if (ef.kind === "meianoite") {
+          const br = (0.65 - (ef.intensity / 100) * 0.35).toFixed(2);
+          ctx.filter = `brightness(${br}) hue-rotate(225deg) saturate(2.5)`;
+        } else if (ef.kind === "malibu") {
+          const g1 = Math.round(ef.intensity * 0.28);
+          const g2 = Math.round(ef.intensity * 0.14);
+          ctx.filter = `hue-rotate(300deg) saturate(2) brightness(1.2) drop-shadow(0 0 ${g1}px rgba(255,105,180,0.8)) drop-shadow(0 0 ${g2}px rgba(200,68,170,0.7))`;
+        } else if (ef.kind === "croma") {
+          const b1 = Math.round(ef.intensity * 0.20);
+          const b2 = Math.round(ef.intensity * 0.10);
+          ctx.filter = `brightness(0) drop-shadow(0 0 ${b1}px rgba(68,136,255,0.95)) drop-shadow(0 0 ${b2}px rgba(34,68,255,0.8))`;
+        } else if (ef.kind === "digital") {
+          const sat = (1.5 + (ef.intensity / 100) * 1.5).toFixed(2);
+          ctx.filter = `hue-rotate(220deg) saturate(${sat}) brightness(1.15) contrast(1.1)`;
+        } else if (ef.kind === "aura") {
+          const b1 = Math.round(ef.intensity * 0.18);
+          const b2 = Math.round(ef.intensity * 0.42);
+          ctx.filter = `drop-shadow(0 0 ${b1}px rgba(91,181,232,0.85)) drop-shadow(0 0 ${b2}px rgba(41,182,246,0.4)) saturate(1.5)`;
+        } else if (ef.kind === "vhs") {
+          const sat = (2.0 + (ef.intensity / 100) * 0.8).toFixed(2);
+          const g = Math.round(ef.intensity * 0.08);
+          ctx.filter = `hue-rotate(265deg) saturate(${sat}) brightness(1.2) drop-shadow(0 0 ${g}px rgba(156,39,176,0.6))`;
+        } else if (ef.kind === "pordosol") {
+          const sat = (1.5 + (ef.intensity / 100) * 1.5).toFixed(2);
+          ctx.filter = `hue-rotate(25deg) saturate(${sat}) brightness(1.1) contrast(1.05)`;
+        } else if (ef.kind === "metalico") {
+          const sat = (2.5 + (ef.intensity / 100)).toFixed(2);
+          const br = (1.1 + (ef.intensity / 100) * 0.15).toFixed(2);
+          ctx.filter = `sepia(0.85) saturate(${sat}) hue-rotate(15deg) brightness(${br}) contrast(1.15)`;
+        } else if (ef.kind === "laser") {
+          const b1 = Math.round(ef.intensity * 0.06);
+          const b2 = Math.round(ef.intensity * 0.16);
+          const b3 = Math.round(ef.intensity * 0.28);
+          ctx.filter = `brightness(0.08) drop-shadow(0 0 ${b1}px rgba(255,0,0,1)) drop-shadow(0 0 ${b2}px rgba(255,51,0,0.85)) drop-shadow(0 0 ${b3}px rgba(255,0,0,0.5))`;
+        }
+
+        originalRender(ctx);
+        ctx.restore();
+      };
+    }
+
+    obj.dirty = true;
+    obj.setCoords?.();
+  }
+
+  const applyShapeEffect = (effect: ShapeEffectParams) => {
+    const c: any = canvasRef.current;
+    const fabric: any = fabricRef.current;
+    if (!c || !fabric) return;
+    const active: any = c.getActiveObject?.();
+    if (!active) return;
+
+    const objects: any[] = c.getActiveObjects?.() ?? [active];
+    objects.forEach((obj) => installShapeEffect(obj, fabric, effect));
+
+    c.requestRenderAll?.();
+    historyRef.current?.push("shapeEffect");
+    emitHistory();
+  };
+
+  const getActiveShapeEffect = (): ShapeEffectParams | null => {
+    const c: any = canvasRef.current;
+    if (!c) return null;
+    const active: any = c.getActiveObject?.();
+    if (!active) return null;
+    return active.__shapeEffect ?? null;
+  };
+
+  const removeShapeEffect = () => {
+    const c: any = canvasRef.current;
+    const fabric: any = fabricRef.current;
+    if (!c || !fabric) return;
+    const objects: any[] = c.getActiveObjects?.() ?? [];
+    objects.forEach((obj) => installShapeEffect(obj, fabric, null));
+    c.requestRenderAll?.();
+    historyRef.current?.push("removeShapeEffect");
+    emitHistory();
+  };
+
   // Helper para interpolação de stops
   function getInterpolatedColorAt(stops: any[], t: number) {
     if (stops.length === 0) return '#000';
@@ -10892,6 +11248,9 @@ const Editor2D = forwardRef<Editor2DHandle, Props>(function Editor2D(
     setActiveTextStyle,
     applyTextStyle,
     applyGradientToSelection,
+    applyShapeEffect,
+    getActiveShapeEffect,
+    removeShapeEffect,
     getActiveImageAdjustments,
     applyActiveImageAdjustments,
     getActiveImageEffects,
@@ -11791,6 +12150,16 @@ const Editor2D = forwardRef<Editor2DHandle, Props>(function Editor2D(
 
         setCanvasReady(true);
         console.log("[Editor2D] Canvas ready set to true");
+
+        // Wire up ResizeObserver so the Fabric canvas tracks its host div when the
+        // window moves to a different (smaller) monitor or the layout changes.
+        if (hostRef.current && typeof ResizeObserver !== "undefined") {
+          const ro = new ResizeObserver(() => {
+            try { ensureCanvasSize(); } catch { }
+          });
+          ro.observe(hostRef.current);
+          roRef.current = ro;
+        }
 
       } catch (err) {
         console.error("[Editor2D] init: erro", err);

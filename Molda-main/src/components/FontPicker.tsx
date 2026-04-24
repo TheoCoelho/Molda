@@ -7,9 +7,22 @@ import React, {
   useCallback,
   memo,
 } from "react";
-import { FONT_LIBRARY, DEFAULT_PREVIEW_TEXT, type FontItem } from "../fonts/library";
+import {
+  FONT_LIBRARY,
+  DEFAULT_PREVIEW_TEXT,
+  FONT_PRESET_META,
+  fontMatchesPreset,
+  getFontCategoryMeta,
+  getFontPrimaryCategory,
+  listFontCategories,
+  listFontPresets,
+  type FontCategoryKey,
+  type FontPresetKey,
+  type FontItem,
+} from "../fonts/library";
 import { ensureFontForFabric, wantVariantsFor } from "../utils/fonts";
 import { toast } from "../hooks/use-toast";
+import { useFontPopularity } from "../hooks/use-font-popularity";
 import { useRecentFonts } from "../hooks/use-recent-fonts";
 import {
   fetchUserFavorites,
@@ -19,6 +32,10 @@ import {
 
 // Cache simples para evitar recarregar a mesma família várias vezes
 const fontLoadCache = new Map<string, Promise<void>>();
+const PRELOAD_LOOKAHEAD = 24;
+const PRELOAD_CONCURRENCY = 4;
+const SCROLL_DAMPING = 0.28;
+const MAX_SCROLL_STEP = 72;
 
 function toNumberArray(input?: Array<number | string>): number[] | undefined {
   if (!Array.isArray(input)) return undefined;
@@ -40,13 +57,13 @@ function previewSubsetText(s: string, max = 48) {
 /** Carrega uma família apenas uma vez (não cacheia falhas) */
 function loadFamilyOnce(item: FontItem, previewText: string) {
   if (!item?.family) return Promise.resolve();
-  const key = item.family;
+  const key = `${item.source}:${item.family}`;
   if (!fontLoadCache.has(key)) {
     const variants = wantVariantsFor(item.family);
     const text = previewSubsetText(item.previewText || previewText || DEFAULT_PREVIEW_TEXT);
     fontLoadCache.set(
       key,
-      ensureFontForFabric(item.family, "google", { ...variants, text }).catch((e) => {
+      ensureFontForFabric(item.family, item.source || "google", { ...variants, text }).catch((e) => {
         fontLoadCache.delete(key);
         throw e;
       })
@@ -95,90 +112,33 @@ function StarIcon({ filled }: { filled: boolean }) {
 const FontRow = memo(function FontRow({
   item,
   isActive,
+  isPreviewReady,
+  isPreviewLoading,
   starred,
   onToggleStar,
   onClick,
+  onPrefetch,
   previewFallback,
 }: {
   item: FontItem;
   isActive: boolean;
+  isPreviewReady: boolean;
+  isPreviewLoading: boolean;
   starred: boolean;
   onToggleStar: (family: string, next: boolean) => void;
   onClick: () => void;
+  onPrefetch: (item: FontItem) => void;
   previewFallback: string;
 }) {
-  const liRef = useRef<HTMLLIElement | null>(null);
-  const [ready, setReady] = useState<boolean>(false);
+  const familyStyle = { fontFamily: `"${item.family}", ui-sans-serif, system-ui, sans-serif` };
 
-  // --- 1) Se a fonte já estiver disponível (cache do navegador), aplica de imediato
-  useEffect(() => {
-    try {
-      // @ts-ignore
-      const ok = (document as any).fonts?.check?.(`12px "${item.family}"`);
-      if (ok) setReady(true);
-    } catch {}
-  }, [item.family]);
-
-  // --- 2) Carrega automaticamente quando o item entra em viewport (sem depender de hover)
-  useEffect(() => {
-    const el = liRef.current;
-    if (!el) return;
-    let cancelled = false;
-
-    const triggerLoad = () => {
-      loadFamilyOnce(item, previewFallback)
-        .catch(() => {})
-        .finally(() => { if (!cancelled) setReady(true); });
-    };
-
-    // Se já está visível, dispara direto
-    const r = el.getBoundingClientRect();
-    const alreadyVisible =
-      r.top < (window.innerHeight || document.documentElement.clientHeight) &&
-      r.bottom > 0;
-    if (alreadyVisible) {
-      triggerLoad();
-      return () => { cancelled = true; };
-    }
-
-    const io = new IntersectionObserver(
-      (entries) => {
-        for (const entry of entries) {
-          if (entry.isIntersecting) {
-            triggerLoad();
-            io.unobserve(entry.target);
-          }
-        }
-      },
-      { root: null, rootMargin: "200px 0px", threshold: 0.01 }
-    );
-    io.observe(el);
-    return () => { cancelled = true; io.disconnect(); };
-  }, [item, previewFallback]);
-
-  // --- 3) Fallback: aplica family após 4s (display: swap cuida do resto)
-  useEffect(() => {
-    if (ready) return;
-    const t = setTimeout(() => setReady(true), 4000);
-    return () => clearTimeout(t);
-  }, [ready]);
-
-  // Prefetch em hover/focus (acelera)
-  const handlePrefetch = useCallback(() => {
-    if (ready) return;
-    loadFamilyOnce(item, previewFallback)
-      .catch(() => {})
-      .finally(() => setReady(true));
-  }, [item, ready, previewFallback]);
-
-  const familyStyle = ready ? { fontFamily: item.family } : undefined;
-
-  // category ou categories
-  const category =
-    (item as any).category ||
-    ((item as any).categories?.length ? (item as any).categories[0] : undefined);
+  const category = getFontCategoryMeta(item);
 
   const display = (item as any).label || item.family;
+
+  useEffect(() => {
+    onPrefetch(item);
+  }, [item, onPrefetch]);
 
   const handleStarClick: React.MouseEventHandler<HTMLButtonElement> = (e) => {
     e.stopPropagation();
@@ -188,49 +148,56 @@ const FontRow = memo(function FontRow({
 
   return (
     <li
-      ref={liRef}
       key={item.family}
       style={{
-        // 🚀 evita trabalhos fora da viewport
         contentVisibility: "auto" as any,
-        containIntrinsicSize: "72px 320px", // Aumentado de 48px para 72px
+        containIntrinsicSize: "72px 320px",
       }}
     >
       <div
         className={[
-          "w-full text-left px-3 py-3 text-sm transition-colors", // Aumentado padding
+          "w-full text-left px-3 py-3 text-sm transition-colors",
           isActive ? "bg-purple-50/60" : "hover:bg-white/5",
-          "rounded-lg", // Mudou de md para lg
+          "rounded-lg",
         ].join(" ")}
       >
-        <div className="flex items-start gap-3"> {/* Mudou para items-start e aumentou gap */}
+        <div className="flex items-start gap-3">
           <button
             type="button"
             data-font-item="1"
             data-active={isActive ? "true" : "false"}
             role="option"
             aria-selected={isActive}
-            className="flex-1 min-w-0 text-left px-2 py-2 rounded-md focus:outline-none focus-visible:ring-2 focus-visible:ring-purple-300" // Aumentado padding
+            aria-busy={!isPreviewReady}
+            className="flex-1 min-w-0 text-left px-2 py-2 rounded-md focus:outline-none focus-visible:ring-2 focus-visible:ring-purple-300"
             onClick={onClick}
-            onMouseEnter={handlePrefetch}
-            onFocus={handlePrefetch}
+            onMouseEnter={() => onPrefetch(item)}
+            onFocus={() => onPrefetch(item)}
             title={display}
           >
-            <div className="flex items-center justify-between mb-1"> {/* Adicionado margin-bottom */}
-              <span className="truncate font-medium text-base" style={familyStyle}> {/* Aumentado para text-base e font-medium */}
-                {display}
-                {category && <span className="ml-2 text-xs text-gray-500 font-normal">({category})</span>}
-              </span>
-            </div>
+            {isPreviewReady ? (
+              <>
+                <div className="flex items-center justify-between mb-1">
+                  <span className="truncate font-medium text-base" style={familyStyle}>
+                    {display}
+                    <span className="ml-2 text-xs text-gray-500 font-normal">({category.shortLabel})</span>
+                  </span>
+                </div>
 
-            <div className="mt-2 text-base text-gray-600 truncate leading-relaxed" style={familyStyle}>
-              {item.previewText || previewFallback}
-            </div>
-
-            {/* Skeleton leve enquanto a fonte ainda não está pronta */}
-            {!ready && (
-              <div className="mt-2 h-4 w-32 rounded bg-black/10 animate-pulse" aria-hidden />
+                <div className="mt-2 text-base text-gray-600 truncate leading-relaxed" style={familyStyle}>
+                  {item.previewText || previewFallback}
+                </div>
+              </>
+            ) : (
+              <div className="py-1">
+                <div className="h-5 w-40 max-w-[70%] rounded bg-slate-200/90 animate-pulse" />
+                <div className="mt-3 h-5 w-52 max-w-[88%] rounded bg-slate-100 animate-pulse" />
+                <div className="mt-2 text-xs text-slate-400">
+                  {isPreviewLoading ? "Carregando preview..." : "Preparando preview..."}
+                </div>
+              </div>
             )}
+
           </button>
 
           {/* ⭐ Botão estrela — agora controlado pelo pai (favoritos reais) */}
@@ -241,7 +208,7 @@ const FontRow = memo(function FontRow({
             onClick={handleStarClick}
             className={[
               "shrink-0 inline-flex items-center justify-center",
-              "h-9 w-9 rounded-lg border border-transparent", // Aumentado tamanho e mudou para rounded-lg
+              "h-9 w-9 rounded-lg border border-transparent",
               "hover:bg-black/5 focus:outline-none focus-visible:ring-2 focus-visible:ring-purple-300",
               starred ? "text-yellow-500" : "text-gray-500",
             ].join(" ")}
@@ -273,14 +240,32 @@ export default function FontPicker({
   const [internalSelected, setInternalSelected] = useState<string>("");
   const [query, setQuery] = useState("");
   const [filterTag, setFilterTag] = useState<"favoritos" | "recentes" | "">(""); // agora "favoritos" e "recentes" funcionam
+  const [selectedPreset, setSelectedPreset] = useState<FontPresetKey | "">("");
+  const [selectedCategory, setSelectedCategory] = useState<FontCategoryKey | "">("");
   const [showFilterMenu, setShowFilterMenu] = useState(false);
   const scrollRef = useRef<HTMLDivElement | null>(null);
+  const [resolvedFamilies, setResolvedFamilies] = useState<Set<string>>(new Set());
+  const [loadingFamilies, setLoadingFamilies] = useState<Set<string>>(new Set());
+  const resolvedFamiliesRef = useRef<Set<string>>(new Set());
+  const loadingFamiliesRef = useRef<Set<string>>(new Set());
 
   // ===== NEW: favoritos do usuário =====
   const [favorites, setFavorites] = useState<Set<string>>(new Set());
 
+  const data = fonts && fonts.length ? fonts : FONT_LIBRARY;
+
   // ===== NEW: fontes recentes =====
   const { addRecentFont, getRecentFontFamilies, clearRecentFonts } = useRecentFonts();
+  const { scores: popularityScores } = useFontPopularity(data.map((font) => font.family));
+
+  const compareByPopularity = useCallback(
+    (left: FontItem, right: FontItem) => {
+      const popularityDiff = (popularityScores[right.family] || 0) - (popularityScores[left.family] || 0);
+      if (popularityDiff !== 0) return popularityDiff;
+      return left.family.localeCompare(right.family, "pt-BR", { sensitivity: "base" });
+    },
+    [popularityScores]
+  );
 
   // carrega favoritos ao montar
   useEffect(() => {
@@ -299,7 +284,13 @@ export default function FontPicker({
     return () => { alive = false; };
   }, []);
 
-  const data = fonts && fonts.length ? fonts : FONT_LIBRARY;
+  useEffect(() => {
+    resolvedFamiliesRef.current = resolvedFamilies;
+  }, [resolvedFamilies]);
+
+  useEffect(() => {
+    loadingFamiliesRef.current = loadingFamilies;
+  }, [loadingFamilies]);
 
   const activeFamily = useMemo(
     () => (value != null ? value : internalSelected),
@@ -309,23 +300,34 @@ export default function FontPicker({
   // Aplica filtro textual primeiro
   const baseFiltered = useMemo(() => {
     const q = query.trim().toLowerCase();
-    if (!q) return data;
-    return data.filter((f) => {
-      const parts = [
-        f.family,
-        (f as any).label || "",
-        (f as any).category || "",
-        ((f as any).categories || []).join(" "),
-        Array.isArray(f.styles) ? f.styles.join(" ") : "",
-      ]
-        .join(" ")
-        .toLowerCase();
-      return parts.includes(q);
-    });
-  }, [data, query]);
+    const filteredFonts = !q
+      ? data.slice()
+      : data.filter((f) => {
+          const categoryMeta = getFontCategoryMeta(f);
+          const presetAliases = Object.values(FONT_PRESET_META)
+            .filter((preset) => fontMatchesPreset(f, preset.key))
+            .flatMap((preset) => [preset.label, preset.description, ...preset.aliases]);
+          const parts = [
+            f.family,
+            (f as any).label || "",
+            categoryMeta.label,
+            categoryMeta.shortLabel,
+            categoryMeta.description,
+            categoryMeta.aliases.join(" "),
+            presetAliases.join(" "),
+            ((f as any).categories || []).join(" "),
+            Array.isArray(f.styles) ? f.styles.join(" ") : "",
+          ]
+            .join(" ")
+            .toLowerCase();
+          return parts.includes(q);
+        });
+    filteredFonts.sort(compareByPopularity);
+    return filteredFonts;
+  }, [compareByPopularity, data, query]);
 
   // Aplica filtro "favoritos" ou "recentes" (quando selecionado)
-  const filtered = useMemo(() => {
+  const scopedFiltered = useMemo(() => {
     if (filterTag === "favoritos") {
       if (!favorites.size) return [];
       return baseFiltered.filter((f) => favorites.has(f.family));
@@ -348,6 +350,54 @@ export default function FontPicker({
     
     return baseFiltered;
   }, [baseFiltered, filterTag, favorites, getRecentFontFamilies]);
+
+  const presetOptions = useMemo(() => listFontPresets(scopedFiltered), [scopedFiltered]);
+
+  const presetCounts = useMemo(() => {
+    const counts = new Map<FontPresetKey, number>();
+    for (const preset of Object.values(FONT_PRESET_META)) {
+      counts.set(
+        preset.key,
+        scopedFiltered.filter((font) => fontMatchesPreset(font, preset.key)).length
+      );
+    }
+    return counts;
+  }, [scopedFiltered]);
+
+  const presetFiltered = useMemo(() => {
+    if (!selectedPreset) return scopedFiltered;
+    return scopedFiltered.filter((font) => fontMatchesPreset(font, selectedPreset));
+  }, [scopedFiltered, selectedPreset]);
+
+  const categoryOptions = useMemo(() => listFontCategories(presetFiltered), [presetFiltered]);
+
+  const categoryCounts = useMemo(() => {
+    const counts = new Map<FontCategoryKey, number>();
+    for (const font of presetFiltered) {
+      const key = getFontPrimaryCategory(font);
+      counts.set(key, (counts.get(key) || 0) + 1);
+    }
+    return counts;
+  }, [presetFiltered]);
+
+  const filtered = useMemo(() => {
+    if (!selectedCategory) return presetFiltered;
+    return presetFiltered.filter((font) => getFontPrimaryCategory(font) === selectedCategory);
+  }, [presetFiltered, selectedCategory]);
+
+  useEffect(() => {
+    if (!selectedPreset) return;
+    if (!presetOptions.some((option) => option.key === selectedPreset)) {
+      setSelectedPreset("");
+    }
+  }, [presetOptions, selectedPreset]);
+
+  useEffect(() => {
+    if (!selectedCategory) return;
+    if (!categoryOptions.some((option) => option.key === selectedCategory)) {
+      setSelectedCategory("");
+    }
+  }, [categoryOptions, selectedCategory]);
 
   // sincroniza com Editor2D via eventos
   useEffect(() => {
@@ -396,12 +446,71 @@ export default function FontPicker({
     return () => ro.disconnect();
   }, []);
 
-  // Atualiza scrollTop
-  const onScroll: React.UIEventHandler<HTMLDivElement> = (e) => {
-    setScrollTop((e.target as HTMLDivElement).scrollTop);
-  };
-
   const total = filtered.length;
+
+  useEffect(() => {
+    const container = scrollRef.current;
+    if (container) {
+      container.scrollTop = 0;
+    }
+    setScrollTop(0);
+  }, [query, filterTag, selectedPreset, selectedCategory]);
+
+  useEffect(() => {
+    if (!filtered.length) return;
+
+    const eagerFonts = filtered.slice(0, Math.min(filtered.length, PRELOAD_LOOKAHEAD));
+    const queue = eagerFonts.filter(
+      (font) => !resolvedFamiliesRef.current.has(font.family) && !loadingFamiliesRef.current.has(font.family)
+    );
+
+    if (!queue.length) return;
+
+    let cancelled = false;
+
+    setLoadingFamilies((prev) => {
+      const copy = new Set(prev);
+      for (const font of queue) copy.add(font.family);
+      loadingFamiliesRef.current = copy;
+      return copy;
+    });
+
+    const run = async () => {
+      await Promise.all(
+        queue.map(async (font) => {
+          try {
+            await loadFamilyOnce(font, DEFAULT_PREVIEW_TEXT);
+            if (cancelled) return;
+            setResolvedFamilies((prev) => {
+              if (prev.has(font.family)) return prev;
+              const copy = new Set(prev);
+              copy.add(font.family);
+              resolvedFamiliesRef.current = copy;
+              return copy;
+            });
+          } catch (err) {
+            console.warn("Falha ao carregar preview filtrado da fonte", font.family, err);
+          } finally {
+            if (cancelled) return;
+            setLoadingFamilies((prev) => {
+              if (!prev.has(font.family)) return prev;
+              const copy = new Set(prev);
+              copy.delete(font.family);
+              loadingFamiliesRef.current = copy;
+              return copy;
+            });
+          }
+        })
+      );
+    };
+
+    run();
+
+    return () => {
+      cancelled = true;
+    };
+  }, [filtered]);
+
   const startIndex = Math.max(
     0,
     Math.floor(scrollTop / ITEM_HEIGHT) - OVERSCAN
@@ -413,6 +522,118 @@ export default function FontPicker({
   const renderSlice = filtered.slice(startIndex, endIndex + 1);
   const paddingTop = startIndex * ITEM_HEIGHT;
   const paddingBottom = (total - (endIndex + 1)) * ITEM_HEIGHT;
+
+  const onScroll: React.UIEventHandler<HTMLDivElement> = (e) => {
+    setScrollTop((e.target as HTMLDivElement).scrollTop);
+  };
+
+  const onWheel: React.WheelEventHandler<HTMLDivElement> = (e) => {
+    const el = scrollRef.current;
+    if (!el) return;
+
+    // Diminui a velocidade percebida de rolagem para evitar saltos grandes na biblioteca.
+    e.preventDefault();
+    const raw = e.deltaY * SCROLL_DAMPING;
+    const clamped = Math.max(-MAX_SCROLL_STEP, Math.min(MAX_SCROLL_STEP, raw));
+    el.scrollTop += clamped;
+    setScrollTop(el.scrollTop);
+  };
+
+  // Pré-carregamento concorrente controlado na janela visível + lookahead.
+  useEffect(() => {
+    if (total === 0) return;
+    let cancelled = false;
+
+    const from = Math.max(0, startIndex);
+    const to = Math.min(total - 1, endIndex + PRELOAD_LOOKAHEAD);
+    const queue = filtered.slice(from, to + 1).filter(
+      (font) => !resolvedFamiliesRef.current.has(font.family) && !loadingFamiliesRef.current.has(font.family)
+    );
+
+    if (!queue.length) return;
+
+    setLoadingFamilies((prev) => {
+      const copy = new Set(prev);
+      for (const font of queue) copy.add(font.family);
+      loadingFamiliesRef.current = copy;
+      return copy;
+    });
+
+    const run = async () => {
+      const workers = Array.from({ length: Math.min(PRELOAD_CONCURRENCY, queue.length) }, async (_, workerIdx) => {
+        for (let i = workerIdx; i < queue.length; i += PRELOAD_CONCURRENCY) {
+          if (cancelled) return;
+          const font = queue[i];
+          try {
+            await loadFamilyOnce(font, DEFAULT_PREVIEW_TEXT);
+            if (!cancelled) {
+              setResolvedFamilies((prev) => {
+                if (prev.has(font.family)) return prev;
+                const copy = new Set(prev);
+                copy.add(font.family);
+                resolvedFamiliesRef.current = copy;
+                return copy;
+              });
+            }
+          } catch (err) {
+            console.warn("Falha ao carregar preview da fonte", font.family, err);
+          } finally {
+            if (!cancelled) {
+              setLoadingFamilies((prev) => {
+                if (!prev.has(font.family)) return prev;
+                const copy = new Set(prev);
+                copy.delete(font.family);
+                loadingFamiliesRef.current = copy;
+                return copy;
+              });
+            }
+          }
+        }
+      });
+
+      await Promise.all(workers);
+    };
+
+    run();
+
+    return () => {
+      cancelled = true;
+    };
+  }, [filtered, startIndex, endIndex, total]);
+
+  const prefetchFamily = useCallback((item: FontItem) => {
+    if (resolvedFamiliesRef.current.has(item.family) || loadingFamiliesRef.current.has(item.family)) return;
+    setLoadingFamilies((prev) => {
+      if (prev.has(item.family)) return prev;
+      const copy = new Set(prev);
+      copy.add(item.family);
+      loadingFamiliesRef.current = copy;
+      return copy;
+    });
+
+    loadFamilyOnce(item, DEFAULT_PREVIEW_TEXT)
+      .then(() => {
+        setResolvedFamilies((prev) => {
+          if (prev.has(item.family)) return prev;
+          const copy = new Set(prev);
+          copy.add(item.family);
+          resolvedFamiliesRef.current = copy;
+          return copy;
+        });
+      })
+      .catch((err) => {
+        console.warn("Falha ao prefetch da fonte", item.family, err);
+      })
+      .finally(() => {
+        setLoadingFamilies((prev) => {
+          if (!prev.has(item.family)) return prev;
+          const copy = new Set(prev);
+          copy.delete(item.family);
+          loadingFamiliesRef.current = copy;
+          return copy;
+        });
+      });
+  }, []);
 
   // =============================================================
 
@@ -546,12 +767,87 @@ export default function FontPicker({
                 </div>
               )}
             </div>
+
+            <div className="mt-3 flex flex-wrap gap-2">
+              <button
+                type="button"
+                className={[
+                  "rounded-full border px-3 py-1.5 text-xs font-medium transition-colors",
+                  selectedPreset === ""
+                    ? "border-slate-300 bg-slate-50 text-slate-700"
+                    : "border-gray-200 bg-white text-gray-600 hover:bg-gray-50",
+                ].join(" ")}
+                onClick={() => setSelectedPreset("")}
+                title="Mostra todas as famílias, sem recorte de estilo"
+              >
+                Todos os estilos
+                <span className="ml-2 text-[11px] text-gray-500">{scopedFiltered.length}</span>
+              </button>
+
+              {presetOptions.map((preset) => (
+                <button
+                  key={preset.key}
+                  type="button"
+                  className={[
+                    "rounded-full border px-3 py-1.5 text-xs font-medium transition-colors",
+                    selectedPreset === preset.key
+                      ? preset.key === "stylized"
+                        ? "border-amber-300 bg-amber-50 text-amber-700"
+                        : "border-sky-300 bg-sky-50 text-sky-700"
+                      : "border-gray-200 bg-white text-gray-600 hover:bg-gray-50",
+                  ].join(" ")}
+                  onClick={() => {
+                    setSelectedPreset(preset.key);
+                    setSelectedCategory("");
+                  }}
+                  title={preset.description}
+                >
+                  {preset.label}
+                  <span className="ml-2 text-[11px] text-gray-500">{presetCounts.get(preset.key) || 0}</span>
+                </button>
+              ))}
+            </div>
+
+            <div className="mt-3 flex flex-wrap gap-2">
+              <button
+                type="button"
+                className={[
+                  "rounded-full border px-3 py-1.5 text-xs font-medium transition-colors",
+                  selectedCategory === ""
+                    ? "border-purple-300 bg-purple-50 text-purple-700"
+                    : "border-gray-200 bg-white text-gray-600 hover:bg-gray-50",
+                ].join(" ")}
+                onClick={() => setSelectedCategory("")}
+              >
+                Todas
+                <span className="ml-2 text-[11px] text-gray-500">{presetFiltered.length}</span>
+              </button>
+
+              {categoryOptions.map((category) => (
+                <button
+                  key={category.key}
+                  type="button"
+                  className={[
+                    "rounded-full border px-3 py-1.5 text-xs font-medium transition-colors",
+                    selectedCategory === category.key
+                      ? "border-purple-300 bg-purple-50 text-purple-700"
+                      : "border-gray-200 bg-white text-gray-600 hover:bg-gray-50",
+                  ].join(" ")}
+                  onClick={() => setSelectedCategory(category.key)}
+                  title={category.description}
+                >
+                  {category.label}
+                  <span className="ml-2 text-[11px] text-gray-500">{categoryCounts.get(category.key) || 0}</span>
+                </button>
+              ))}
+            </div>
           </div>
         )}
 
         <div
           ref={scrollRef}
           onScroll={onScroll}
+          onWheel={onWheel}
           onKeyDown={onKeyDown}
           className={["rounded-lg border border-gray-200 overflow-auto", "scroll-thin", maxHeightClass].join(" ")}
           role="listbox"
@@ -568,6 +864,10 @@ export default function FontPicker({
                 ? "Você ainda não marcou nenhuma fonte como favorita." 
                 : filterTag === "recentes"
                 ? "Você ainda não utilizou nenhuma fonte neste projeto."
+                : selectedPreset === "stylized"
+                ? "Nenhuma fonte estilizada encontrada com os filtros atuais."
+                : selectedCategory
+                ? "Nenhuma fonte encontrada nessa categoria com os filtros atuais."
                 : "Nenhuma fonte encontrada."}
             </div>
           )}
@@ -580,13 +880,18 @@ export default function FontPicker({
                 const isActive =
                   normalizeName(value != null ? value : internalSelected) === normalizeName(f.family);
                 const isStarred = favorites.has(f.family);
+                const isPreviewReady = resolvedFamilies.has(f.family);
+                const isPreviewLoading = loadingFamilies.has(f.family);
                 return (
                   <FontRow
                     key={f.family + "-" + actualIndex}
                     item={f}
                     isActive={isActive}
+                    isPreviewReady={isPreviewReady}
+                    isPreviewLoading={isPreviewLoading}
                     starred={isStarred}
                     onToggleStar={toggleFavorite}
+                    onPrefetch={prefetchFamily}
                     onClick={async () => {
                       // Atualiza seleção imediatamente (não bloqueia a UI)
                       if (value == null) setInternalSelected(f.family);

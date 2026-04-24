@@ -84,35 +84,9 @@ export async function ensureFontForFabric(
   if (cached) return cached;
 
   const p = (async () => {
-    // 1) tenta webfontloader
-    let usedWFL = false;
-    try {
-      const WebFont = (await import(/* @vite-ignore */ "webfontloader")).default;
-      await new Promise<void>((resolve, reject) => {
-        const families: string[] = [];
-        if (styles.includes("italic")) {
-          // ital,wght@0,400;0,700;1,400;1,700
-          const w0 = weights.map((w) => `0,${w}`).join(";");
-          const w1 = weights.map((w) => `1,${w}`).join(";");
-          families.push(`${family}:ital,wght@${w0};${w1}`);
-        } else {
-          families.push(`${family}:wght@${weights.join(";")}`);
-        }
-        WebFont.load({
-          google: {
-            families,
-          },
-          active: () => resolve(),
-          inactive: () => reject(new Error("WebFontLoader inactive")),
-        });
-      });
-      usedWFL = true;
-    } catch {
-      // segue para fallback
-    }
-
-    // 2) fallback via <link> com &display=swap
-    if (!usedWFL) {
+    // Google Fonts: usa somente CSS2 + document.fonts.
+    // Isso evita inconsistência do WebFontLoader com sintaxe variável ital,wght@...
+    if (provider === "google") {
       const id = `gfont-${family.replace(/\s+/g, "-").toLowerCase()}`;
       if (!document.getElementById(id)) {
         const link = document.createElement("link");
@@ -127,31 +101,30 @@ export async function ensureFontForFabric(
         )}:${axis}&display=swap`;
         document.head.appendChild(link);
       }
-
-      // 3) espera variantes no document.fonts (com timeout hard)
-      const toLoad: string[] = [];
-      for (const st of styles) {
-        for (const w of weights) {
-          toLoad.push(`${st === "italic" ? "italic " : ""}${w} 1em "${family}"`);
-        }
-      }
-
-      const timeout = new Promise<never>((_, reject) =>
-        setTimeout(() => reject(new Error("font load timeout")), 7000)
-      );
-
-      await Promise.race([
-        Promise.allSettled(
-          toLoad.map((desc) => (document as any).fonts.load(desc))
-        ).then((res) => {
-          const ok = res.some((r) => r.status === "fulfilled");
-          if (!ok) throw new Error("no font variants resolved");
-        }),
-        timeout,
-      ]);
-
-      await (document as any).fonts.ready.catch(() => {});
     }
+
+    const toLoad: string[] = [];
+    for (const st of styles) {
+      for (const w of weights) {
+        toLoad.push(`${st === "italic" ? "italic " : ""}${w} 1em "${family}"`);
+      }
+    }
+
+    const timeout = new Promise<never>((_, reject) =>
+      setTimeout(() => reject(new Error("font load timeout")), 7000)
+    );
+
+    await Promise.race([
+      Promise.allSettled(
+        toLoad.map((desc) => (document as any).fonts.load(desc))
+      ).then((res) => {
+        const ok = res.some((r) => r.status === "fulfilled");
+        if (!ok) throw new Error("no font variants resolved");
+      }),
+      timeout,
+    ]);
+
+    await (document as any).fonts.ready.catch(() => {});
   })();
 
   setCacheSafe(key, p);

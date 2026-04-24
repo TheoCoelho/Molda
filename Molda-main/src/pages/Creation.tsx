@@ -40,7 +40,7 @@ import { toast } from "sonner";
 import { normalizeDbDecalZones, type ModelDecalZone } from "../lib/models";
 
 type CanvasTab = { id: string; name: string; type: "2d" | "3d" };
-type SelectionKind = "none" | "text" | "image" | "other";
+type SelectionKind = "none" | "text" | "image" | "svg" | "other";
 type DraftPayload = {
   projectName: string;
   baseColor: string;
@@ -838,15 +838,18 @@ const Creation = () => {
         const placement = tabDecalPlacements[tab.id] ?? null;
         const autoSize = tabDecalAutoSizes[tab.id] ?? null;
 
-        // autoSize (derived from 2D canvas content bounds) ALWAYS controls width/height.
-        // placement only contributes position/normal/angle (where the user placed the decal in 3D).
-        // This prevents the engine's initial default size (0.3) from polluting tabDecalPlacements
-        // and permanently overriding the content-aware sizing.
+        // autoSize (derived from 2D canvas content bounds) is used as the INITIAL size
+        // when no explicit placement size exists yet. Once the engine emits a size
+        // (after zone constraint, manual resize, or first placement), placement.width/height
+        // become authoritative so zone constraints and user resizes persist when moving
+        // between areas. AutoSize is only the default for the very first render.
+        const hasExplicitWidth = placement != null && typeof placement.width === "number" && placement.width > 0;
+        const hasExplicitHeight = placement != null && typeof placement.height === "number" && placement.height > 0;
         let transform: DecalTransform | null = null;
         if (autoSize) {
           transform = {
-            width: autoSize.width,
-            height: autoSize.height,
+            width: hasExplicitWidth ? placement!.width! : autoSize.width,
+            height: hasExplicitHeight ? placement!.height! : autoSize.height,
             position: placement?.position ?? null,
             normal: placement?.normal ?? null,
             angle: placement?.angle,
@@ -1147,6 +1150,8 @@ const Creation = () => {
   const [colorCutModeActive, setColorCutModeActive] = useState(false);
   const [effectsEditModeActive, setEffectsEditModeActive] = useState(false);
   const [bgRemovingTabId, setBgRemovingTabId] = useState<string | null>(null);
+  const [openEffectsSectionCounter, setOpenEffectsSectionCounter] = useState(0);
+  const [closeEffectsSectionCounter, setCloseEffectsSectionCounter] = useState(0);
   const toolbarTransitionTimeoutRef = useRef<NodeJS.Timeout | null>(null);
 
   // Detecta mudança de toolbar ativa (não de seleção geral) e aplica transição flip
@@ -1391,10 +1396,18 @@ const Creation = () => {
       setCanSaveSelectedImage(false);
       setCropModeActive(false);
       setColorCutModeActive(false);
+      setCloseEffectsSectionCounter((c) => c + 1);
       return;
     }
     updateSelectionInfo();
   }, [activeIs2D, updateSelectionInfo]);
+
+  // Fechar seção de efeitos quando o objeto selecionado não é mais svg/other
+  useEffect(() => {
+    if (selectionKind !== "svg" && selectionKind !== "other") {
+      setCloseEffectsSectionCounter((c) => c + 1);
+    }
+  }, [selectionKind]);
 
   useEffect(() => {
     if (!activeIs2D) {
@@ -1994,6 +2007,14 @@ const Creation = () => {
                 }
                 await editorRefs.current[activeCanvasTab]?.setActiveTextStyle({ ...patch, from: "font-picker" });
               }}
+              showEffectsSection={selectionKind === "svg" || selectionKind === "other"}
+              autoOpenEffectsSectionCounter={openEffectsSectionCounter}
+              closeEffectsSectionCounter={closeEffectsSectionCounter}
+              editor2DRef={{ current: editorRefs.current[activeCanvasTab] as Editor2DHandle | undefined }}
+              canUndo={canUndo}
+              canRedo={canRedo}
+              onUndo={activeIs2D ? () => editorRefs.current[activeCanvasTab]?.undo?.() : undefined}
+              onRedo={activeIs2D ? () => editorRefs.current[activeCanvasTab]?.redo?.() : undefined}
             />
           </div>
 
@@ -2601,6 +2622,7 @@ const Creation = () => {
                                 canUndo={canUndo}
                                 canRedo={canRedo}
                                 onApplyGradient={(gradient) => editorRefs.current[activeCanvasTab]?.applyGradientToSelection?.(gradient)}
+                                onOpenShapeEffects={selectionKind === "svg" || selectionKind === "other" ? () => setOpenEffectsSectionCounter((c) => c + 1) : undefined}
                               />
                             </div>
                           </div>
