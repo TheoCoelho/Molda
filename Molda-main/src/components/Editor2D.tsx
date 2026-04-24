@@ -8,6 +8,7 @@ import React, {
 } from "react";
 import HistoryManager from "../lib/HistoryManager";
 import { installFabricEraser } from "../lib/fabricEraser";
+import { incrementFontPopularity } from "../api/fontPopularity";
 import { applyGizmoThemeToFabric, DEFAULT_GIZMO_THEME } from "../../../gizmo-theme";
 
 // Tipos alinhados com ExpandableSidebar
@@ -154,12 +155,18 @@ export type ShapeEffectParams =
       color1: string;
       color2: string;
     }
-  | {
-      kind: "grain";
-      amount: number;
-      size: number;
-      monochrome: boolean;
-    };
+  // ── Efeitos Avançados (preset, apenas intensidade) ─────────────────────────
+  | { kind: "radioativo"; intensity: number }
+  | { kind: "retro";      intensity: number }
+  | { kind: "meianoite";  intensity: number }
+  | { kind: "malibu";     intensity: number }
+  | { kind: "croma";      intensity: number }
+  | { kind: "digital";    intensity: number }
+  | { kind: "aura";       intensity: number }
+  | { kind: "vhs";        intensity: number }
+  | { kind: "pordosol";   intensity: number }
+  | { kind: "metalico";   intensity: number }
+  | { kind: "laser";      intensity: number };
 
 type EffectEditTool = "brush" | "lasso";
 
@@ -7029,6 +7036,10 @@ const Editor2D = forwardRef<Editor2DHandle, Props>(function Editor2D(
     try {
       window.dispatchEvent(new CustomEvent("editor2d:fontUsed", { detail: { fontFamily: family } }));
     } catch { }
+
+    void incrementFontPopularity(family).catch((error) => {
+      console.warn("[Editor2D] failed to increment font popularity:", error);
+    });
   };
 
   const setActiveTextStyle = async (patch: TextStyle & { from?: "font-picker" | "inspector" | "gradient-live" }) => {
@@ -10922,8 +10933,26 @@ const Editor2D = forwardRef<Editor2DHandle, Props>(function Editor2D(
         return effect.distance * 3 + 10;
       case "falha":
         return effect.distance * 2 + 10;
-      case "grain":
-        return Math.ceil(effect.size * 0.3) + 4;
+      // Avançados com glow que extrapola o objeto:
+      case "radioativo":
+        return Math.ceil(effect.intensity * 0.32) + 10;
+      case "malibu":
+        return Math.ceil(effect.intensity * 0.28) + 8;
+      case "croma":
+        return Math.ceil(effect.intensity * 0.20) + 5;
+      case "aura":
+        return Math.ceil(effect.intensity * 0.45) + 10;
+      case "vhs":
+        return Math.ceil(effect.intensity * 0.08) + 5;
+      case "laser":
+        return Math.ceil(effect.intensity * 0.28) + 5;
+      // Avançados só filtro de cor (sem extrapolação):
+      case "retro":
+      case "meianoite":
+      case "digital":
+      case "pordosol":
+      case "metalico":
+        return 0;
       default:
         return 0;
     }
@@ -10942,47 +10971,6 @@ const Editor2D = forwardRef<Editor2DHandle, Props>(function Editor2D(
    *     Correção: setar obj.padding = effectPadding.
    */
   function installShapeEffect(obj: any, fabric: any, effect: ShapeEffectParams | null) {
-    const drawNoiseOverlay = (
-      ctx: CanvasRenderingContext2D,
-      amount: number,
-      size: number,
-      monochrome: boolean
-    ) => {
-      const tile = Math.max(24, Math.min(128, Math.round(size * 1.6)));
-      const c = document.createElement("canvas");
-      c.width = tile;
-      c.height = tile;
-      const pctx = c.getContext("2d");
-      if (!pctx) return;
-
-      const img = pctx.createImageData(tile, tile);
-      const d = img.data;
-      const alpha = Math.max(0, Math.min(255, Math.round((amount / 100) * 170)));
-      for (let i = 0; i < d.length; i += 4) {
-        if (monochrome) {
-          const v = Math.floor(Math.random() * 255);
-          d[i] = v;
-          d[i + 1] = v;
-          d[i + 2] = v;
-        } else {
-          d[i] = Math.floor(Math.random() * 255);
-          d[i + 1] = Math.floor(Math.random() * 255);
-          d[i + 2] = Math.floor(Math.random() * 255);
-        }
-        d[i + 3] = alpha;
-      }
-      pctx.putImageData(img, 0, 0);
-
-      const pattern = ctx.createPattern(c, "repeat");
-      if (!pattern) return;
-
-      ctx.save();
-      ctx.globalCompositeOperation = "source-atop";
-      ctx.fillStyle = pattern;
-      ctx.fillRect(-4096, -4096, 8192, 8192);
-      ctx.restore();
-    };
-
     // ── 1) Remover efeito anterior ─────────────────────────────────────────
     if (obj.__shapeEffectRestoreRender) {
       obj._render = obj.__shapeEffectRestoreRender;
@@ -11096,11 +11084,49 @@ const Editor2D = forwardRef<Editor2DHandle, Props>(function Editor2D(
             `drop-shadow(${-dx2}px ${-dy2}px 0px ${ef.color1}bb)`,
             `drop-shadow(${dx2}px ${dy2}px 0px ${ef.color2}bb)`,
           ].join(" ");
-        } else if (ef.kind === "grain") {
-          originalRender(ctx);
-          drawNoiseOverlay(ctx, ef.amount, ef.size, ef.monochrome);
-          ctx.restore();
-          return;
+        // ── Avançados ────────────────────────────────────────────────────────
+        } else if (ef.kind === "radioativo") {
+          const b1 = Math.round(ef.intensity * 0.32);
+          const b2 = Math.round(ef.intensity * 0.16);
+          ctx.filter = `drop-shadow(0 0 ${b1}px rgba(57,255,20,0.9)) drop-shadow(0 0 ${b2}px rgba(0,204,68,0.8)) saturate(1.4)`;
+        } else if (ef.kind === "retro") {
+          const sep = (0.1 + (ef.intensity / 100) * 0.8).toFixed(2);
+          const sat = (1.2 + (ef.intensity / 100) * 0.8).toFixed(2);
+          ctx.filter = `sepia(${sep}) saturate(${sat}) contrast(1.25) brightness(1.05)`;
+        } else if (ef.kind === "meianoite") {
+          const br = (0.65 - (ef.intensity / 100) * 0.35).toFixed(2);
+          ctx.filter = `brightness(${br}) hue-rotate(225deg) saturate(2.5)`;
+        } else if (ef.kind === "malibu") {
+          const g1 = Math.round(ef.intensity * 0.28);
+          const g2 = Math.round(ef.intensity * 0.14);
+          ctx.filter = `hue-rotate(300deg) saturate(2) brightness(1.2) drop-shadow(0 0 ${g1}px rgba(255,105,180,0.8)) drop-shadow(0 0 ${g2}px rgba(200,68,170,0.7))`;
+        } else if (ef.kind === "croma") {
+          const b1 = Math.round(ef.intensity * 0.20);
+          const b2 = Math.round(ef.intensity * 0.10);
+          ctx.filter = `brightness(0) drop-shadow(0 0 ${b1}px rgba(68,136,255,0.95)) drop-shadow(0 0 ${b2}px rgba(34,68,255,0.8))`;
+        } else if (ef.kind === "digital") {
+          const sat = (1.5 + (ef.intensity / 100) * 1.5).toFixed(2);
+          ctx.filter = `hue-rotate(220deg) saturate(${sat}) brightness(1.15) contrast(1.1)`;
+        } else if (ef.kind === "aura") {
+          const b1 = Math.round(ef.intensity * 0.18);
+          const b2 = Math.round(ef.intensity * 0.42);
+          ctx.filter = `drop-shadow(0 0 ${b1}px rgba(91,181,232,0.85)) drop-shadow(0 0 ${b2}px rgba(41,182,246,0.4)) saturate(1.5)`;
+        } else if (ef.kind === "vhs") {
+          const sat = (2.0 + (ef.intensity / 100) * 0.8).toFixed(2);
+          const g = Math.round(ef.intensity * 0.08);
+          ctx.filter = `hue-rotate(265deg) saturate(${sat}) brightness(1.2) drop-shadow(0 0 ${g}px rgba(156,39,176,0.6))`;
+        } else if (ef.kind === "pordosol") {
+          const sat = (1.5 + (ef.intensity / 100) * 1.5).toFixed(2);
+          ctx.filter = `hue-rotate(25deg) saturate(${sat}) brightness(1.1) contrast(1.05)`;
+        } else if (ef.kind === "metalico") {
+          const sat = (2.5 + (ef.intensity / 100)).toFixed(2);
+          const br = (1.1 + (ef.intensity / 100) * 0.15).toFixed(2);
+          ctx.filter = `sepia(0.85) saturate(${sat}) hue-rotate(15deg) brightness(${br}) contrast(1.15)`;
+        } else if (ef.kind === "laser") {
+          const b1 = Math.round(ef.intensity * 0.06);
+          const b2 = Math.round(ef.intensity * 0.16);
+          const b3 = Math.round(ef.intensity * 0.28);
+          ctx.filter = `brightness(0.08) drop-shadow(0 0 ${b1}px rgba(255,0,0,1)) drop-shadow(0 0 ${b2}px rgba(255,51,0,0.85)) drop-shadow(0 0 ${b3}px rgba(255,0,0,0.5))`;
         }
 
         originalRender(ctx);

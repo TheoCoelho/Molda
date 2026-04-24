@@ -7,9 +7,22 @@ import React, {
   useCallback,
   memo,
 } from "react";
-import { FONT_LIBRARY, DEFAULT_PREVIEW_TEXT, type FontItem } from "../fonts/library";
+import {
+  FONT_LIBRARY,
+  DEFAULT_PREVIEW_TEXT,
+  FONT_PRESET_META,
+  fontMatchesPreset,
+  getFontCategoryMeta,
+  getFontPrimaryCategory,
+  listFontCategories,
+  listFontPresets,
+  type FontCategoryKey,
+  type FontPresetKey,
+  type FontItem,
+} from "../fonts/library";
 import { ensureFontForFabric, wantVariantsFor } from "../utils/fonts";
 import { toast } from "../hooks/use-toast";
+import { useFontPopularity } from "../hooks/use-font-popularity";
 import { useRecentFonts } from "../hooks/use-recent-fonts";
 import {
   fetchUserFavorites,
@@ -44,13 +57,13 @@ function previewSubsetText(s: string, max = 48) {
 /** Carrega uma família apenas uma vez (não cacheia falhas) */
 function loadFamilyOnce(item: FontItem, previewText: string) {
   if (!item?.family) return Promise.resolve();
-  const key = item.family;
+  const key = `${item.source}:${item.family}`;
   if (!fontLoadCache.has(key)) {
     const variants = wantVariantsFor(item.family);
     const text = previewSubsetText(item.previewText || previewText || DEFAULT_PREVIEW_TEXT);
     fontLoadCache.set(
       key,
-      ensureFontForFabric(item.family, "google", { ...variants, text }).catch((e) => {
+      ensureFontForFabric(item.family, item.source || "google", { ...variants, text }).catch((e) => {
         fontLoadCache.delete(key);
         throw e;
       })
@@ -99,6 +112,8 @@ function StarIcon({ filled }: { filled: boolean }) {
 const FontRow = memo(function FontRow({
   item,
   isActive,
+  isPreviewReady,
+  isPreviewLoading,
   starred,
   onToggleStar,
   onClick,
@@ -107,6 +122,8 @@ const FontRow = memo(function FontRow({
 }: {
   item: FontItem;
   isActive: boolean;
+  isPreviewReady: boolean;
+  isPreviewLoading: boolean;
   starred: boolean;
   onToggleStar: (family: string, next: boolean) => void;
   onClick: () => void;
@@ -115,12 +132,13 @@ const FontRow = memo(function FontRow({
 }) {
   const familyStyle = { fontFamily: `"${item.family}", ui-sans-serif, system-ui, sans-serif` };
 
-  // category ou categories
-  const category =
-    (item as any).category ||
-    ((item as any).categories?.length ? (item as any).categories[0] : undefined);
+  const category = getFontCategoryMeta(item);
 
   const display = (item as any).label || item.family;
+
+  useEffect(() => {
+    onPrefetch(item);
+  }, [item, onPrefetch]);
 
   const handleStarClick: React.MouseEventHandler<HTMLButtonElement> = (e) => {
     e.stopPropagation();
@@ -150,22 +168,35 @@ const FontRow = memo(function FontRow({
             data-active={isActive ? "true" : "false"}
             role="option"
             aria-selected={isActive}
+            aria-busy={!isPreviewReady}
             className="flex-1 min-w-0 text-left px-2 py-2 rounded-md focus:outline-none focus-visible:ring-2 focus-visible:ring-purple-300"
             onClick={onClick}
             onMouseEnter={() => onPrefetch(item)}
             onFocus={() => onPrefetch(item)}
             title={display}
           >
-            <div className="flex items-center justify-between mb-1">
-              <span className="truncate font-medium text-base" style={familyStyle}>
-                {display}
-                {category && <span className="ml-2 text-xs text-gray-500 font-normal">({category})</span>}
-              </span>
-            </div>
+            {isPreviewReady ? (
+              <>
+                <div className="flex items-center justify-between mb-1">
+                  <span className="truncate font-medium text-base" style={familyStyle}>
+                    {display}
+                    <span className="ml-2 text-xs text-gray-500 font-normal">({category.shortLabel})</span>
+                  </span>
+                </div>
 
-            <div className="mt-2 text-base text-gray-600 truncate leading-relaxed" style={familyStyle}>
-              {item.previewText || previewFallback}
-            </div>
+                <div className="mt-2 text-base text-gray-600 truncate leading-relaxed" style={familyStyle}>
+                  {item.previewText || previewFallback}
+                </div>
+              </>
+            ) : (
+              <div className="py-1">
+                <div className="h-5 w-40 max-w-[70%] rounded bg-slate-200/90 animate-pulse" />
+                <div className="mt-3 h-5 w-52 max-w-[88%] rounded bg-slate-100 animate-pulse" />
+                <div className="mt-2 text-xs text-slate-400">
+                  {isPreviewLoading ? "Carregando preview..." : "Preparando preview..."}
+                </div>
+              </div>
+            )}
 
           </button>
 
@@ -209,16 +240,32 @@ export default function FontPicker({
   const [internalSelected, setInternalSelected] = useState<string>("");
   const [query, setQuery] = useState("");
   const [filterTag, setFilterTag] = useState<"favoritos" | "recentes" | "">(""); // agora "favoritos" e "recentes" funcionam
+  const [selectedPreset, setSelectedPreset] = useState<FontPresetKey | "">("");
+  const [selectedCategory, setSelectedCategory] = useState<FontCategoryKey | "">("");
   const [showFilterMenu, setShowFilterMenu] = useState(false);
   const scrollRef = useRef<HTMLDivElement | null>(null);
   const [resolvedFamilies, setResolvedFamilies] = useState<Set<string>>(new Set());
   const [loadingFamilies, setLoadingFamilies] = useState<Set<string>>(new Set());
+  const resolvedFamiliesRef = useRef<Set<string>>(new Set());
+  const loadingFamiliesRef = useRef<Set<string>>(new Set());
 
   // ===== NEW: favoritos do usuário =====
   const [favorites, setFavorites] = useState<Set<string>>(new Set());
 
+  const data = fonts && fonts.length ? fonts : FONT_LIBRARY;
+
   // ===== NEW: fontes recentes =====
   const { addRecentFont, getRecentFontFamilies, clearRecentFonts } = useRecentFonts();
+  const { scores: popularityScores } = useFontPopularity(data.map((font) => font.family));
+
+  const compareByPopularity = useCallback(
+    (left: FontItem, right: FontItem) => {
+      const popularityDiff = (popularityScores[right.family] || 0) - (popularityScores[left.family] || 0);
+      if (popularityDiff !== 0) return popularityDiff;
+      return left.family.localeCompare(right.family, "pt-BR", { sensitivity: "base" });
+    },
+    [popularityScores]
+  );
 
   // carrega favoritos ao montar
   useEffect(() => {
@@ -237,7 +284,13 @@ export default function FontPicker({
     return () => { alive = false; };
   }, []);
 
-  const data = fonts && fonts.length ? fonts : FONT_LIBRARY;
+  useEffect(() => {
+    resolvedFamiliesRef.current = resolvedFamilies;
+  }, [resolvedFamilies]);
+
+  useEffect(() => {
+    loadingFamiliesRef.current = loadingFamilies;
+  }, [loadingFamilies]);
 
   const activeFamily = useMemo(
     () => (value != null ? value : internalSelected),
@@ -247,23 +300,34 @@ export default function FontPicker({
   // Aplica filtro textual primeiro
   const baseFiltered = useMemo(() => {
     const q = query.trim().toLowerCase();
-    if (!q) return data;
-    return data.filter((f) => {
-      const parts = [
-        f.family,
-        (f as any).label || "",
-        (f as any).category || "",
-        ((f as any).categories || []).join(" "),
-        Array.isArray(f.styles) ? f.styles.join(" ") : "",
-      ]
-        .join(" ")
-        .toLowerCase();
-      return parts.includes(q);
-    });
-  }, [data, query]);
+    const filteredFonts = !q
+      ? data.slice()
+      : data.filter((f) => {
+          const categoryMeta = getFontCategoryMeta(f);
+          const presetAliases = Object.values(FONT_PRESET_META)
+            .filter((preset) => fontMatchesPreset(f, preset.key))
+            .flatMap((preset) => [preset.label, preset.description, ...preset.aliases]);
+          const parts = [
+            f.family,
+            (f as any).label || "",
+            categoryMeta.label,
+            categoryMeta.shortLabel,
+            categoryMeta.description,
+            categoryMeta.aliases.join(" "),
+            presetAliases.join(" "),
+            ((f as any).categories || []).join(" "),
+            Array.isArray(f.styles) ? f.styles.join(" ") : "",
+          ]
+            .join(" ")
+            .toLowerCase();
+          return parts.includes(q);
+        });
+    filteredFonts.sort(compareByPopularity);
+    return filteredFonts;
+  }, [compareByPopularity, data, query]);
 
   // Aplica filtro "favoritos" ou "recentes" (quando selecionado)
-  const filtered = useMemo(() => {
+  const scopedFiltered = useMemo(() => {
     if (filterTag === "favoritos") {
       if (!favorites.size) return [];
       return baseFiltered.filter((f) => favorites.has(f.family));
@@ -286,6 +350,54 @@ export default function FontPicker({
     
     return baseFiltered;
   }, [baseFiltered, filterTag, favorites, getRecentFontFamilies]);
+
+  const presetOptions = useMemo(() => listFontPresets(scopedFiltered), [scopedFiltered]);
+
+  const presetCounts = useMemo(() => {
+    const counts = new Map<FontPresetKey, number>();
+    for (const preset of Object.values(FONT_PRESET_META)) {
+      counts.set(
+        preset.key,
+        scopedFiltered.filter((font) => fontMatchesPreset(font, preset.key)).length
+      );
+    }
+    return counts;
+  }, [scopedFiltered]);
+
+  const presetFiltered = useMemo(() => {
+    if (!selectedPreset) return scopedFiltered;
+    return scopedFiltered.filter((font) => fontMatchesPreset(font, selectedPreset));
+  }, [scopedFiltered, selectedPreset]);
+
+  const categoryOptions = useMemo(() => listFontCategories(presetFiltered), [presetFiltered]);
+
+  const categoryCounts = useMemo(() => {
+    const counts = new Map<FontCategoryKey, number>();
+    for (const font of presetFiltered) {
+      const key = getFontPrimaryCategory(font);
+      counts.set(key, (counts.get(key) || 0) + 1);
+    }
+    return counts;
+  }, [presetFiltered]);
+
+  const filtered = useMemo(() => {
+    if (!selectedCategory) return presetFiltered;
+    return presetFiltered.filter((font) => getFontPrimaryCategory(font) === selectedCategory);
+  }, [presetFiltered, selectedCategory]);
+
+  useEffect(() => {
+    if (!selectedPreset) return;
+    if (!presetOptions.some((option) => option.key === selectedPreset)) {
+      setSelectedPreset("");
+    }
+  }, [presetOptions, selectedPreset]);
+
+  useEffect(() => {
+    if (!selectedCategory) return;
+    if (!categoryOptions.some((option) => option.key === selectedCategory)) {
+      setSelectedCategory("");
+    }
+  }, [categoryOptions, selectedCategory]);
 
   // sincroniza com Editor2D via eventos
   useEffect(() => {
@@ -336,6 +448,69 @@ export default function FontPicker({
 
   const total = filtered.length;
 
+  useEffect(() => {
+    const container = scrollRef.current;
+    if (container) {
+      container.scrollTop = 0;
+    }
+    setScrollTop(0);
+  }, [query, filterTag, selectedPreset, selectedCategory]);
+
+  useEffect(() => {
+    if (!filtered.length) return;
+
+    const eagerFonts = filtered.slice(0, Math.min(filtered.length, PRELOAD_LOOKAHEAD));
+    const queue = eagerFonts.filter(
+      (font) => !resolvedFamiliesRef.current.has(font.family) && !loadingFamiliesRef.current.has(font.family)
+    );
+
+    if (!queue.length) return;
+
+    let cancelled = false;
+
+    setLoadingFamilies((prev) => {
+      const copy = new Set(prev);
+      for (const font of queue) copy.add(font.family);
+      loadingFamiliesRef.current = copy;
+      return copy;
+    });
+
+    const run = async () => {
+      await Promise.all(
+        queue.map(async (font) => {
+          try {
+            await loadFamilyOnce(font, DEFAULT_PREVIEW_TEXT);
+            if (cancelled) return;
+            setResolvedFamilies((prev) => {
+              if (prev.has(font.family)) return prev;
+              const copy = new Set(prev);
+              copy.add(font.family);
+              resolvedFamiliesRef.current = copy;
+              return copy;
+            });
+          } catch (err) {
+            console.warn("Falha ao carregar preview filtrado da fonte", font.family, err);
+          } finally {
+            if (cancelled) return;
+            setLoadingFamilies((prev) => {
+              if (!prev.has(font.family)) return prev;
+              const copy = new Set(prev);
+              copy.delete(font.family);
+              loadingFamiliesRef.current = copy;
+              return copy;
+            });
+          }
+        })
+      );
+    };
+
+    run();
+
+    return () => {
+      cancelled = true;
+    };
+  }, [filtered]);
+
   const startIndex = Math.max(
     0,
     Math.floor(scrollTop / ITEM_HEIGHT) - OVERSCAN
@@ -372,7 +547,7 @@ export default function FontPicker({
     const from = Math.max(0, startIndex);
     const to = Math.min(total - 1, endIndex + PRELOAD_LOOKAHEAD);
     const queue = filtered.slice(from, to + 1).filter(
-      (font) => !resolvedFamilies.has(font.family) && !loadingFamilies.has(font.family)
+      (font) => !resolvedFamiliesRef.current.has(font.family) && !loadingFamiliesRef.current.has(font.family)
     );
 
     if (!queue.length) return;
@@ -380,6 +555,7 @@ export default function FontPicker({
     setLoadingFamilies((prev) => {
       const copy = new Set(prev);
       for (const font of queue) copy.add(font.family);
+      loadingFamiliesRef.current = copy;
       return copy;
     });
 
@@ -395,6 +571,7 @@ export default function FontPicker({
                 if (prev.has(font.family)) return prev;
                 const copy = new Set(prev);
                 copy.add(font.family);
+                resolvedFamiliesRef.current = copy;
                 return copy;
               });
             }
@@ -406,6 +583,7 @@ export default function FontPicker({
                 if (!prev.has(font.family)) return prev;
                 const copy = new Set(prev);
                 copy.delete(font.family);
+                loadingFamiliesRef.current = copy;
                 return copy;
               });
             }
@@ -421,14 +599,15 @@ export default function FontPicker({
     return () => {
       cancelled = true;
     };
-  }, [filtered, startIndex, endIndex, total, resolvedFamilies, loadingFamilies]);
+  }, [filtered, startIndex, endIndex, total]);
 
   const prefetchFamily = useCallback((item: FontItem) => {
-    if (resolvedFamilies.has(item.family) || loadingFamilies.has(item.family)) return;
+    if (resolvedFamiliesRef.current.has(item.family) || loadingFamiliesRef.current.has(item.family)) return;
     setLoadingFamilies((prev) => {
       if (prev.has(item.family)) return prev;
       const copy = new Set(prev);
       copy.add(item.family);
+      loadingFamiliesRef.current = copy;
       return copy;
     });
 
@@ -438,6 +617,7 @@ export default function FontPicker({
           if (prev.has(item.family)) return prev;
           const copy = new Set(prev);
           copy.add(item.family);
+          resolvedFamiliesRef.current = copy;
           return copy;
         });
       })
@@ -449,10 +629,11 @@ export default function FontPicker({
           if (!prev.has(item.family)) return prev;
           const copy = new Set(prev);
           copy.delete(item.family);
+          loadingFamiliesRef.current = copy;
           return copy;
         });
       });
-  }, [resolvedFamilies, loadingFamilies]);
+  }, []);
 
   // =============================================================
 
@@ -586,6 +767,80 @@ export default function FontPicker({
                 </div>
               )}
             </div>
+
+            <div className="mt-3 flex flex-wrap gap-2">
+              <button
+                type="button"
+                className={[
+                  "rounded-full border px-3 py-1.5 text-xs font-medium transition-colors",
+                  selectedPreset === ""
+                    ? "border-slate-300 bg-slate-50 text-slate-700"
+                    : "border-gray-200 bg-white text-gray-600 hover:bg-gray-50",
+                ].join(" ")}
+                onClick={() => setSelectedPreset("")}
+                title="Mostra todas as famílias, sem recorte de estilo"
+              >
+                Todos os estilos
+                <span className="ml-2 text-[11px] text-gray-500">{scopedFiltered.length}</span>
+              </button>
+
+              {presetOptions.map((preset) => (
+                <button
+                  key={preset.key}
+                  type="button"
+                  className={[
+                    "rounded-full border px-3 py-1.5 text-xs font-medium transition-colors",
+                    selectedPreset === preset.key
+                      ? preset.key === "stylized"
+                        ? "border-amber-300 bg-amber-50 text-amber-700"
+                        : "border-sky-300 bg-sky-50 text-sky-700"
+                      : "border-gray-200 bg-white text-gray-600 hover:bg-gray-50",
+                  ].join(" ")}
+                  onClick={() => {
+                    setSelectedPreset(preset.key);
+                    setSelectedCategory("");
+                  }}
+                  title={preset.description}
+                >
+                  {preset.label}
+                  <span className="ml-2 text-[11px] text-gray-500">{presetCounts.get(preset.key) || 0}</span>
+                </button>
+              ))}
+            </div>
+
+            <div className="mt-3 flex flex-wrap gap-2">
+              <button
+                type="button"
+                className={[
+                  "rounded-full border px-3 py-1.5 text-xs font-medium transition-colors",
+                  selectedCategory === ""
+                    ? "border-purple-300 bg-purple-50 text-purple-700"
+                    : "border-gray-200 bg-white text-gray-600 hover:bg-gray-50",
+                ].join(" ")}
+                onClick={() => setSelectedCategory("")}
+              >
+                Todas
+                <span className="ml-2 text-[11px] text-gray-500">{presetFiltered.length}</span>
+              </button>
+
+              {categoryOptions.map((category) => (
+                <button
+                  key={category.key}
+                  type="button"
+                  className={[
+                    "rounded-full border px-3 py-1.5 text-xs font-medium transition-colors",
+                    selectedCategory === category.key
+                      ? "border-purple-300 bg-purple-50 text-purple-700"
+                      : "border-gray-200 bg-white text-gray-600 hover:bg-gray-50",
+                  ].join(" ")}
+                  onClick={() => setSelectedCategory(category.key)}
+                  title={category.description}
+                >
+                  {category.label}
+                  <span className="ml-2 text-[11px] text-gray-500">{categoryCounts.get(category.key) || 0}</span>
+                </button>
+              ))}
+            </div>
           </div>
         )}
 
@@ -609,6 +864,10 @@ export default function FontPicker({
                 ? "Você ainda não marcou nenhuma fonte como favorita." 
                 : filterTag === "recentes"
                 ? "Você ainda não utilizou nenhuma fonte neste projeto."
+                : selectedPreset === "stylized"
+                ? "Nenhuma fonte estilizada encontrada com os filtros atuais."
+                : selectedCategory
+                ? "Nenhuma fonte encontrada nessa categoria com os filtros atuais."
                 : "Nenhuma fonte encontrada."}
             </div>
           )}
@@ -621,11 +880,15 @@ export default function FontPicker({
                 const isActive =
                   normalizeName(value != null ? value : internalSelected) === normalizeName(f.family);
                 const isStarred = favorites.has(f.family);
+                const isPreviewReady = resolvedFamilies.has(f.family);
+                const isPreviewLoading = loadingFamilies.has(f.family);
                 return (
                   <FontRow
                     key={f.family + "-" + actualIndex}
                     item={f}
                     isActive={isActive}
+                    isPreviewReady={isPreviewReady}
+                    isPreviewLoading={isPreviewLoading}
                     starred={isStarred}
                     onToggleStar={toggleFavorite}
                     onPrefetch={prefetchFamily}
