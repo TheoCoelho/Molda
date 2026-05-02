@@ -130,7 +130,7 @@ export class SurfaceDecal {
 
 		this.opts = {
 			angleClampDeg: opts.angleClampDeg ?? 92, // usado apenas para backface extremo (-0.3)
-			depthFromSizeScale: opts.depthFromSizeScale ?? 0.2,
+			depthFromSizeScale: opts.depthFromSizeScale ?? 0.6,
 			useFeather: opts.useFeather ?? false,
 			feather: opts.feather ?? 0.08,
 			frontOnly: opts.frontOnly ?? true,

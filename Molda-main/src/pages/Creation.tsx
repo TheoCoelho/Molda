@@ -1467,10 +1467,42 @@ const Creation = () => {
       try {
         const fonts = editorInstance.listUsedFonts();
         fonts.forEach((family) => fn(family));
+        window.dispatchEvent(
+          new CustomEvent("editor2d:fontsInUse", {
+            detail: {
+              tabId: activeCanvasTab,
+              fontFamilies: fonts,
+            },
+          })
+        );
       } catch { }
     },
     [activeCanvasTab]
   );
+
+  useEffect(() => {
+    const onRequestFontsInUse = () => {
+      const inst = editorRefs.current[activeCanvasTab];
+      if (!inst?.listUsedFonts) return;
+
+      try {
+        const fonts = inst.listUsedFonts();
+        window.dispatchEvent(
+          new CustomEvent("editor2d:fontsInUse", {
+            detail: {
+              tabId: activeCanvasTab,
+              fontFamilies: fonts,
+            },
+          })
+        );
+      } catch { }
+    };
+
+    window.addEventListener("editor2d:requestFontsInUse", onRequestFontsInUse as EventListener);
+    return () => {
+      window.removeEventListener("editor2d:requestFontsInUse", onRequestFontsInUse as EventListener);
+    };
+  }, [activeCanvasTab]);
 
   useEffect(() => {
     if (!activeIs2D) return;
