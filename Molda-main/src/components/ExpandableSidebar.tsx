@@ -879,11 +879,13 @@ function BrushSectionAccordion(props: {
 
   // Expor função de desativação para uso externo
   useEffect(() => {
-    // Só reseta o estado interno automaticamente se o painel aberto NÃO for formas
+    // Mantém paineis que exigem continuidade de edição (formas/texto) abertos,
+    // mesmo quando o tool externo volta para select.
     if (
       tool === "select" &&
       enabledKey &&
-      openKey !== "formas"
+      openKey !== "formas" &&
+      openKey !== "texto"
     ) {
       console.log(`[BrushSectionAccordion] Tool externally changed to select, resetting internal state`);
       setEnabledKey(null);
@@ -898,6 +900,12 @@ function BrushSectionAccordion(props: {
     const currentNormalizedKey = openKey;
 
     if (currentNormalizedKey === normalizedKey) {
+      if (normalizedKey === "texto" && is2DActive && tool === "select") {
+        console.log("[BrushSectionAccordion] Re-arming text tool while keeping Text panel open");
+        setEnabledKey("texto");
+        setTool("text");
+        return;
+      }
       console.log(`[BrushSectionAccordion] Closing ${normalizedKey}, switching to select`);
       setEnabledKey(null);
       setTool("select");
@@ -990,6 +998,18 @@ function BrushSectionAccordion(props: {
         {/* Texto */}
         <AccordionItem title="Texto" icon={<Type className="w-4 h-4" />} open={openKey === "texto"} onToggle={() => toggle("texto")} grow>
           <div className="mt-2 flex flex-col flex-1 min-h-0 w-full">
+            <Button
+              type="button"
+              variant="outline"
+              className="mb-3 w-full"
+              disabled={!is2DActive}
+              onClick={() => {
+                if (!is2DActive) return;
+                addText?.("Digite aqui");
+              }}
+            >
+              Adicionar texto
+            </Button>
             <FontPicker
               fonts={FONT_LIBRARY}
               value={activeFamily || ""}
@@ -997,6 +1017,10 @@ function BrushSectionAccordion(props: {
                 setActiveFamily(family);
                 addRecentFont(family);
                 applyTextStyle?.({ fontFamily: family });
+                if (is2DActive) {
+                  setEnabledKey("texto");
+                  setTool("text");
+                }
                 try {
                   window.dispatchEvent(new CustomEvent("editor2d:fontPickedFromSidebar", { detail: { fontFamily: family } }));
                 } catch { }
