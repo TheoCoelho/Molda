@@ -94,6 +94,8 @@ const nearlyEqual = (a?: number | null, b?: number | null) => {
 };
 
 const DRAFT_EPHEMERAL_TTL_MS = 5 * 60 * 1000;
+const DRAFT_SAVE_DEBOUNCE_MS = 700;
+const PREVIEW_CAPTURE_DEBOUNCE_MS = 180;
 
 const VIABILITY_WARNING_LABELS: Record<string, string> = {
   min_area_violation: "Decal abaixo da area minima recomendada para a peca.",
@@ -706,6 +708,19 @@ const Creation = () => {
   /** Automatic gizmo dimensions derived from canvas content bounds (fallback for tabs without explicit placement). */
   const [tabDecalAutoSizes, setTabDecalAutoSizes] = useState<Record<string, { width: number; height: number }>>({});
   const tabDecalAutoSizesRef = useRef<Record<string, { width: number; height: number }>>({});
+  const tabPreviewCaptureTimersRef = useRef<Record<string, number | null>>({});
+  const tabPreviewCaptureInFlightRef = useRef<Set<string>>(new Set());
+  const tabPreviewCaptureQueuedRef = useRef<Set<string>>(new Set());
+  const tabPreviewCaptureCacheRef = useRef<
+    Record<
+      string,
+      {
+        fullDataUrl: string;
+        boundsKey: string;
+        finalDataUrl: string;
+      }
+    >
+  >({});
   const tabVisibilityRef = useRef<Record<string, boolean>>(tabVisibility);
   const tabDecalPreviewsRef = useRef<Record<string, string>>(tabDecalPreviews);
   const tabDecalPlacementsRef = useRef<Record<string, DecalTransform>>(tabDecalPlacements);
@@ -726,91 +741,160 @@ const Creation = () => {
     tabDecalAutoSizesRef.current = tabDecalAutoSizes;
   }, [tabDecalAutoSizes]);
 
-  const captureTabImage = useCallback(async (tabId: string): Promise<string | null> => {
-    const inst = editorRefs.current[tabId];
-    if (!inst) return null;
+  const captureTabImage = useCallback(async (tabId: string, options?: { force?: boolean }): Promise<string | null> => {
+    if (!tabId) return null;
+
+    const tabExists = () => canvasTabsRef.current.some((t) => t.id === tabId && t.type === "2d");
+    if (!tabExists()) return null;
+
+    if (tabPreviewCaptureInFlightRef.current.has(tabId) && !options?.force) {
+      tabPreviewCaptureQueuedRef.current.add(tabId);
+      return tabDecalPreviewsRef.current[tabId] ?? null;
+    }
+
+    tabPreviewCaptureInFlightRef.current.add(tabId);
+
     try {
-      await inst.waitForIdle?.();
-    } catch { }
-    try {
-      inst.refresh?.();
-    } catch { }
+      const inst = editorRefs.current[tabId];
+      if (!inst) return null;
 
-    const fullDataUrl = inst.exportPNG?.() ?? null;
-    const bounds = inst.getContentBounds?.() ?? null;
-
-    let finalDataUrl: string | null = fullDataUrl;
-
-    if (fullDataUrl && bounds) {
-      // Crop the exported PNG to the actual content region so the 3D texture
-      // fills the gizmo box completely (no transparent padding around the design).
       try {
-        const img = new Image();
-        img.src = fullDataUrl;
-        await img.decode();
-        const pw = img.naturalWidth;
-        const ph = img.naturalHeight;
-        const cropX = Math.round(bounds.ratioLeft * pw);
-        const cropY = Math.round(bounds.ratioTop * ph);
-        const cropW = Math.max(1, Math.round(bounds.ratioW * pw));
-        const cropH = Math.max(1, Math.round(bounds.ratioH * ph));
-        const offscreen = document.createElement("canvas");
-        offscreen.width = cropW;
-        offscreen.height = cropH;
-        const ctx = offscreen.getContext("2d");
-        if (ctx) {
-          ctx.drawImage(img, cropX, cropY, cropW, cropH, 0, 0, cropW, cropH);
-          finalDataUrl = offscreen.toDataURL("image/png");
+        await inst.waitForIdle?.();
+      } catch { }
+      try {
+        inst.refresh?.();
+      } catch { }
+
+      const fullDataUrl = inst.exportPNG?.() ?? null;
+      const bounds = inst.getContentBounds?.() ?? null;
+
+      let finalDataUrl: string | null = fullDataUrl;
+
+      if (fullDataUrl && bounds) {
+        const boundsKey = [
+          bounds.ratioLeft,
+          bounds.ratioTop,
+          bounds.ratioW,
+          bounds.ratioH,
+        ]
+          .map((n) => Number(n).toFixed(4))
+          .join("|");
+        const cached = tabPreviewCaptureCacheRef.current[tabId];
+
+        // Crop the exported PNG to the actual content region so the 3D texture
+        // fills the gizmo box completely (no transparent padding around the design).
+        const isFullCanvasBounds =
+          bounds.ratioLeft <= 0.001 &&
+          bounds.ratioTop <= 0.001 &&
+          bounds.ratioW >= 0.999 &&
+          bounds.ratioH >= 0.999;
+
+        if (isFullCanvasBounds) {
+          finalDataUrl = fullDataUrl;
+        } else if (cached && cached.fullDataUrl === fullDataUrl && cached.boundsKey === boundsKey) {
+          finalDataUrl = cached.finalDataUrl;
+        } else {
+          try {
+            const img = new Image();
+            img.src = fullDataUrl;
+            await img.decode();
+            const pw = img.naturalWidth;
+            const ph = img.naturalHeight;
+            const cropX = Math.round(bounds.ratioLeft * pw);
+            const cropY = Math.round(bounds.ratioTop * ph);
+            const cropW = Math.max(1, Math.round(bounds.ratioW * pw));
+            const cropH = Math.max(1, Math.round(bounds.ratioH * ph));
+            const offscreen = document.createElement("canvas");
+            offscreen.width = cropW;
+            offscreen.height = cropH;
+            const ctx = offscreen.getContext("2d");
+            if (ctx) {
+              ctx.drawImage(img, cropX, cropY, cropW, cropH, 0, 0, cropW, cropH);
+              finalDataUrl = offscreen.toDataURL("image/png");
+            }
+          } catch {
+            // fall back to full canvas PNG on any error
+          }
         }
-      } catch {
-        // fall back to full canvas PNG on any error
+
+        // --------------- Gizmo sizing ---------------
+        // DECAL_DOMINANT_SIZE is the single reference parameter that controls
+        // how large decals appear on the 3D model. It sets the world-unit size
+        // of the dominant axis (width or height, whichever is larger).
+        // The other axis is scaled proportionally to preserve the crop aspect ratio.
+        //
+        //   Increase DECAL_DOMINANT_SIZE -> bigger decals on the model.
+        //   Decrease DECAL_DOMINANT_SIZE -> smaller decals on the model.
+        //
+        const DECAL_DOMINANT_SIZE = 0.85; // world units - change ONLY this value to resize all decals
+
+        const cropAspect = bounds.ratioH > 0 ? bounds.ratioW / bounds.ratioH : 1; // W/H of crop
+        let autoW: number, autoH: number;
+        if (cropAspect >= 1) {
+          // wider than tall - dominant axis is width
+          autoW = DECAL_DOMINANT_SIZE;
+          autoH = DECAL_DOMINANT_SIZE / cropAspect;
+        } else {
+          // taller than wide - dominant axis is height
+          autoH = DECAL_DOMINANT_SIZE;
+          autoW = DECAL_DOMINANT_SIZE * cropAspect;
+        }
+        const clamp = (v: number, lo: number, hi: number) => Math.min(hi, Math.max(lo, v));
+        autoW = clamp(autoW, 0.10, 1.50);
+        autoH = clamp(autoH, 0.10, 1.50);
+
+        if (tabExists()) {
+          const prev = tabDecalAutoSizesRef.current;
+          if (!prev[tabId] || Math.abs(prev[tabId].width - autoW) > 0.001 || Math.abs(prev[tabId].height - autoH) > 0.001) {
+            const next = { ...prev, [tabId]: { width: autoW, height: autoH } };
+            tabDecalAutoSizesRef.current = next;
+            setTabDecalAutoSizes(next);
+          }
+        }
+
+        if (finalDataUrl) {
+          tabPreviewCaptureCacheRef.current[tabId] = {
+            fullDataUrl,
+            boundsKey,
+            finalDataUrl,
+          };
+        }
       }
 
-      // --------------- Gizmo sizing ---------------
-      // DECAL_DOMINANT_SIZE is the single reference parameter that controls
-      // how large decals appear on the 3D model. It sets the world-unit size
-      // of the dominant axis (width or height, whichever is larger).
-      // The other axis is scaled proportionally to preserve the crop aspect ratio.
-      //
-      //   Increase DECAL_DOMINANT_SIZE → bigger decals on the model.
-      //   Decrease DECAL_DOMINANT_SIZE → smaller decals on the model.
-      //
-      const DECAL_DOMINANT_SIZE = 0.85; // world units — change ONLY this value to resize all decals
-
-      const cropAspect = bounds.ratioH > 0 ? bounds.ratioW / bounds.ratioH : 1; // W/H of crop
-      let autoW: number, autoH: number;
-      if (cropAspect >= 1) {
-        // wider than tall — dominant axis is width
-        autoW = DECAL_DOMINANT_SIZE;
-        autoH = DECAL_DOMINANT_SIZE / cropAspect;
-      } else {
-        // taller than wide — dominant axis is height
-        autoH = DECAL_DOMINANT_SIZE;
-        autoW = DECAL_DOMINANT_SIZE * cropAspect;
+      if (finalDataUrl && tabExists()) {
+        const current = tabDecalPreviewsRef.current;
+        if (current[tabId] !== finalDataUrl) {
+          const next = { ...current, [tabId]: finalDataUrl };
+          tabDecalPreviewsRef.current = next;
+          setTabDecalPreviews(next);
+        }
       }
-      const clamp = (v: number, lo: number, hi: number) => Math.min(hi, Math.max(lo, v));
-      autoW = clamp(autoW, 0.10, 1.50);
-      autoH = clamp(autoH, 0.10, 1.50);
 
-      const prev = tabDecalAutoSizesRef.current;
-      if (!prev[tabId] || Math.abs(prev[tabId].width - autoW) > 0.001 || Math.abs(prev[tabId].height - autoH) > 0.001) {
-        const next = { ...prev, [tabId]: { width: autoW, height: autoH } };
-        tabDecalAutoSizesRef.current = next;
-        setTabDecalAutoSizes(next);
+      return tabDecalPreviewsRef.current[tabId] ?? null;
+    } finally {
+      tabPreviewCaptureInFlightRef.current.delete(tabId);
+      if (tabPreviewCaptureQueuedRef.current.has(tabId)) {
+        tabPreviewCaptureQueuedRef.current.delete(tabId);
+        void captureTabImage(tabId, { force: true });
       }
     }
-
-    if (finalDataUrl) {
-      const current = tabDecalPreviewsRef.current;
-      if (current[tabId] !== finalDataUrl) {
-        const next = { ...current, [tabId]: finalDataUrl };
-        tabDecalPreviewsRef.current = next;
-        setTabDecalPreviews(next);
-      }
-    }
-
-    return tabDecalPreviewsRef.current[tabId] ?? null;
   }, [setTabDecalPreviews, setTabDecalAutoSizes]);
+
+  const scheduleTabPreviewCapture = useCallback(
+    (tabId: string, options?: { immediate?: boolean }) => {
+      if (!tabId) return;
+      const existingTimer = tabPreviewCaptureTimersRef.current[tabId];
+      if (existingTimer) {
+        window.clearTimeout(existingTimer);
+      }
+      const delay = options?.immediate ? 0 : PREVIEW_CAPTURE_DEBOUNCE_MS;
+      tabPreviewCaptureTimersRef.current[tabId] = window.setTimeout(() => {
+        tabPreviewCaptureTimersRef.current[tabId] = null;
+        void captureTabImage(tabId);
+      }, delay);
+    },
+    [captureTabImage]
+  );
 
   const ensureTabHasDecalPreview = useCallback(async (tabId: string) => {
     const result = await captureTabImage(tabId);
@@ -1435,7 +1519,7 @@ const Creation = () => {
     const id = tabId || activeCanvasTab;
     if (!id) return tabSnapshotsRef.current;
     // Captura imagem para preview 3D
-    void captureTabImage(id);
+    scheduleTabPreviewCapture(id, { immediate: true });
     // Salva JSON apenas para persistência (draft/export)
     const tabType = canvasTabs.find(t => t.id === id)?.type;
     if (tabType === "2d") {
@@ -1455,7 +1539,7 @@ const Creation = () => {
       }
     }
     return tabSnapshotsRef.current;
-  }, [activeCanvasTab, canvasTabs, editorRefs, captureTabImage]);
+  }, [activeCanvasTab, canvasTabs, editorRefs, scheduleTabPreviewCapture]);
 
 
   const syncFontsFromEditor = useCallback(
@@ -1559,6 +1643,16 @@ const Creation = () => {
 
   const removeCanvasTab = (tabId: string) => {
     if (tabId === "3d") return;
+
+    const previewTimer = tabPreviewCaptureTimersRef.current[tabId];
+    if (previewTimer) {
+      window.clearTimeout(previewTimer);
+      tabPreviewCaptureTimersRef.current[tabId] = null;
+    }
+    tabPreviewCaptureQueuedRef.current.delete(tabId);
+    tabPreviewCaptureInFlightRef.current.delete(tabId);
+    delete tabPreviewCaptureCacheRef.current[tabId];
+
     setTabDecalPreviews((prev) => {
       const next = { ...prev };
       delete next[tabId];
@@ -1800,7 +1894,7 @@ const Creation = () => {
         const tabId = pendingScheduledTabRef.current ?? undefined;
         pendingScheduledTabRef.current = null;
         void saveDraft({ tabId });
-      }, 500);
+      }, DRAFT_SAVE_DEBOUNCE_MS);
     },
     [saveDraft]
   );
@@ -1909,6 +2003,13 @@ const Creation = () => {
         window.clearTimeout(scheduledDraftSaveRef.current);
         scheduledDraftSaveRef.current = null;
       }
+      Object.values(tabPreviewCaptureTimersRef.current).forEach((timerId) => {
+        if (timerId) window.clearTimeout(timerId);
+      });
+      tabPreviewCaptureTimersRef.current = {};
+      tabPreviewCaptureQueuedRef.current.clear();
+      tabPreviewCaptureInFlightRef.current.clear();
+      tabPreviewCaptureCacheRef.current = {};
     };
   }, []);
 
@@ -2514,7 +2615,7 @@ const Creation = () => {
                                       setCanUndo(u);
                                       setCanRedo(r);
                                       if (tabVisibility[tab.id]) {
-                                        void captureTabImage(tab.id);
+                                        scheduleTabPreviewCapture(tab.id);
                                       }
                                       // Salva o rascunho automaticamente a cada modificação
                                       scheduleDraftSave({ tabId: tab.id });

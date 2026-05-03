@@ -400,6 +400,7 @@ export default function FontPicker({
 
   const visibleFonts = useMemo(() => filtered, [filtered]);
   const shouldHideFullLibrary = isAllMode && isPopularAccordionOpen;
+  const fixedLibraryHeightClass = "h-[420px]";
 
   useEffect(() => {
     if (!isAllMode && isPopularAccordionOpen) {
@@ -897,38 +898,32 @@ export default function FontPicker({
         )}
 
         {isAllMode && (
-          <div className="mb-2 rounded-lg border border-gray-200 bg-white/70">
+          <div className="mb-2 border-l-2 border-amber-400 pl-2">
             <button
               type="button"
-              className="w-full px-3 py-2 text-left"
+              className="w-full px-3 py-2 text-left rounded-md hover:bg-amber-50/50 transition-colors"
               onClick={() => setIsPopularAccordionOpen((prev) => !prev)}
               aria-expanded={isPopularAccordionOpen}
               aria-controls="popular-fonts-accordion-content"
             >
-              <div className="flex items-center justify-between gap-3">
-                <div className="flex items-center gap-2">
-                  <span className="text-sm font-medium text-slate-700">Fontes populares</span>
-                  <span className="rounded-full bg-slate-100 px-2 py-0.5 text-[11px] text-slate-600">
-                    {popularFonts.length}
-                  </span>
-                </div>
-                <span className="text-xs font-semibold text-slate-500">
-                  {isPopularAccordionOpen ? "Fechar" : "Abrir"}
-                </span>
+              <div className="flex items-center gap-2">
+                <span className="text-[13px]">⭐</span>
+                <span className="text-xs font-semibold uppercase tracking-wide text-amber-600">Populares</span>
+                <span className="ml-auto text-[10px] text-slate-400">{isPopularAccordionOpen ? "▲" : "▼"}</span>
               </div>
             </button>
 
             {isPopularAccordionOpen && (
               <div
                 id="popular-fonts-accordion-content"
-                className="border-t border-gray-200 px-2 py-2"
+                className="px-0 py-1"
               >
                 {popularFonts.length === 0 ? (
                   <div className="py-3 text-xs text-slate-500">
                     Ainda não há dados de popularidade suficientes para exibir fontes populares.
                   </div>
                 ) : (
-                  <div className="max-h-64 overflow-auto scroll-thin rounded-md border border-gray-100">
+                  <div className={[fixedLibraryHeightClass, "overflow-auto", "scroll-thin"].join(" ")}>
                     <ul className="divide-y divide-gray-100 px-1 py-1">
                       {popularFonts.map((f) => {
                         const isActive =
@@ -960,12 +955,13 @@ export default function FontPicker({
         )}
 
         {!shouldHideFullLibrary && (
+        <div className="border-l-2 border-purple-300 pl-2">
         <div
           ref={scrollRef}
           onScroll={onScroll}
           onWheel={onWheel}
           onKeyDown={onKeyDown}
-          className={["rounded-lg border border-gray-200 overflow-auto", "scroll-thin", maxHeightClass].join(" ")}
+          className={[fixedLibraryHeightClass, "overflow-auto", "scroll-thin"].join(" ")}
           role="listbox"
           aria-label="Biblioteca de fontes"
           tabIndex={0}
@@ -1017,6 +1013,7 @@ export default function FontPicker({
               })}
             </ul>
           </div>
+        </div>
         </div>
         )}
       </div>
