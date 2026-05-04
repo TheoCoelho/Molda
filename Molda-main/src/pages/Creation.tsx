@@ -198,6 +198,10 @@ const Creation = () => {
     { id: "3d", name: subtype || "3D", type: "3d" },
   ]);
   const [activeCanvasTab, setActiveCanvasTab] = useState("3d");
+  const activeCanvasTabRef = useRef(activeCanvasTab);
+  useEffect(() => {
+    activeCanvasTabRef.current = activeCanvasTab;
+  }, [activeCanvasTab]);
   const [tabTransitionDirection, setTabTransitionDirection] = useState<"left" | "right">("right");
   const [isTransitioning, setIsTransitioning] = useState(false);
   const [isToolbarTransitioning, setIsToolbarTransitioning] = useState(false);
@@ -2548,7 +2552,7 @@ const Creation = () => {
 
                                     if (!selectionListenerGuard.current.has(inst)) {
                                       inst.onSelectionChange?.((kind) => {
-                                        if (tab.id === activeCanvasTab) {
+                                        if (tab.id === activeCanvasTabRef.current) {
                                           setSelectionKind(kind);
                                           if (kind === "none") {
                                             setSelectionInfo(null);
@@ -2564,30 +2568,23 @@ const Creation = () => {
 
                                     if (!cropListenerGuard.current.has(inst)) {
                                       inst.onCropModeChange?.((active) => {
-                                        if (tab.id === activeCanvasTab) setCropModeActive(active);
+                                        if (tab.id === activeCanvasTabRef.current) setCropModeActive(active);
                                       });
                                       cropListenerGuard.current.add(inst);
                                     }
 
                                     if (!colorCutListenerGuard.current.has(inst)) {
                                       inst.onColorCutModeChange?.((active) => {
-                                        if (tab.id === activeCanvasTab) setColorCutModeActive(active);
+                                        if (tab.id === activeCanvasTabRef.current) setColorCutModeActive(active);
                                       });
                                       colorCutListenerGuard.current.add(inst);
                                     }
 
                                     if (!effectsListenerGuard.current.has(inst)) {
                                       inst.onEffectEditModeChange?.((active) => {
-                                        if (tab.id === activeCanvasTab) setEffectsEditModeActive(active);
+                                        if (tab.id === activeCanvasTabRef.current) setEffectsEditModeActive(active);
                                       });
                                       effectsListenerGuard.current.add(inst);
-                                    }
-
-                                    // sincroniza o estado imediatamente ao montar/reativar
-                                    if (tab.id === activeCanvasTab) {
-                                      setCropModeActive(!!inst.isCropActive?.());
-                                      setEffectsEditModeActive(!!inst.isEffectBrushActive?.() || !!inst.isEffectLassoActive?.());
-                                      setColorCutModeActive(!!inst.isColorCutActive?.());
                                     }
                                   }}
                                   isActive={activeIs2D && tab.id === activeCanvasTab}
