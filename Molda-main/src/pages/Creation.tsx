@@ -9,6 +9,7 @@ import { Plus, X, Check } from "lucide-react";
 import FloatingEditorToolbar from "../components/FloatingEditorToolbar";
 import TextToolbar from "../components/TextToolbar";
 import ImageToolbar from "../components/ImageToolbar";
+import HistoryManager from "../lib/HistoryManager";
 import { useRecentFonts } from "../hooks/use-recent-fonts";
 import { EyeTabDivider } from "../components/ui/EyeTabDivider";
 
@@ -96,6 +97,7 @@ const nearlyEqual = (a?: number | null, b?: number | null) => {
 const DRAFT_EPHEMERAL_TTL_MS = 5 * 60 * 1000;
 const DRAFT_SAVE_DEBOUNCE_MS = 700;
 const PREVIEW_CAPTURE_DEBOUNCE_MS = 180;
+const DECAL_HISTORY_LIMIT = 120;
 
 const VIABILITY_WARNING_LABELS: Record<string, string> = {
   min_area_violation: "Decal abaixo da area minima recomendada para a peca.",
@@ -141,6 +143,25 @@ const decalMapEquals = (a: Record<string, DecalTransform>, b: Record<string, Dec
     if (!transformNearlyEqual(a[key], b[key])) return false;
   }
   return true;
+};
+
+const serializeDecalPlacements = (placements: Record<string, DecalTransform>) => {
+  const sortedKeys = Object.keys(placements).sort();
+  const normalized: Record<string, DecalTransform> = {};
+  sortedKeys.forEach((key) => {
+    normalized[key] = placements[key];
+  });
+  return JSON.stringify(normalized);
+};
+
+const parseDecalPlacementsSnapshot = (snapshot: string): Record<string, DecalTransform> => {
+  try {
+    const parsed = JSON.parse(snapshot);
+    if (!parsed || typeof parsed !== "object") return {};
+    return parsed as Record<string, DecalTransform>;
+  } catch {
+    return {};
+  }
 };
 
 const Creation = () => {
@@ -728,6 +749,7 @@ const Creation = () => {
   const tabVisibilityRef = useRef<Record<string, boolean>>(tabVisibility);
   const tabDecalPreviewsRef = useRef<Record<string, string>>(tabDecalPreviews);
   const tabDecalPlacementsRef = useRef<Record<string, DecalTransform>>(tabDecalPlacements);
+  const decalHistoryRef = useRef<HistoryManager | null>(null);
   const tabPrintTypesRef = useRef<Record<string, string>>(tabPrintTypes);
   useEffect(() => {
     tabVisibilityRef.current = tabVisibility;
@@ -1045,6 +1067,9 @@ const Creation = () => {
       const placements = payload.tabDecalPlacements as Record<string, DecalTransform>;
       tabDecalPlacementsRef.current = placements;
       setTabDecalPlacements(placements);
+    } else {
+      tabDecalPlacementsRef.current = {};
+      setTabDecalPlacements({});
     }
     if (payload.tabPrintTypes && typeof payload.tabPrintTypes === "object") {
       const ptypes = payload.tabPrintTypes as Record<string, string>;
@@ -1477,8 +1502,9 @@ const Creation = () => {
 
   useEffect(() => {
     if (!activeIs2D) {
-      setCanUndo(false);
-      setCanRedo(false);
+      const history = decalHistoryRef.current;
+      setCanUndo(!!history?.canUndo());
+      setCanRedo(!!history?.canRedo());
       setSelectionKind("none");
       setSelectionInfo(null);
       setCanSaveSelectedImage(false);
@@ -1669,13 +1695,15 @@ const Creation = () => {
       tabVisibilityRef.current = next;
       return next;
     });
-    setTabDecalPlacements((prev) => {
-      if (!(tabId in prev)) return prev;
-      const next = { ...prev };
-      delete next[tabId];
-      tabDecalPlacementsRef.current = next;
-      return next;
-    });
+    const currentPlacements = tabDecalPlacementsRef.current;
+    if (tabId in currentPlacements) {
+      const nextPlacements = { ...currentPlacements };
+      delete nextPlacements[tabId];
+      tabDecalPlacementsRef.current = nextPlacements;
+      setTabDecalPlacements(nextPlacements);
+      push3DHistory("remove");
+      scheduleDraftSave();
+    }
     const updated = canvasTabs.filter((t) => t.id !== tabId);
     canvasTabsRef.current = updated;
     setCanvasTabs(updated);
@@ -1903,8 +1931,101 @@ const Creation = () => {
     [saveDraft]
   );
 
+  const emit3DHistory = useCallback(() => {
+    const history = decalHistoryRef.current;
+    if (!history || activeCanvasTabRef.current !== "3d") return;
+    setCanUndo(history.canUndo());
+    setCanRedo(history.canRedo());
+  }, []);
+
+  const push3DHistory = useCallback((label?: string) => {
+    decalHistoryRef.current?.push(label);
+    emit3DHistory();
+  }, [emit3DHistory]);
+
+  const undo3D = useCallback(async () => {
+    await decalHistoryRef.current?.undo();
+    emit3DHistory();
+  }, [emit3DHistory]);
+
+  const redo3D = useCallback(async () => {
+    await decalHistoryRef.current?.redo();
+    emit3DHistory();
+  }, [emit3DHistory]);
+
+  const handleUndo = useCallback(() => {
+    if (activeCanvasTabRef.current === "3d") {
+      void undo3D();
+      return;
+    }
+    editorRefs.current[activeCanvasTabRef.current]?.undo?.();
+  }, [undo3D]);
+
+  const handleRedo = useCallback(() => {
+    if (activeCanvasTabRef.current === "3d") {
+      void redo3D();
+      return;
+    }
+    editorRefs.current[activeCanvasTabRef.current]?.redo?.();
+  }, [redo3D]);
+
+  useEffect(() => {
+    if (decalHistoryRef.current) return;
+    decalHistoryRef.current = new HistoryManager({
+      limit: DECAL_HISTORY_LIMIT,
+      snapshot: () => serializeDecalPlacements(tabDecalPlacementsRef.current),
+      restore: async (snapshot: string) => {
+        const placements = parseDecalPlacementsSnapshot(snapshot);
+        tabDecalPlacementsRef.current = placements;
+        setTabDecalPlacements(placements);
+        scheduleDraftSave();
+        await new Promise<void>((resolve) => {
+          window.setTimeout(() => resolve(), 0);
+        });
+        emit3DHistory();
+      },
+    });
+    decalHistoryRef.current.captureInitial();
+    emit3DHistory();
+  }, [emit3DHistory, scheduleDraftSave]);
+
+  useEffect(() => {
+    const onKeyDown = (event: KeyboardEvent) => {
+      if (!(event.ctrlKey || event.metaKey)) return;
+
+      const key = event.key.toLowerCase();
+      const shouldUndo = key === "z" && !event.shiftKey;
+      const shouldRedo = key === "y" || (key === "z" && event.shiftKey);
+      if (!shouldUndo && !shouldRedo) return;
+
+      event.preventDefault();
+      event.stopPropagation();
+
+      const history = decalHistoryRef.current;
+
+      if (shouldUndo) {
+        if (history?.canUndo()) {
+          void undo3D();
+          return;
+        }
+        editorRefs.current[activeCanvasTabRef.current]?.undo?.();
+      } else {
+        if (history?.canRedo()) {
+          void redo3D();
+          return;
+        }
+        editorRefs.current[activeCanvasTabRef.current]?.redo?.();
+      }
+    };
+
+    // capture=true ensures shortcuts are handled consistently before nested editors swallow the event
+    window.addEventListener("keydown", onKeyDown, true);
+    return () => window.removeEventListener("keydown", onKeyDown, true);
+  }, [redo3D, undo3D]);
+
   const handleDecalStateChange = useCallback(
     (snapshots: DecalStateSnapshot[]) => {
+      const shouldCommitHistory = snapshots.some((snapshot) => snapshot.historyCommit);
       const nextAlerts: Record<string, string[]> = {};
       const minArea = subtypePrintConstraints?.min_decal_area_cm2 ?? 5;
       const neckYMin = subtypePrintConstraints?.neck_zone_y_min ?? 0.82;
@@ -1970,11 +2091,19 @@ const Creation = () => {
         placementsChanged = true;
         return next;
       });
-      if (placementsChanged) {
+      if (shouldCommitHistory) {
+        // Commit is transactional (end of move/resize/rotate), just like 2D.
+        // It must be recorded even if the final frame equals the last preview frame.
+        push3DHistory("modify");
         scheduleDraftSave();
+        return;
+      }
+
+      if (placementsChanged && activeCanvasTabRef.current === "3d") {
+        emit3DHistory();
       }
     },
-    [scheduleDraftSave, subtypePrintConstraints]
+    [emit3DHistory, push3DHistory, scheduleDraftSave, subtypePrintConstraints]
   );
 
   useEffect(() => {
@@ -2007,6 +2136,7 @@ const Creation = () => {
         window.clearTimeout(scheduledDraftSaveRef.current);
         scheduledDraftSaveRef.current = null;
       }
+      decalHistoryRef.current = null;
       Object.values(tabPreviewCaptureTimersRef.current).forEach((timerId) => {
         if (timerId) window.clearTimeout(timerId);
       });
@@ -2150,8 +2280,8 @@ const Creation = () => {
               editor2DRef={{ current: editorRefs.current[activeCanvasTab] as Editor2DHandle | undefined }}
               canUndo={canUndo}
               canRedo={canRedo}
-              onUndo={activeIs2D ? () => editorRefs.current[activeCanvasTab]?.undo?.() : undefined}
-              onRedo={activeIs2D ? () => editorRefs.current[activeCanvasTab]?.redo?.() : undefined}
+              onUndo={handleUndo}
+              onRedo={handleRedo}
             />
           </div>
 
@@ -2453,8 +2583,8 @@ const Creation = () => {
                       setTrashMode={setTrashMode}
                       selectionKind="none"
                       editor2DRef={editorRefs.current[activeCanvasTab] as Editor2DHandle}
-                      onUndo={activeIs2D ? () => editorRefs.current[activeCanvasTab]?.undo?.() : undefined}
-                      onRedo={activeIs2D ? () => editorRefs.current[activeCanvasTab]?.redo?.() : undefined}
+                      onUndo={handleUndo}
+                      onRedo={handleRedo}
                       canUndo={canUndo}
                       canRedo={canRedo}
                       onApplyGradient={(gradient) => editorRefs.current[activeCanvasTab]?.applyGradientToSelection?.(gradient)}
@@ -2747,8 +2877,8 @@ const Creation = () => {
                                 setTrashMode={setTrashMode}
                                 selectionKind={selectionKind}
                                 editor2DRef={editorRefs.current[activeCanvasTab] as Editor2DHandle}
-                                onUndo={activeIs2D ? () => editorRefs.current[activeCanvasTab]?.undo?.() : undefined}
-                                onRedo={activeIs2D ? () => editorRefs.current[activeCanvasTab]?.redo?.() : undefined}
+                                onUndo={handleUndo}
+                                onRedo={handleRedo}
                                 canUndo={canUndo}
                                 canRedo={canRedo}
                                 onApplyGradient={(gradient) => editorRefs.current[activeCanvasTab]?.applyGradientToSelection?.(gradient)}

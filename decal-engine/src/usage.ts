@@ -2189,7 +2189,7 @@ export async function initDecalDemo(container: HTMLElement, opts?: InitDecalDemo
       meshDragPendingEv = null;
       controls.enabled = true;
       updateOverlay();
-      if (!isActivePlacementBlocked) emitDecalState();
+      if (!isActivePlacementBlocked) emitDecalState({ historyCommit: true });
     };
     el.addEventListener("pointerup", _commitMeshDrag);
     el.addEventListener("pointerleave", _commitMeshDrag);
@@ -2282,7 +2282,7 @@ export async function initDecalDemo(container: HTMLElement, opts?: InitDecalDemo
     (ev.target as Element).releasePointerCapture?.(ev.pointerId);
     detachWindowDragListeners();
     updateOverlay();
-    if (!isActivePlacementBlocked) emitDecalState();
+    if (!isActivePlacementBlocked) emitDecalState({ historyCommit: true });
   }
 
   const overlayRay = new THREE.Raycaster();
@@ -2753,7 +2753,7 @@ export async function initDecalDemo(container: HTMLElement, opts?: InitDecalDemo
     });
   }
 
-  function collectDecalState() {
+  function collectDecalState(options?: { historyCommit?: boolean }) {
     const minDecalAreaCm2 = 5;
 
     return Array.from(decals.values()).map((record) => ({
@@ -2818,11 +2818,12 @@ export async function initDecalDemo(container: HTMLElement, opts?: InitDecalDemo
       height: record.height,
       depth: record.depth,
       angle: record.angle,
+      historyCommit: options?.historyCommit,
     }));
   }
 
-  function emitDecalState() {
-    notifyListeners(collectDecalState());
+  function emitDecalState(options?: { historyCommit?: boolean }) {
+    notifyListeners(collectDecalState(options));
   }
 
   // Exemplo: chame notifyListeners sempre que decals mudarem
