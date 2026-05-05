@@ -34,6 +34,7 @@ import { Wrench, Sparkles } from "lucide-react";
 import FontPicker from "../components/FontPicker";
 import { FONT_LIBRARY } from "../fonts/library";
 import { generateCreativeName } from "../lib/creativeNames";
+import { DEFAULT_PRODUCT_COLOR_OPTIONS, normalizeHexColor } from "../lib/productColors";
 
 import type { BrushVariant, Editor2DHandle } from "./Editor2D";
 import ShapeEffectsPanel from "./ShapeEffectsPanel";
@@ -609,6 +610,7 @@ function SettingsContent(props: {
 }) {
   const { projectId, projectName, setProjectName, baseColor, setBaseColor, size, setSize, fabric, setFabric, fabricLocked, tabPrintTypes, setTabPrintType, visibleTabs } = props;
   const placeholderName = generateCreativeName(projectId ?? undefined);
+  const availableBaseColors = useMemo(() => [...DEFAULT_PRODUCT_COLOR_OPTIONS], []);
 
   const [dbMaterials, setDbMaterials] = useState<{ id: string; name: string }[]>([]);
   const [dbPrintingMethods, setDbPrintingMethods] = useState<{ id: string; name: string; sort_order: number | null }[]>([]);
@@ -673,6 +675,12 @@ function SettingsContent(props: {
     // eslint-disable-next-line react-hooks/exhaustive-deps
     }, [allowedMethodsKey, visibleTabsKey]);
 
+    useEffect(() => {
+      const normalizedBase = normalizeHexColor(baseColor);
+      if (normalizedBase && availableBaseColors.includes(normalizedBase)) return;
+      setBaseColor(availableBaseColors[0]);
+    }, [baseColor, availableBaseColors, setBaseColor]);
+
     return (
     <div className="space-y-4">
       <h3 className="text-lg font-semibold text-gray-800 dark:text-gray-100">Configurações</h3>
@@ -682,10 +690,26 @@ function SettingsContent(props: {
       </div>
       <div>
         <Label htmlFor="base-color">Cor base</Label>
-        <div className="flex items-center gap-2">
-          <Input id="base-color" value={baseColor} onChange={(e) => setBaseColor(e.target.value)} placeholder="#ffffff" />
-          <input type="color" value={baseColor} onChange={(e) => setBaseColor(e.target.value)} className="h-10 w-10 p-0 border rounded" aria-label="Selecionar cor base" />
+        <div id="base-color" className="mt-2 grid grid-cols-4 gap-2">
+          {availableBaseColors.map((color) => {
+            const isSelected = normalizeHexColor(baseColor) === color;
+            return (
+              <button
+                key={color}
+                type="button"
+                onClick={() => setBaseColor(color)}
+                className={[
+                  "h-10 rounded border transition-all",
+                  isSelected ? "border-black ring-2 ring-black/30" : "border-gray-300 hover:border-gray-500",
+                ].join(" ")}
+                style={{ backgroundColor: color }}
+                aria-label={`Selecionar cor ${color}`}
+                title={color}
+              />
+            );
+          })}
         </div>
+        <p className="mt-2 text-xs text-muted-foreground">Cor selecionada: {normalizeHexColor(baseColor) ?? availableBaseColors[0]}</p>
       </div>
       <div className="grid grid-cols-2 gap-2">
         <div>

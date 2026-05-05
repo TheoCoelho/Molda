@@ -24,6 +24,7 @@ export type ExternalDecalPayload = {
 export type DecalDemoHandle = {
   upsertExternalDecal: (payload: ExternalDecalPayload) => void;
   removeExternalDecal: (id: string) => void;
+  setBaseColor: (color: string) => void;
   activateZoneTool: (options?: { behavior?: "block" | "constrain"; name?: string }) => void;
   deactivateZoneTool: () => void;
   clearConstrainZones: () => void;
@@ -91,6 +92,7 @@ export type DecalZone = SphereDecalZone | StrokeDecalZone | RectDecalZone;
 export type InitDecalDemoOptions = {
   interactive?: boolean;
   background?: THREE.ColorRepresentation | null;
+  baseColor?: string;
   gizmoTheme?: Partial<GizmoTheme>;
   model?: string;
   hideMenu?: boolean;
@@ -273,6 +275,31 @@ export async function initDecalDemo(container: HTMLElement, opts?: InitDecalDemo
   let modelBounds: THREE.Box3 | null = null;
   let projector: ProjectorLike | null = null;
   const textureLoader = new THREE.TextureLoader();
+  let currentModelBaseColor = new THREE.Color(opts?.baseColor || "#ffffff");
+
+  const setModelBaseColor = (color: string) => {
+    const nextColor = new THREE.Color(color || "#ffffff");
+    currentModelBaseColor = nextColor;
+    if (!root) return;
+    root.traverse((node) => {
+      if (!(node instanceof THREE.Mesh)) return;
+      if ((node.userData as Record<string, unknown>).__decalId) return;
+
+      const applyColor = (material: THREE.Material) => {
+        if (!("color" in material)) return;
+        const colorProp = (material as THREE.MeshStandardMaterial).color;
+        if (!colorProp || !(colorProp instanceof THREE.Color)) return;
+        colorProp.copy(nextColor);
+        material.needsUpdate = true;
+      };
+
+      if (Array.isArray(node.material)) {
+        node.material.forEach(applyColor);
+      } else {
+        applyColor(node.material);
+      }
+    });
+  };
 
   type GalleryItem = {
     id: string;
@@ -2615,6 +2642,7 @@ export async function initDecalDemo(container: HTMLElement, opts?: InitDecalDemo
         weldTolerance: 1e-4,
         recomputeNormals: "smooth",
       });
+      setModelBaseColor(currentModelBaseColor.getStyle());
       console.log("✅ [Decal Engine] Meshes preparados");
       normalizeModelScale(root);
       centerOnGrid(root);
@@ -2866,6 +2894,7 @@ export async function initDecalDemo(container: HTMLElement, opts?: InitDecalDemo
   return {
     upsertExternalDecal: upsertExternalDecalWithNotify,
     removeExternalDecal: removeExternalDecalWithNotify,
+    setBaseColor: (color: string) => setModelBaseColor(color),
     activateZoneTool: (options?: { behavior?: "block" | "constrain"; name?: string }) => {
       zoneToolActive = true;
       zoneToolBehavior = options?.behavior ?? "constrain";
