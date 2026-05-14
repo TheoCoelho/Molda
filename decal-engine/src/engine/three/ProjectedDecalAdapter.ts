@@ -41,10 +41,10 @@ export default class ProjectedDecalAdapter {
     const minFacing =
       typeof opts?.normalAlignmentMin === "number" ? opts.normalAlignmentMin : -0.3;
     this.projected = new ProjectedTextureDecal(texture, {
-      depth: 50, // Profundidade grande para atravessar o objeto
+      depth: 10, // Profundidade pequena: pega apenas superfície imediata, evita distorção
       opacity: 1.0,
-      feather: 0.02,
-      minFacing: 0.0, // Renderiza apenas faces voltadas para o projetor, evita aparição no lado oposto
+      feather: 0.05, // Feather suave nas bordas
+      minFacing: 0.3, // Aceita apenas faces bem alinhadas com o projetor (mantém formato)
     });
   }
 
@@ -236,10 +236,10 @@ export default class ProjectedDecalAdapter {
       this.projected.dispose();
     }
     this.projected = new ProjectedTextureDecal(this.texture, {
-      depth: 200,
+      depth: 10, // Profundidade pequena: pega apenas superfície imediata
       opacity: 1.0,
-      feather: 0.02,
-      minFacing: 0.0, // Renderiza apenas faces voltadas para o projetor
+      feather: 0.05,
+      minFacing: 0.3, // Aceita apenas faces bem alinhadas (evita distorção)
     });
 
     // Encontra o mesh alvo
@@ -252,7 +252,7 @@ export default class ProjectedDecalAdapter {
       return;
     }
 
-    const size = { width, height, depth: Math.max(depth, 50) };
+    const size = { width, height, depth: Math.max(depth, 10) };
     this.mesh = this.projected.build(target, position, normal, size, angleRad);
 
     // Adiciona o novo mesh à cena se não tiver parent
