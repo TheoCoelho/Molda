@@ -24,19 +24,82 @@ export type ExternalDecalPayload = {
 export type DecalDemoHandle = {
   upsertExternalDecal: (payload: ExternalDecalPayload) => void;
   removeExternalDecal: (id: string) => void;
+  setBaseColor: (color: string) => void;
+  activateZoneTool: (options?: { behavior?: "block" | "constrain"; name?: string }) => void;
+  deactivateZoneTool: () => void;
+  clearConstrainZones: () => void;
   subscribe: (listener: (state: any) => void) => () => void;
   destroy: () => void;
 };
 
 
+/** Define uma zona de restrição na superfície do modelo 3D. */
+type SphereDecalZone = {
+  kind?: "sphere";
+  /** Nome legível da zona (para debug/logs). Ex: "collar", "shoulder-seam". */
+  name: string;
+  /** Centro da zona em espaço de mundo [x, y, z]. */
+  center: [number, number, number];
+  /** Normal da superfície no ponto marcado (opcional). */
+  normal?: [number, number, number];
+  /** Raio da esfera de influência da zona (em unidades de mundo). */
+  radius: number;
+  /**
+   * Comportamento quando um decal é colocado dentro desta zona:
+   * - "block": decal não aparece nesta área.
+   * - "constrain": decal é escalado proporcionalmente para caber (usa maxDecalSize).
+   */
+  behavior: "block" | "constrain";
+  /**
+   * Apenas para behavior="constrain": dimensão máxima permitida (largura E altura)
+   * do decal em unidades de mundo. Decals maiores são reduzidos proporcionalmente.
+   */
+  maxDecalSize?: number;
+};
+
+type StrokeDecalZone = {
+  kind: "stroke";
+  name: string;
+  points: [number, number, number][];
+  normals?: [number, number, number][];
+  width: number;
+  behavior: "block" | "constrain";
+  maxDecalSize?: number;
+};
+
+type RectDecalZone = {
+  kind: "rect";
+  /** Nome legível da zona. */
+  name: string;
+  /** Centro da zona em espaço de mundo [x, y, z]. */
+  center: [number, number, number];
+  /** Normal da superfície no ponto marcado. */
+  normal: [number, number, number];
+  /** Largura do quadrilátero (eixo direito da câmera). */
+  width: number;
+  /** Altura do quadrilátero (eixo cima da câmera). */
+  height: number;
+  behavior: "block" | "constrain";
+  /**
+   * Apenas para behavior="constrain": dimensão máxima permitida.
+   * Se omitido, usa min(width, height).
+   */
+  maxDecalSize?: number;
+};
+
+export type DecalZone = SphereDecalZone | StrokeDecalZone | RectDecalZone;
+
 export type InitDecalDemoOptions = {
   interactive?: boolean;
   background?: THREE.ColorRepresentation | null;
+  baseColor?: string;
   gizmoTheme?: Partial<GizmoTheme>;
   model?: string;
   hideMenu?: boolean;
   /** Multiplier for camera distance (lower = closer). Defaults to 1.0 (normal) or 0.55 when non-interactive. */
   zoomMultiplier?: number;
+  /** Zonas de restrição para posicionamento de decals no modelo carregado. */
+  decalZones?: DecalZone[];
   /** Force decal mode (mesh = DecalGeometry, projected = shader projection). */
   decalMode?: "mesh" | "projected";
   /** Lock decal aspect ratio to the source texture. */
@@ -218,6 +281,31 @@ export async function initDecalDemo(container: HTMLElement, opts?: InitDecalDemo
   let modelBounds: THREE.Box3 | null = null;
   let projector: ProjectorLike | null = null;
   const textureLoader = new THREE.TextureLoader();
+  let currentModelBaseColor = new THREE.Color(opts?.baseColor || "#ffffff");
+
+  const setModelBaseColor = (color: string) => {
+    const nextColor = new THREE.Color(color || "#ffffff");
+    currentModelBaseColor = nextColor;
+    if (!root) return;
+    root.traverse((node) => {
+      if (!(node instanceof THREE.Mesh)) return;
+      if ((node.userData as Record<string, unknown>).__decalId) return;
+
+      const applyColor = (material: THREE.Material) => {
+        if (!("color" in material)) return;
+        const colorProp = (material as THREE.MeshStandardMaterial).color;
+        if (!colorProp || !(colorProp instanceof THREE.Color)) return;
+        colorProp.copy(nextColor);
+        material.needsUpdate = true;
+      };
+
+      if (Array.isArray(node.material)) {
+        node.material.forEach(applyColor);
+      } else {
+        applyColor(node.material);
+      }
+    });
+  };
 
   type GalleryItem = {
     id: string;
@@ -326,6 +414,324 @@ export async function initDecalDemo(container: HTMLElement, opts?: InitDecalDemo
   // Flag para indicar se estamos usando modelo com projeção especial (block shape abstract)
   let useProjectedDecal = false;
 
+  // ---- Zonas de restrição de decal ----
+  const activeDecalZones: DecalZone[] = opts?.decalZones ? [...opts.decalZones] : [];
+  const _zoneVec = new THREE.Vector3();
+  const _zoneRel = new THREE.Vector3();
+  const _zoneRight = new THREE.Vector3();
+  const _zoneUp = new THREE.Vector3();
+  const _zoneNormal = new THREE.Vector3();
+  const _zoneRef = new THREE.Vector3();
+  const _zoneRotRight = new THREE.Vector3();
+  const _zoneRotUp = new THREE.Vector3();
+
+  type ZonePrimitive = {
+    behavior: "block" | "constrain";
+    zoneName: string;
+    maxDecalSize?: number;
+    center: THREE.Vector3;
+    radius: number;
+    normal?: THREE.Vector3;
+    /** Rect zone fields — when set, uses AABB test instead of sphere. */
+    isRect?: boolean;
+    rectWidth?: number;
+    rectHeight?: number;
+  };
+
+  const zoneBlockPrimitives: ZonePrimitive[] = [];
+  const zoneConstrainPrimitives: ZonePrimitive[] = [];
+
+  const pushZonePrimitive = (primitive: ZonePrimitive) => {
+    if (primitive.behavior === "block") {
+      zoneBlockPrimitives.push(primitive);
+      return;
+    }
+    zoneConstrainPrimitives.push(primitive);
+  };
+
+  const buildZonePrimitives = () => {
+    zoneBlockPrimitives.length = 0;
+    zoneConstrainPrimitives.length = 0;
+    if (!activeDecalZones.length) return;
+
+    for (const zone of activeDecalZones) {
+      if (zone.kind === "rect") {
+        const zoneNormal = new THREE.Vector3(zone.normal[0], zone.normal[1], zone.normal[2]).normalize();
+        const maxSize = typeof zone.maxDecalSize === "number" ? zone.maxDecalSize : Math.min(zone.width, zone.height);
+        pushZonePrimitive({
+          behavior: zone.behavior,
+          zoneName: zone.name,
+          maxDecalSize: maxSize,
+          center: new THREE.Vector3(zone.center[0], zone.center[1], zone.center[2]),
+          radius: Math.max(zone.width, zone.height) * 0.5,
+          normal: zoneNormal,
+          isRect: true,
+          rectWidth: zone.width,
+          rectHeight: zone.height,
+        });
+        continue;
+      }
+
+      if (zone.kind !== "stroke") {
+        // SphereDecalZone (legacy)
+        const zoneNormal = Array.isArray(zone.normal) && zone.normal.length === 3
+          ? new THREE.Vector3(zone.normal[0], zone.normal[1], zone.normal[2]).normalize()
+          : undefined;
+        pushZonePrimitive({
+          behavior: zone.behavior,
+          zoneName: zone.name,
+          maxDecalSize: zone.maxDecalSize,
+          center: new THREE.Vector3(zone.center[0], zone.center[1], zone.center[2]),
+          radius: Math.max(0.005, zone.radius),
+          normal: zoneNormal,
+        });
+        continue;
+      }
+
+      const points = zone.points ?? [];
+      if (!points.length) continue;
+
+      // Converte stroke em uma cadeia de "micro-esferas" para interseção geométrica estável.
+      const capsuleRadius = Math.max(0.005, zone.width * 0.5);
+      const step = Math.max(0.01, capsuleRadius * 0.6);
+      const normals = zone.normals ?? [];
+
+      const normalAt = (index: number) => {
+        const arr = normals[index];
+        if (!arr || arr.length !== 3) return undefined;
+        const n = new THREE.Vector3(arr[0], arr[1], arr[2]);
+        if (n.lengthSq() < 1e-8) return undefined;
+        return n.normalize();
+      };
+
+      const pushPoint = (x: number, y: number, z: number, normal?: THREE.Vector3) => {
+        pushZonePrimitive({
+          behavior: zone.behavior,
+          zoneName: zone.name,
+          maxDecalSize: zone.maxDecalSize,
+          center: new THREE.Vector3(x, y, z),
+          radius: capsuleRadius,
+          normal: normal ? normal.clone() : undefined,
+        });
+      };
+
+      if (points.length === 1) {
+        pushPoint(points[0][0], points[0][1], points[0][2], normalAt(0));
+        continue;
+      }
+
+      for (let i = 0; i < points.length - 1; i++) {
+        const a = points[i];
+        const b = points[i + 1];
+        const ax = a[0], ay = a[1], az = a[2];
+        const bx = b[0], by = b[1], bz = b[2];
+        const dx = bx - ax;
+        const dy = by - ay;
+        const dz = bz - az;
+        const segLen = Math.sqrt(dx * dx + dy * dy + dz * dz);
+        const segments = Math.max(1, Math.ceil(segLen / step));
+        const nA = normalAt(i);
+        const nB = normalAt(i + 1);
+        for (let s = 0; s <= segments; s++) {
+          const t = s / segments;
+          let sampledNormal: THREE.Vector3 | undefined;
+          if (nA && nB) {
+            sampledNormal = nA.clone().lerp(nB, t);
+            if (sampledNormal.lengthSq() > 1e-8) sampledNormal.normalize();
+          } else {
+            sampledNormal = nA ? nA.clone() : nB ? nB.clone() : undefined;
+          }
+          pushPoint(ax + dx * t, ay + dy * t, az + dz * t, sampledNormal);
+        }
+      }
+    }
+  };
+
+  buildZonePrimitives();
+
+  const computeDecalBasis = (normal: THREE.Vector3, angleRad: number) => {
+    _zoneNormal.copy(normal);
+    if (_zoneNormal.lengthSq() < 1e-8) {
+      _zoneNormal.set(0, 0, 1);
+    } else {
+      _zoneNormal.normalize();
+    }
+
+    if (Math.abs(_zoneNormal.y) < 0.98) {
+      _zoneRef.set(0, 1, 0);
+    } else {
+      _zoneRef.set(1, 0, 0);
+    }
+
+    _zoneRight.copy(_zoneRef).cross(_zoneNormal);
+    if (_zoneRight.lengthSq() < 1e-8) {
+      _zoneRef.set(0, 0, 1);
+      _zoneRight.copy(_zoneRef).cross(_zoneNormal);
+    }
+    _zoneRight.normalize();
+    _zoneUp.copy(_zoneNormal).cross(_zoneRight).normalize();
+
+    if (Math.abs(angleRad) > 1e-8) {
+      const c = Math.cos(angleRad);
+      const s = Math.sin(angleRad);
+      _zoneRotRight.copy(_zoneRight).multiplyScalar(c).addScaledVector(_zoneUp, s);
+      _zoneRotUp.copy(_zoneUp).multiplyScalar(c).addScaledVector(_zoneRight, -s);
+      _zoneRight.copy(_zoneRotRight);
+      _zoneUp.copy(_zoneRotUp);
+    }
+  };
+
+  const doesPrimitiveAffectDecal = (
+    primitive: ZonePrimitive,
+    center: THREE.Vector3,
+    width: number,
+    height: number,
+    normal: THREE.Vector3,
+    angleRad: number
+  ) => {
+    const halfW = Math.max(0, width * 0.5);
+    const halfH = Math.max(0, height * 0.5);
+    if (halfW < 1e-8 && halfH < 1e-8) return false;
+
+    computeDecalBasis(normal, angleRad);
+
+    _zoneRel.copy(primitive.center).sub(center);
+    const localX = _zoneRel.dot(_zoneRight);
+    const localY = _zoneRel.dot(_zoneUp);
+    const localZ = _zoneRel.dot(_zoneNormal);
+
+    const clampedX = THREE.MathUtils.clamp(localX, -halfW, halfW);
+    const clampedY = THREE.MathUtils.clamp(localY, -halfH, halfH);
+
+    const dx = localX - clampedX;
+    const dy = localY - clampedY;
+
+    // Zona retangular: usa teste AABB no espaço local da superfície.
+    if (primitive.isRect && typeof primitive.rectWidth === "number" && typeof primitive.rectHeight === "number") {
+      const surfaceBand = 0.03;
+      if (Math.abs(localZ) > surfaceBand) return false;
+      if (primitive.normal) {
+        const align = primitive.normal.dot(normal);
+        if (align < 0.1) return false;
+      }
+      // Decal está na zona quando seu centro é coberto pelo retângulo da zona.
+      const halfRW = primitive.rectWidth * 0.5;
+      const halfRH = primitive.rectHeight * 0.5;
+      return Math.abs(localX) <= halfRW && Math.abs(localY) <= halfRH;
+    }
+
+    // Se a zona tem normal, bloqueia só na camada de superfície (disco no plano local).
+    if (primitive.normal) {
+      const surfaceBand = 0.02;
+      if (Math.abs(localZ) > surfaceBand) return false;
+      const align = primitive.normal.dot(normal);
+      if (align < 0.15) return false;
+      const dist2dSq = dx * dx + dy * dy;
+      return dist2dSq <= primitive.radius * primitive.radius;
+    }
+
+    // Fallback legado: caso não exista normal, ainda considera pequena espessura.
+    const normalTolerance = 0.015;
+    const dz = Math.max(0, Math.abs(localZ) - normalTolerance);
+    const distSq = dx * dx + dy * dy + dz * dz;
+    return distSq <= primitive.radius * primitive.radius;
+  };
+  /**
+   * Checa se uma posição cai dentro de alguma zona de restrição.
+   * - "block": retorna blocked=true → decal não deve ser criado.
+   * - "constrain": retorna width/height reduzidos proporcionalmente ao maxDecalSize da zona.
+   * Retorna os valores possivelmente ajustados de width/height e a flag blocked.
+   */
+  function checkDecalZones(
+    position: THREE.Vector3,
+    width: number,
+    height: number,
+    normal: THREE.Vector3,
+    angleRad = 0,
+    silent = false
+  ): { blocked: boolean; width: number; height: number; zoneName?: string } {
+    if (!zoneBlockPrimitives.length && !zoneConstrainPrimitives.length) {
+      return { blocked: false, width, height };
+    }
+
+    // Bloqueio sempre usa dimensão original: se tocar zona block em qualquer ponto, cancela.
+    for (const primitive of zoneBlockPrimitives) {
+      if (!doesPrimitiveAffectDecal(primitive, position, width, height, normal, angleRad)) continue;
+      if (!silent) {
+        console.log(`[DecalZone] Block zone "${primitive.zoneName}" — decal bloqueado em`, position.toArray());
+      }
+      return { blocked: true, width, height, zoneName: primitive.zoneName };
+    }
+
+    let constrainedWidth = width;
+    let constrainedHeight = height;
+    let constrainedBy: string | undefined;
+    let constrainedScale = 1;
+
+    for (const primitive of zoneConstrainPrimitives) {
+      if (!doesPrimitiveAffectDecal(primitive, position, constrainedWidth, constrainedHeight, normal, angleRad)) continue;
+
+      {
+        // Para zonas de esfera e stroke: usa sempre o diâmetro da zona (radius * 2) como limite.
+        // Para zonas rect (zone tool): usa maxDecalSize que é min(width, height) do rect.
+        const maxSize = primitive.isRect
+          ? (typeof primitive.maxDecalSize === "number"
+              ? primitive.maxDecalSize
+              : Math.min(primitive.rectWidth ?? primitive.radius * 2, primitive.rectHeight ?? primitive.radius * 2))
+          : primitive.radius * 2;
+        const largest = Math.max(constrainedWidth, constrainedHeight);
+        if (largest > maxSize) {
+          const scale = maxSize / largest;
+          if (scale < constrainedScale) {
+            constrainedScale = scale;
+            constrainedWidth = constrainedWidth * scale;
+            constrainedHeight = constrainedHeight * scale;
+            constrainedBy = primitive.zoneName;
+          }
+        }
+      }
+    }
+    if (constrainedBy) {
+      if (!silent) {
+        console.log(`[DecalZone] Constrain zone "${constrainedBy}" — escala ${(constrainedScale * 100).toFixed(0)}%`);
+      }
+    }
+    return { blocked: false, width: constrainedWidth, height: constrainedHeight, zoneName: constrainedBy };
+  }
+
+  function findNearestAllowedPlacement(
+    center: THREE.Vector3,
+    normal: THREE.Vector3,
+    width: number,
+    height: number,
+    angleRad: number
+  ): { center: THREE.Vector3; width: number; height: number } | null {
+    const direct = checkDecalZones(center, width, height, normal, angleRad);
+    if (!direct.blocked) {
+      return { center: center.clone(), width: direct.width, height: direct.height };
+    }
+
+    const tryPoint = (candidate: THREE.Vector3) => {
+      const result = checkDecalZones(candidate, width, height, normal, angleRad);
+      if (result.blocked) return null;
+      return { center: candidate.clone(), width: result.width, height: result.height };
+    };
+
+    const baseStep = Math.max(0.06, Math.max(width, height) * 0.4);
+    const maxRadius = 2.2;
+    for (let radius = baseStep; radius <= maxRadius; radius += baseStep) {
+      const samples = Math.max(12, Math.ceil((Math.PI * 2 * radius) / Math.max(baseStep * 0.7, 0.04)));
+      for (let i = 0; i < samples; i++) {
+        const a = (i / samples) * Math.PI * 2;
+        const candidate = center.clone().add(new THREE.Vector3(Math.cos(a) * radius, Math.sin(a) * radius, 0));
+        const allowed = tryPoint(candidate);
+        if (allowed) return allowed;
+      }
+    }
+
+    return null;
+  }
+
   const decalRaycaster = new THREE.Raycaster();
 
   // Ajustes voltados para reduzir deformação em relevos (curvatura alta):
@@ -335,9 +741,9 @@ export async function initDecalDemo(container: HTMLElement, opts?: InitDecalDemo
   // - limites de shear/skew (reduz estiramento)
   const baseProjectorOptions = {
     // Mais permissivo para reduzir “cortes”, mas ainda limita deformação em relevos.
-    angleClampDeg: 88,
-    depthFromSizeScale: 0.25,
-    maxDepthScale: 0.6,
+    angleClampDeg: 86,
+    depthFromSizeScale: 0.25, // Aumentado de 0.2: base de profundidade maior para acompanhar curvatura
+    maxDepthScale: 0.45,
 
     frontOnly: true,
     // Evita sumir partes do decal em dobras/curvas (o filtro de zBand já ajuda a não pegar o verso)
@@ -359,8 +765,8 @@ export async function initDecalDemo(container: HTMLElement, opts?: InitDecalDemo
     maxDepthSkew: 0.75,
 
     adaptiveDepth: true,
-    adaptiveDepthStrength: 0.8,
-    adaptiveDepthMinScale: 0.35,
+    adaptiveDepthStrength: 0.35, // Reduzido de 0.7: menos agressivo na redução de profundidade por curvatura
+    adaptiveDepthMinScale: 0.55, // Aumentado de 0.4: garante profundidade suficiente em superfícies curvas
   };
 
   let projectorOptions = { ...baseProjectorOptions };
@@ -484,6 +890,19 @@ export async function initDecalDemo(container: HTMLElement, opts?: InitDecalDemo
         height = locked.height;
       }
 
+      // Verifica zonas antes de criar; se bloqueado no ponto inicial, busca ponto livre próximo.
+      const allowedPlacement = findNearestAllowedPlacement(center, normal, width, height, angle);
+      if (!allowedPlacement) {
+        pendingExternalDecals.delete(item.id);
+        renderGallery();
+        emitDecalState();
+        return;
+      }
+      center.copy(allowedPlacement.center);
+      width = allowedPlacement.width;
+      height = allowedPlacement.height;
+      depth = computeBaseDepth(width, height);
+
       // Escolhe o adaptador baseado no tipo de modelo
       let adapter: ProjectorLike;
       if (useProjectedDecal) {
@@ -579,6 +998,13 @@ export async function initDecalDemo(container: HTMLElement, opts?: InitDecalDemo
     ensureTexture(item, (texture) => {
       const record = decals.get(id);
       if (record) {
+        const prevCenter = record.center.clone();
+        const prevNormal = record.normal.clone();
+        const prevWidth = record.width;
+        const prevHeight = record.height;
+        const prevDepth = record.depth;
+        const prevAngle = record.angle;
+
         record.texture = texture;
         record.aspect = getTextureAspect(texture);
         record.locked = !!payload.locked;
@@ -596,16 +1022,39 @@ export async function initDecalDemo(container: HTMLElement, opts?: InitDecalDemo
         if (typeof payload.angle === "number") record.angle = payload.angle;
         if (payload.position) record.center.set(payload.position.x, payload.position.y, payload.position.z);
         if (payload.normal) record.normal.set(payload.normal.x, payload.normal.y, payload.normal.z).normalize();
+
+        // Zona bloqueada: preserva último estado válido em vez de remover o decal.
+        // Zona de restrição (constrain): reduz as dimensões ao tamanho máximo permitido.
+        const zoneResult = checkDecalZones(record.center, record.width, record.height, record.normal, record.angle);
+        if (zoneResult.blocked) {
+          record.center.copy(prevCenter);
+          record.normal.copy(prevNormal);
+          record.width = prevWidth;
+          record.height = prevHeight;
+          record.depth = prevDepth;
+          record.angle = prevAngle;
+        } else {
+          // Aplica dimensões constrangidas pela zona (no-op se nenhuma zona constrain afetou).
+          record.width = zoneResult.width;
+          record.height = zoneResult.height;
+          record.depth = computeBaseDepth(record.width, record.height);
+        }
         record.projector.updateTexture?.(texture);
-        applyScaledTransform(
-          record.projector,
-          record.center,
-          record.normal,
-          record.width,
-          record.height,
-          record.depth,
-          record.angle
-        );
+        // Se este decal é o decal ativo e está sendo arrastado, o drag handler
+        // controla exclusivamente o transform — não sobrescrever para evitar
+        // oscilação do preview (expand/contract) durante movimentação.
+        const isActiveDragTarget = id === activeDecalId && (draggingMesh || dragMode !== null);
+        if (!isActiveDragTarget) {
+          applyScaledTransform(
+            record.projector,
+            record.center,
+            record.normal,
+            record.width,
+            record.height,
+            record.depth,
+            record.angle
+          );
+        }
         if (record.locked) {
           galleryState.selectedIds.delete(id);
           if (activeDecalId === id) setActiveDecal(null);
@@ -681,6 +1130,7 @@ export async function initDecalDemo(container: HTMLElement, opts?: InitDecalDemo
   }
 
   function syncActiveDecalTransform() {
+    if (isActivePlacementBlocked) return;
     if (!activeDecalId) return;
     const record = decals.get(activeDecalId);
     if (!record) return;
@@ -1013,6 +1463,34 @@ export async function initDecalDemo(container: HTMLElement, opts?: InitDecalDemo
   let decalAngle = 0;
   let decalCenter = new THREE.Vector3();
   let decalNormal = new THREE.Vector3(0, 0, 1);
+  let isActivePlacementBlocked = false;
+  /** true quando o decal ativo está sobre uma zona de constrain (indica gizmo amarelo). */
+  let isActivePlacementConstrained = false;
+
+  // ---- Ferramenta de zona de restrição (zone placement tool) ----
+  let zoneToolActive = false;
+  let zoneToolBehavior: "block" | "constrain" = "constrain";
+  let zoneToolNamePrefix = "zone";
+  let zoneToolCounter = 0;
+  let zoneGizmoVisible = false;
+  let zoneGizmoCenter = new THREE.Vector3();
+  let zoneGizmoNormal = new THREE.Vector3(0, 0, 1);
+  let zoneGizmoWidth = 0.3;
+  let zoneGizmoHeight = 0.3;
+  let lastZoneScreenQuad: THREE.Vector2[] = [];
+
+  type ZoneDragMode = "move" | "scale-tl" | "scale-tr" | "scale-br" | "scale-bl" | "scale-tm" | "scale-bm" | "scale-ml" | "scale-mr" | null;
+  let zoneDragMode: ZoneDragMode = null;
+  let zoneDragPlane: THREE.Plane | null = null;
+  let zoneStartCenter = new THREE.Vector3();
+  let zoneStartNormal = new THREE.Vector3(0, 0, 1);
+  let zoneStartWidth = 0;
+  let zoneStartHeight = 0;
+  let zoneStartHandleLocal = new THREE.Vector2();
+  let zoneWindowDragListenersAttached = false;
+
+  type CommittedZoneVisual = { name: string; mesh: THREE.Mesh; };
+  const committedZoneVisuals: CommittedZoneVisual[] = [];
   let decalAspect = 1;
 
   // ---- seleção do gizmo ----
@@ -1260,6 +1738,48 @@ export async function initDecalDemo(container: HTMLElement, opts?: InitDecalDemo
   rotLine.setAttribute("stroke-width", "2");
   overlay.appendChild(rotLine);
 
+  // ---- Zone gizmo SVG elements (ferramenta de zona) ----
+  const ZONE_GIZMO_COLOR_CONSTRAIN = "#f59e0b";
+  const ZONE_GIZMO_COLOR_BLOCK = "#ef4444";
+
+  const zoneBoxPoly = document.createElementNS(svgNS, "polyline");
+  zoneBoxPoly.setAttribute("fill", "rgba(245,158,11,0.12)");
+  zoneBoxPoly.setAttribute("stroke", ZONE_GIZMO_COLOR_CONSTRAIN);
+  zoneBoxPoly.setAttribute("stroke-width", "2");
+  zoneBoxPoly.setAttribute("stroke-dasharray", "8 5");
+  zoneBoxPoly.style.pointerEvents = "auto";
+  zoneBoxPoly.style.cursor = "move";
+  zoneBoxPoly.style.display = "none";
+  overlay.appendChild(zoneBoxPoly);
+
+  function makeZoneHandle() {
+    const h = document.createElementNS(svgNS, "circle");
+    h.setAttribute("r", String(theme.handleRadius));
+    h.setAttribute("fill", ZONE_GIZMO_COLOR_CONSTRAIN);
+    h.setAttribute("stroke", "#fff");
+    h.setAttribute("stroke-width", "2");
+    h.style.pointerEvents = "auto";
+    h.style.cursor = "pointer";
+    h.style.display = "none";
+    overlay.appendChild(h);
+    return h;
+  }
+
+  const zoneHandles: Record<string, SVGCircleElement> = {
+    tl: makeZoneHandle(), tm: makeZoneHandle(), tr: makeZoneHandle(),
+    ml: makeZoneHandle(), mr: makeZoneHandle(),
+    bl: makeZoneHandle(), bm: makeZoneHandle(), br: makeZoneHandle(),
+  };
+
+  const zoneSizeText = document.createElementNS(svgNS, "text");
+  zoneSizeText.setAttribute("fill", ZONE_GIZMO_COLOR_CONSTRAIN);
+  zoneSizeText.setAttribute("font-size", "11");
+  zoneSizeText.setAttribute("font-family", "Inter, system-ui, sans-serif");
+  zoneSizeText.setAttribute("text-anchor", "middle");
+  zoneSizeText.style.pointerEvents = "none";
+  zoneSizeText.style.display = "none";
+  overlay.appendChild(zoneSizeText);
+
   function setHandlePos(h: SVGCircleElement, x: number, y: number) {
     h.setAttribute("cx", String(x));
     h.setAttribute("cy", String(y));
@@ -1276,6 +1796,17 @@ export async function initDecalDemo(container: HTMLElement, opts?: InitDecalDemo
 
   function showOverlay(v: boolean) {
     overlay.style.display = isInteractive && v ? "block" : "none";
+  }
+
+  function refreshActivePlacementValidity(silent = true) {
+    if (!projector || !selected) {
+      isActivePlacementBlocked = false;
+      isActivePlacementConstrained = false;
+      return;
+    }
+    const zoneResult = checkDecalZones(decalCenter, decalWidth, decalHeight, decalNormal, decalAngle, silent);
+    isActivePlacementBlocked = zoneResult.blocked;
+    isActivePlacementConstrained = !zoneResult.blocked && !!zoneResult.zoneName;
   }
 
   // manter os 4 vértices em tela para clique & visibilidade
@@ -1296,6 +1827,16 @@ export async function initDecalDemo(container: HTMLElement, opts?: InitDecalDemo
 
   function updateOverlay() {
     if (!projector || !selected) { showOverlay(false); return; }
+
+    const gizmoPrimary = isActivePlacementBlocked ? "#ef4444" : isActivePlacementConstrained ? "#eab308" : theme.primary;
+    const gizmoFill = isActivePlacementBlocked ? "rgba(239,68,68,0.16)" : isActivePlacementConstrained ? "rgba(234,179,8,0.16)" : theme.areaFill;
+    const gizmoSecondary = isActivePlacementBlocked ? "#f87171" : isActivePlacementConstrained ? "#fde047" : theme.secondary;
+    boxPoly.setAttribute("stroke", gizmoPrimary);
+    boxPoly.setAttribute("fill", gizmoFill);
+    rotLine.setAttribute("stroke", gizmoPrimary);
+    const normalHandles = [handles.tl, handles.tm, handles.tr, handles.ml, handles.mr, handles.bl, handles.bm, handles.br];
+    normalHandles.forEach((h) => h.setAttribute("fill", gizmoPrimary));
+    handles.rot.setAttribute("fill", gizmoSecondary);
 
     const center = decalCenter.clone();
 
@@ -1392,12 +1933,250 @@ export async function initDecalDemo(container: HTMLElement, opts?: InitDecalDemo
     return insideRect && insideDepth;
   }
 
+  // ---- Zone gizmo functions ----
+
+  function showZoneGizmo(v: boolean) {
+    const d = v ? "block" : "none";
+    zoneBoxPoly.style.display = d;
+    Object.values(zoneHandles).forEach((h) => (h.style.display = d));
+    zoneSizeText.style.display = d;
+  }
+
+  function updateZoneGizmo() {
+    if (!zoneGizmoVisible) { showZoneGizmo(false); return; }
+    const { right, up } = cameraBillboardBasis();
+    const hw = zoneGizmoWidth * 0.5;
+    const hh = zoneGizmoHeight * 0.5;
+    const pTL = zoneGizmoCenter.clone().addScaledVector(right, -hw).addScaledVector(up, hh);
+    const pTR = zoneGizmoCenter.clone().addScaledVector(right, hw).addScaledVector(up, hh);
+    const pBR = zoneGizmoCenter.clone().addScaledVector(right, hw).addScaledVector(up, -hh);
+    const pBL = zoneGizmoCenter.clone().addScaledVector(right, -hw).addScaledVector(up, -hh);
+    const sTL = toScreen(pTL), sTR = toScreen(pTR), sBR = toScreen(pBR), sBL = toScreen(pBL);
+    const valid = [sTL, sTR, sBR, sBL].every((v) => Number.isFinite(v.x) && Number.isFinite(v.y));
+    if (!valid) return;
+    lastZoneScreenQuad = [sTL, sTR, sBR, sBL];
+    const zColor = zoneToolBehavior === "block" ? ZONE_GIZMO_COLOR_BLOCK : ZONE_GIZMO_COLOR_CONSTRAIN;
+    const zFill = zoneToolBehavior === "block" ? "rgba(239,68,68,0.12)" : "rgba(245,158,11,0.12)";
+    zoneBoxPoly.setAttribute("stroke", zColor);
+    zoneBoxPoly.setAttribute("fill", zFill);
+    Object.values(zoneHandles).forEach((h) => h.setAttribute("fill", zColor));
+    zoneSizeText.setAttribute("fill", zColor);
+    const pts = [sTL, sTR, sBR, sBL, sTL].map((p) => `${p.x},${p.y}`).join(" ");
+    zoneBoxPoly.setAttribute("points", pts);
+    setHandlePos(zoneHandles.tl, sTL.x, sTL.y);
+    setHandlePos(zoneHandles.tr, sTR.x, sTR.y);
+    setHandlePos(zoneHandles.br, sBR.x, sBR.y);
+    setHandlePos(zoneHandles.bl, sBL.x, sBL.y);
+    setHandlePos(zoneHandles.tm, (sTL.x + sTR.x) / 2, (sTL.y + sTR.y) / 2);
+    setHandlePos(zoneHandles.bm, (sBL.x + sBR.x) / 2, (sBL.y + sBR.y) / 2);
+    setHandlePos(zoneHandles.ml, (sTL.x + sBL.x) / 2, (sTL.y + sBL.y) / 2);
+    setHandlePos(zoneHandles.mr, (sTR.x + sBR.x) / 2, (sTR.y + sBR.y) / 2);
+    showZoneGizmo(true);
+    const labelW = (zoneGizmoWidth * 100).toFixed(0);
+    const labelH = (zoneGizmoHeight * 100).toFixed(0);
+    zoneSizeText.textContent = `${labelW}×${labelH}u`;
+    const labelX = (sTL.x + sTR.x + sBR.x + sBL.x) / 4;
+    const labelY = Math.min(sTL.y, sTR.y) - 14;
+    zoneSizeText.setAttribute("x", String(labelX));
+    zoneSizeText.setAttribute("y", String(labelY));
+  }
+
+  function pointInZoneQuad(screenX: number, screenY: number): boolean {
+    if (lastZoneScreenQuad.length < 4) return false;
+    const p = new THREE.Vector2(screenX, screenY);
+    const quad = lastZoneScreenQuad;
+    function signZ(a: THREE.Vector2, b: THREE.Vector2, c: THREE.Vector2) {
+      return (b.x - a.x) * (c.y - a.y) - (b.y - a.y) * (c.x - a.x);
+    }
+    const s1 = signZ(quad[0], quad[1], p), s2 = signZ(quad[1], quad[2], p);
+    const s3 = signZ(quad[2], quad[3], p), s4 = signZ(quad[3], quad[0], p);
+    const hasNeg = s1 < 0 || s2 < 0 || s3 < 0 || s4 < 0;
+    const hasPos = s1 > 0 || s2 > 0 || s3 > 0 || s4 > 0;
+    return !(hasNeg && hasPos);
+  }
+
+  function createZoneIndicatorMesh(
+    center: THREE.Vector3,
+    normal: THREE.Vector3,
+    width: number,
+    height: number,
+    behavior: "block" | "constrain"
+  ): THREE.Mesh {
+    const sz = 256;
+    const canvas = document.createElement("canvas");
+    canvas.width = sz; canvas.height = sz;
+    const ctx = canvas.getContext("2d")!;
+    const color = behavior === "block" ? "#ef4444" : "#f59e0b";
+    const bg = behavior === "block" ? "rgba(239,68,68,0.10)" : "rgba(245,158,11,0.10)";
+    const inset = 12;
+    ctx.clearRect(0, 0, sz, sz);
+    // Fill
+    ctx.fillStyle = bg;
+    ctx.fillRect(inset, inset, sz - inset * 2, sz - inset * 2);
+    // Dashed border
+    ctx.strokeStyle = color; ctx.lineWidth = 8; ctx.globalAlpha = 0.9;
+    ctx.setLineDash([16, 8]);
+    ctx.strokeRect(inset, inset, sz - inset * 2, sz - inset * 2);
+    ctx.setLineDash([]);
+    // Corner marks
+    const cm = 24;
+    ctx.lineWidth = 6; ctx.globalAlpha = 1.0;
+    const corners: [number, number, number, number][] = [
+      [inset, inset, inset + cm, inset], [inset, inset, inset, inset + cm],
+      [sz - inset, inset, sz - inset - cm, inset], [sz - inset, inset, sz - inset, inset + cm],
+      [inset, sz - inset, inset + cm, sz - inset], [inset, sz - inset, inset, sz - inset - cm],
+      [sz - inset, sz - inset, sz - inset - cm, sz - inset], [sz - inset, sz - inset, sz - inset, sz - inset - cm],
+    ];
+    corners.forEach(([x1, y1, x2, y2]) => {
+      ctx.beginPath(); ctx.moveTo(x1, y1); ctx.lineTo(x2, y2); ctx.stroke();
+    });
+    // Center crosshair
+    ctx.lineWidth = 3; ctx.globalAlpha = 0.4;
+    ctx.beginPath();
+    ctx.moveTo(sz / 2 - 18, sz / 2); ctx.lineTo(sz / 2 + 18, sz / 2);
+    ctx.moveTo(sz / 2, sz / 2 - 18); ctx.lineTo(sz / 2, sz / 2 + 18);
+    ctx.stroke();
+    const texture = new THREE.CanvasTexture(canvas);
+    const geom = new THREE.PlaneGeometry(width, height);
+    const mat = new THREE.MeshBasicMaterial({
+      map: texture, transparent: true, depthWrite: false,
+      side: THREE.DoubleSide, polygonOffset: true,
+      polygonOffsetFactor: -4, polygonOffsetUnits: -4,
+    });
+    const mesh = new THREE.Mesh(geom, mat);
+    const n = normal.clone().normalize();
+    mesh.position.copy(center).addScaledVector(n, 0.006);
+    const tmpUp = Math.abs(n.y) < 0.99 ? new THREE.Vector3(0, 1, 0) : new THREE.Vector3(1, 0, 0);
+    const right = new THREE.Vector3().crossVectors(tmpUp, n).normalize();
+    const corrUp = new THREE.Vector3().crossVectors(n, right).normalize();
+    mesh.quaternion.setFromRotationMatrix(new THREE.Matrix4().makeBasis(right, corrUp, n));
+    scene.add(mesh);
+    return mesh;
+  }
+
+  function commitZone() {
+    if (!zoneGizmoVisible) return;
+    zoneToolCounter++;
+    const name = `${zoneToolNamePrefix}-${zoneToolCounter}`;
+    const zone: DecalZone = {
+      kind: "rect",
+      name,
+      center: [zoneGizmoCenter.x, zoneGizmoCenter.y, zoneGizmoCenter.z],
+      normal: [zoneGizmoNormal.x, zoneGizmoNormal.y, zoneGizmoNormal.z],
+      width: zoneGizmoWidth,
+      height: zoneGizmoHeight,
+      behavior: zoneToolBehavior,
+      maxDecalSize: Math.min(zoneGizmoWidth, zoneGizmoHeight),
+    };
+    activeDecalZones.push(zone);
+    buildZonePrimitives();
+    const indMesh = createZoneIndicatorMesh(
+      zoneGizmoCenter.clone(), zoneGizmoNormal.clone(), zoneGizmoWidth, zoneGizmoHeight, zoneToolBehavior
+    );
+    committedZoneVisuals.push({ name, mesh: indMesh });
+    zoneGizmoVisible = false;
+    showZoneGizmo(false);
+  }
+
+  function discardZone() {
+    zoneGizmoVisible = false;
+    showZoneGizmo(false);
+    zoneDragMode = null;
+    zoneDragPlane = null;
+  }
+
+  function clearAllConstrainZones() {
+    committedZoneVisuals.forEach((v) => {
+      scene.remove(v.mesh);
+      (v.mesh.material as THREE.Material).dispose();
+      v.mesh.geometry.dispose();
+    });
+    committedZoneVisuals.length = 0;
+    activeDecalZones.length = 0;
+    if (opts?.decalZones) activeDecalZones.push(...opts.decalZones);
+    buildZonePrimitives();
+  }
+
+  function startZoneDrag(mode: ZoneDragMode, ev: PointerEvent) {
+    if (!zoneGizmoVisible) return;
+    zoneDragMode = mode;
+    zoneDragPlane = new THREE.Plane().setFromNormalAndCoplanarPoint(zoneGizmoNormal, zoneGizmoCenter);
+    zoneStartCenter.copy(zoneGizmoCenter);
+    zoneStartNormal.copy(zoneGizmoNormal);
+    zoneStartWidth = zoneGizmoWidth;
+    zoneStartHeight = zoneGizmoHeight;
+    if (mode !== "move") {
+      const p = planeHit(ev.clientX, ev.clientY, zoneDragPlane);
+      if (p) {
+        const { right, up } = cameraBillboardBasis();
+        const rel = p.clone().sub(zoneStartCenter);
+        zoneStartHandleLocal.set(rel.dot(right), rel.dot(up));
+      }
+    }
+    (ev.target as Element)?.setPointerCapture?.(ev.pointerId);
+  }
+
+  function onZonePointerMove(ev: PointerEvent) {
+    if (!zoneDragMode) return;
+    ev.preventDefault();
+    if (zoneDragMode === "move") {
+      const h = hitAt(ev.clientX, ev.clientY);
+      if (h) {
+        zoneGizmoCenter.copy(h.point);
+        zoneGizmoNormal.copy(h.normal);
+        zoneDragPlane?.setFromNormalAndCoplanarPoint(zoneGizmoNormal, zoneGizmoCenter);
+      }
+    } else if (zoneDragPlane) {
+      const p = planeHit(ev.clientX, ev.clientY, zoneDragPlane);
+      if (!p) return;
+      const { right, up } = cameraBillboardBasis();
+      const rel = p.clone().sub(zoneStartCenter);
+      const x = rel.dot(right), y = rel.dot(up);
+      const mode = zoneDragMode;
+      const dx = x - zoneStartHandleLocal.x;
+      const dy = y - zoneStartHandleLocal.y;
+      let widthDelta = 0;
+      let heightDelta = 0;
+      if (mode === "scale-mr") widthDelta = 2 * dx;
+      else if (mode === "scale-ml") widthDelta = -2 * dx;
+      else if (mode === "scale-tm") heightDelta = 2 * dy;
+      else if (mode === "scale-bm") heightDelta = -2 * dy;
+      else if (mode === "scale-tr") { widthDelta = 2 * dx; heightDelta = 2 * dy; }
+      else if (mode === "scale-tl") { widthDelta = -2 * dx; heightDelta = 2 * dy; }
+      else if (mode === "scale-br") { widthDelta = 2 * dx; heightDelta = -2 * dy; }
+      else if (mode === "scale-bl") { widthDelta = -2 * dx; heightDelta = -2 * dy; }
+      zoneGizmoWidth = Math.max(0.02, zoneStartWidth + widthDelta);
+      zoneGizmoHeight = Math.max(0.02, zoneStartHeight + heightDelta);
+    }
+  }
+
+  function endZoneDrag(ev: PointerEvent) {
+    zoneDragMode = null;
+    zoneDragPlane = null;
+    (ev.target as Element)?.releasePointerCapture?.(ev.pointerId);
+    detachZoneWindowListeners();
+  }
+
+  const attachZoneWindowListeners = () => {
+    if (zoneWindowDragListenersAttached) return;
+    zoneWindowDragListenersAttached = true;
+    window.addEventListener("pointermove", onZonePointerMove, { passive: false });
+    window.addEventListener("pointerup", endZoneDrag);
+  };
+  const detachZoneWindowListeners = () => {
+    if (!zoneWindowDragListenersAttached) return;
+    zoneWindowDragListenersAttached = false;
+    window.removeEventListener("pointermove", onZonePointerMove as any);
+    window.removeEventListener("pointerup", endZoneDrag as any);
+  };
+
   function deselect() {
     selected = false;
     showOverlay(false);
   }
   function select() {
     selected = true;
+    refreshActivePlacementValidity(true);
     updateOverlay();
   }
 
@@ -1405,9 +2184,14 @@ export async function initDecalDemo(container: HTMLElement, opts?: InitDecalDemo
   let draggingMesh = false;
   let meshDragRafId = 0; // RAF throttle para pointermove do canvas
   let meshDragPendingEv: PointerEvent | null = null;
+  // Posição/normal pré-drag: usada para reverter se o destino cair em zona bloqueada
+  const _preDragCenter = new THREE.Vector3();
+  const _preDragNormal = new THREE.Vector3();
   function attachDragHandlers() {
     const el = renderer.domElement;
     el.addEventListener("pointerdown", (ev) => {
+      // Quando ferramenta de zona est\u00e1 ativa, bloqueia interac\u00f5es de decal na malha
+      if (zoneToolActive) return;
       if (!selected || !projector) return;
       const r = renderer.domElement.getBoundingClientRect();
       const sx = ev.clientX - r.left;
@@ -1416,6 +2200,9 @@ export async function initDecalDemo(container: HTMLElement, opts?: InitDecalDemo
 
       const h = hitAt(ev.clientX, ev.clientY);
       if (!h) return;
+      // Captura posição antes de começar o drag para poder reverter em zona bloqueada
+      _preDragCenter.copy(decalCenter);
+      _preDragNormal.copy(decalNormal);
       draggingMesh = true;
       isInteracting = true;
       // Ativa modo de preview rápido no adapter
@@ -1433,6 +2220,7 @@ export async function initDecalDemo(container: HTMLElement, opts?: InitDecalDemo
         true // isPreview
       );
       syncActiveDecalTransform();
+      refreshActivePlacementValidity(true);
       controls.enabled = false;
       updateOverlay();
     });
@@ -1450,6 +2238,12 @@ export async function initDecalDemo(container: HTMLElement, opts?: InitDecalDemo
         if (!h) return;
         decalCenter.copy(h.point);
         decalNormal.copy(h.normal);
+
+        // Atualiza indicadores visuais de zona (sem redimensionar o decal)
+        const _dragZone = checkDecalZones(decalCenter, decalWidth, decalHeight, decalNormal, decalAngle, true);
+        isActivePlacementBlocked = _dragZone.blocked;
+        isActivePlacementConstrained = !_dragZone.blocked && !!_dragZone.zoneName;
+
         applyScaledTransform(
           projector,
           decalCenter,
@@ -1464,30 +2258,36 @@ export async function initDecalDemo(container: HTMLElement, opts?: InitDecalDemo
         updateOverlay();
       });
     });
-    el.addEventListener("pointerup", () => {
+    const _commitMeshDrag = () => {
       if (draggingMesh && projector) {
-        // Desativa modo preview e faz commit da geometria final
-        if (projector.setDragging) projector.setDragging(false);
-        if (projector.commitTransform) projector.commitTransform();
+        if (isActivePlacementBlocked) {
+          if (projector.setDragging) projector.setDragging(true);
+          applyScaledTransform(projector, decalCenter, decalNormal, decalWidth, decalHeight, decalDepth, decalAngle, true);
+        } else {
+          // Aplica dimensões constrangidas pela zona ao confirmar o arrasto.
+          if (isActivePlacementConstrained) {
+            const constrainResult = checkDecalZones(decalCenter, decalWidth, decalHeight, decalNormal, decalAngle, true);
+            if (!constrainResult.blocked) {
+              decalWidth = constrainResult.width;
+              decalHeight = constrainResult.height;
+              decalDepth = computeBaseDepth(decalWidth, decalHeight);
+            }
+          }
+          applyScaledTransform(projector, decalCenter, decalNormal, decalWidth, decalHeight, decalDepth, decalAngle);
+          if (projector.setDragging) projector.setDragging(false);
+          if (projector.commitTransform) projector.commitTransform();
+          syncActiveDecalTransform();
+        }
       }
       draggingMesh = false;
       isInteracting = false;
       meshDragPendingEv = null;
       controls.enabled = true;
-      emitDecalState();
-    });
-    el.addEventListener("pointerleave", () => {
-      if (draggingMesh && projector) {
-        // Desativa modo preview e faz commit da geometria final
-        if (projector.setDragging) projector.setDragging(false);
-        if (projector.commitTransform) projector.commitTransform();
-      }
-      draggingMesh = false;
-      isInteracting = false;
-      meshDragPendingEv = null;
-      controls.enabled = true;
-      emitDecalState();
-    });
+      updateOverlay();
+      if (!isActivePlacementBlocked) emitDecalState({ historyCommit: true });
+    };
+    el.addEventListener("pointerup", _commitMeshDrag);
+    el.addEventListener("pointerleave", _commitMeshDrag);
   }
 
   // ---- interações do GIZMO (resize/rotate/move no overlay) ----
@@ -1501,6 +2301,7 @@ export async function initDecalDemo(container: HTMLElement, opts?: InitDecalDemo
   let dragMode: DragMode = null;
   let dragPlane: THREE.Plane | null = null;
   let startCenter = new THREE.Vector3();
+  let startNormal = new THREE.Vector3(0, 0, 1);
   let startW = 0, startH = 0, startA = 0;
   let startAspect = 1;
   let startHandleLocal = new THREE.Vector2();
@@ -1513,6 +2314,7 @@ export async function initDecalDemo(container: HTMLElement, opts?: InitDecalDemo
     // Ativa modo de preview rápido no adapter
     if (projector.setDragging) projector.setDragging(true);
     startCenter.copy(decalCenter);
+    startNormal.copy(decalNormal);
     startW = decalWidth; startH = decalHeight; startA = decalAngle;
     startAspect = decalAspect || (startH ? startW / startH : 1);
 
@@ -1552,17 +2354,32 @@ export async function initDecalDemo(container: HTMLElement, opts?: InitDecalDemo
   };
 
   function endDrag(ev: PointerEvent) {
-    // Desativa modo preview e faz commit da geometria final
     if (projector) {
-      if (projector.setDragging) projector.setDragging(false);
-      if (projector.commitTransform) projector.commitTransform();
+      const zoneResult = checkDecalZones(decalCenter, decalWidth, decalHeight, decalNormal, decalAngle, true);
+      if (zoneResult.blocked) {
+        if (projector.setDragging) projector.setDragging(true);
+        applyScaledTransform(projector, decalCenter, decalNormal, decalWidth, decalHeight, decalDepth, decalAngle, true);
+        isActivePlacementBlocked = true;
+      } else {
+        // Aplica dimensões constrangidas pela zona (reduz ao tamanho máximo permitido).
+        decalWidth = zoneResult.width;
+        decalHeight = zoneResult.height;
+        decalDepth = computeBaseDepth(decalWidth, decalHeight);
+        isActivePlacementConstrained = !!zoneResult.zoneName;
+        applyScaledTransform(projector, decalCenter, decalNormal, decalWidth, decalHeight, decalDepth, decalAngle);
+        if (projector.setDragging) projector.setDragging(false);
+        if (projector.commitTransform) projector.commitTransform();
+        isActivePlacementBlocked = false;
+        syncActiveDecalTransform();
+      }
     }
     dragMode = null;
     dragPlane = null;
     isInteracting = false;
     (ev.target as Element).releasePointerCapture?.(ev.pointerId);
     detachWindowDragListeners();
-    emitDecalState();
+    updateOverlay();
+    if (!isActivePlacementBlocked) emitDecalState({ historyCommit: true });
   }
 
   const overlayRay = new THREE.Raycaster();
@@ -1644,6 +2461,11 @@ export async function initDecalDemo(container: HTMLElement, opts?: InitDecalDemo
       }
     }
 
+    // Atualiza indicadores visuais de zona (sem redimensionar o decal)
+    const _ovZone = checkDecalZones(decalCenter, decalWidth, decalHeight, decalNormal, decalAngle, true);
+    isActivePlacementBlocked = _ovZone.blocked;
+    isActivePlacementConstrained = !_ovZone.blocked && !!_ovZone.zoneName;
+
     applyScaledTransform(
       projector,
       decalCenter,
@@ -1681,6 +2503,28 @@ export async function initDecalDemo(container: HTMLElement, opts?: InitDecalDemo
       attachWindowDragListeners();
     });
 
+    // ---- Zone gizmo bindings ----
+    function bindZoneHandle(h: SVGCircleElement, mode: ZoneDragMode) {
+      h.addEventListener("pointerdown", (ev) => {
+        ev.stopPropagation();
+        startZoneDrag(mode, ev);
+        attachZoneWindowListeners();
+      });
+    }
+    bindZoneHandle(zoneHandles.tl, "scale-tl");
+    bindZoneHandle(zoneHandles.tr, "scale-tr");
+    bindZoneHandle(zoneHandles.br, "scale-br");
+    bindZoneHandle(zoneHandles.bl, "scale-bl");
+    bindZoneHandle(zoneHandles.tm, "scale-tm");
+    bindZoneHandle(zoneHandles.bm, "scale-bm");
+    bindZoneHandle(zoneHandles.ml, "scale-ml");
+    bindZoneHandle(zoneHandles.mr, "scale-mr");
+    zoneBoxPoly.addEventListener("pointerdown", (ev) => {
+      ev.stopPropagation();
+      startZoneDrag("move", ev);
+      attachZoneWindowListeners();
+    });
+
     // =========================
     // Clique x Arrasto no canvas (para NÃO deselecionar durante rotação da cena)
     // =========================
@@ -1699,6 +2543,24 @@ export async function initDecalDemo(container: HTMLElement, opts?: InitDecalDemo
         const r = renderer.domElement.getBoundingClientRect();
         const sx = ev.clientX - r.left;
         const sy = ev.clientY - r.top;
+
+        // ---- Ferramenta de zona: intercepta cliques no canvas ----
+        if (zoneToolActive) {
+          // Clique dentro do gizmo de zona → o SVG j\u00e1 trata; ignorar aqui
+          if (zoneGizmoVisible && pointInZoneQuad(sx, sy)) return;
+          // Clique fora do gizmo → commita zona atual e inicia nova no ponto clicado
+          if (zoneGizmoVisible) commitZone();
+          const _zh = hitAt(ev.clientX, ev.clientY);
+          if (_zh) {
+            zoneGizmoCenter.copy(_zh.point);
+            zoneGizmoNormal.copy(_zh.normal);
+            zoneGizmoWidth = defaultWidth;
+            zoneGizmoHeight = defaultHeight;
+            zoneGizmoVisible = true;
+            showZoneGizmo(true);
+          }
+          return;
+        }
 
         const pickedDecal = pickDecalAt(ev.clientX, ev.clientY);
         if (pickedDecal) {
@@ -1813,6 +2675,8 @@ export async function initDecalDemo(container: HTMLElement, opts?: InitDecalDemo
         weldTolerance: 1e-4,
         recomputeNormals: "smooth",
       });
+      setModelBaseColor(currentModelBaseColor.getStyle());
+      console.log("✅ [Decal Engine] Meshes preparados");
       normalizeModelScale(root);
       centerOnGrid(root);
       modelContainer.add(root);
@@ -1921,6 +2785,10 @@ export async function initDecalDemo(container: HTMLElement, opts?: InitDecalDemo
       }
     }
 
+    if (isInteractive && zoneGizmoVisible) {
+      updateZoneGizmo();
+    }
+
     renderer.render(scene, camera);
     rafId = requestAnimationFrame(tick);
   };
@@ -1934,7 +2802,7 @@ export async function initDecalDemo(container: HTMLElement, opts?: InitDecalDemo
     });
   }
 
-  function collectDecalState() {
+  function collectDecalState(options?: { historyCommit?: boolean }) {
     const minDecalAreaCm2 = 5;
 
     return Array.from(decals.values()).map((record) => ({
@@ -1999,11 +2867,12 @@ export async function initDecalDemo(container: HTMLElement, opts?: InitDecalDemo
       height: record.height,
       depth: record.depth,
       angle: record.angle,
+      historyCommit: options?.historyCommit,
     }));
   }
 
-  function emitDecalState() {
-    notifyListeners(collectDecalState());
+  function emitDecalState(options?: { historyCommit?: boolean }) {
+    notifyListeners(collectDecalState(options));
   }
 
   // Exemplo: chame notifyListeners sempre que decals mudarem
@@ -2046,6 +2915,17 @@ export async function initDecalDemo(container: HTMLElement, opts?: InitDecalDemo
   return {
     upsertExternalDecal: upsertExternalDecalWithNotify,
     removeExternalDecal: removeExternalDecalWithNotify,
+    setBaseColor: (color: string) => setModelBaseColor(color),
+    activateZoneTool: (options?: { behavior?: "block" | "constrain"; name?: string }) => {
+      zoneToolActive = true;
+      zoneToolBehavior = options?.behavior ?? "constrain";
+      if (options?.name) zoneToolNamePrefix = options.name;
+    },
+    deactivateZoneTool: () => {
+      zoneToolActive = false;
+      discardZone();
+    },
+    clearConstrainZones: () => clearAllConstrainZones(),
     subscribe,
     destroy,
   } satisfies DecalDemoHandle;

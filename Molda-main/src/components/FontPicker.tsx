@@ -242,6 +242,7 @@ export default function FontPicker({
   const [filterTag, setFilterTag] = useState<"favoritos" | "recentes" | "">(""); // agora "favoritos" e "recentes" funcionam
   const [selectedPreset, setSelectedPreset] = useState<FontPresetKey | "">("");
   const [selectedCategory, setSelectedCategory] = useState<FontCategoryKey | "">("");
+  const [isPopularAccordionOpen, setIsPopularAccordionOpen] = useState(false);
   const [showFilterMenu, setShowFilterMenu] = useState(false);
   const scrollRef = useRef<HTMLDivElement | null>(null);
   const [resolvedFamilies, setResolvedFamilies] = useState<Set<string>>(new Set());
@@ -322,9 +323,11 @@ export default function FontPicker({
             .toLowerCase();
           return parts.includes(q);
         });
-    filteredFonts.sort(compareByPopularity);
+    filteredFonts.sort((left, right) =>
+      left.family.localeCompare(right.family, "pt-BR", { sensitivity: "base" })
+    );
     return filteredFonts;
-  }, [compareByPopularity, data, query]);
+  }, [data, query]);
 
   // Aplica filtro "favoritos" ou "recentes" (quando selecionado)
   const scopedFiltered = useMemo(() => {
@@ -384,6 +387,26 @@ export default function FontPicker({
     if (!selectedCategory) return presetFiltered;
     return presetFiltered.filter((font) => getFontPrimaryCategory(font) === selectedCategory);
   }, [presetFiltered, selectedCategory]);
+
+  const isAllMode = selectedCategory === "";
+
+  const popularFonts = useMemo(() => {
+    if (!filtered.length) return [];
+    const ranked = filtered
+      .filter((font) => (popularityScores[font.family] || 0) > 0)
+      .sort(compareByPopularity);
+    return ranked.slice(0, 24);
+  }, [compareByPopularity, filtered, popularityScores]);
+
+  const visibleFonts = useMemo(() => filtered, [filtered]);
+  const shouldHideFullLibrary = isAllMode && isPopularAccordionOpen;
+  const fixedLibraryHeightClass = "h-[420px]";
+
+  useEffect(() => {
+    if (!isAllMode && isPopularAccordionOpen) {
+      setIsPopularAccordionOpen(false);
+    }
+  }, [isAllMode, isPopularAccordionOpen]);
 
   useEffect(() => {
     if (!selectedPreset) return;
@@ -446,7 +469,7 @@ export default function FontPicker({
     return () => ro.disconnect();
   }, []);
 
-  const total = filtered.length;
+  const total = shouldHideFullLibrary ? 0 : visibleFonts.length;
 
   useEffect(() => {
     const container = scrollRef.current;
@@ -454,12 +477,12 @@ export default function FontPicker({
       container.scrollTop = 0;
     }
     setScrollTop(0);
-  }, [query, filterTag, selectedPreset, selectedCategory]);
+  }, [query, filterTag, selectedPreset, selectedCategory, isPopularAccordionOpen]);
 
   useEffect(() => {
-    if (!filtered.length) return;
+    if (shouldHideFullLibrary || !visibleFonts.length) return;
 
-    const eagerFonts = filtered.slice(0, Math.min(filtered.length, PRELOAD_LOOKAHEAD));
+    const eagerFonts = visibleFonts.slice(0, Math.min(visibleFonts.length, PRELOAD_LOOKAHEAD));
     const queue = eagerFonts.filter(
       (font) => !resolvedFamiliesRef.current.has(font.family) && !loadingFamiliesRef.current.has(font.family)
     );
@@ -509,7 +532,7 @@ export default function FontPicker({
     return () => {
       cancelled = true;
     };
-  }, [filtered]);
+  }, [shouldHideFullLibrary, visibleFonts]);
 
   const startIndex = Math.max(
     0,
@@ -519,7 +542,7 @@ export default function FontPicker({
     total - 1,
     Math.floor((scrollTop + viewportH) / ITEM_HEIGHT) + OVERSCAN
   );
-  const renderSlice = filtered.slice(startIndex, endIndex + 1);
+  const renderSlice = shouldHideFullLibrary ? [] : visibleFonts.slice(startIndex, endIndex + 1);
   const paddingTop = startIndex * ITEM_HEIGHT;
   const paddingBottom = (total - (endIndex + 1)) * ITEM_HEIGHT;
 
@@ -541,12 +564,12 @@ export default function FontPicker({
 
   // Pré-carregamento concorrente controlado na janela visível + lookahead.
   useEffect(() => {
-    if (total === 0) return;
+    if (shouldHideFullLibrary || total === 0) return;
     let cancelled = false;
 
     const from = Math.max(0, startIndex);
     const to = Math.min(total - 1, endIndex + PRELOAD_LOOKAHEAD);
-    const queue = filtered.slice(from, to + 1).filter(
+    const queue = visibleFonts.slice(from, to + 1).filter(
       (font) => !resolvedFamiliesRef.current.has(font.family) && !loadingFamiliesRef.current.has(font.family)
     );
 
@@ -599,7 +622,37 @@ export default function FontPicker({
     return () => {
       cancelled = true;
     };
-  }, [filtered, startIndex, endIndex, total]);
+  }, [shouldHideFullLibrary, visibleFonts, startIndex, endIndex, total]);
+
+  const handleFontSelect = useCallback(async (f: FontItem) => {
+    // Atualiza seleção imediatamente (não bloqueia a UI)
+    if (value == null) setInternalSelected(f.family);
+    onSelect?.(f.family);
+
+    // Adiciona à lista de fontes recentes
+    addRecentFont(f.family);
+
+    // Dispara carregamento em background (com subsetting)
+    const variants =
+      f.source === "local"
+        ? {
+            weights: toNumberArray(f.weights as any) ?? [400, 700],
+            styles: (f.styles?.length ? f.styles : ["normal"]) as any,
+          }
+        : wantVariantsFor(f.family);
+
+    const text = previewSubsetText(f.previewText || DEFAULT_PREVIEW_TEXT);
+    ensureFontForFabric(f.family, f.source || "google", { ...variants, text }).catch((err) => {
+      // Não bloqueia — apenas informa (opcional)
+      toast({
+        title: "Fonte selecionada. Carregando em segundo plano…",
+        description: `Se a fonte não aparecer imediatamente, aguarde um instante (display: swap).`,
+        variant: "default",
+      });
+      // eslint-disable-next-line no-console
+      console.warn("Falha ao carregar imediatamente a fonte", f.family, err);
+    });
+  }, [addRecentFont, onSelect, value]);
 
   const prefetchFamily = useCallback((item: FontItem) => {
     if (resolvedFamiliesRef.current.has(item.family) || loadingFamiliesRef.current.has(item.family)) return;
@@ -844,12 +897,71 @@ export default function FontPicker({
           </div>
         )}
 
+        {isAllMode && (
+          <div className="mb-2 border-l-2 border-amber-400 pl-2">
+            <button
+              type="button"
+              className="w-full px-3 py-2 text-left rounded-md hover:bg-amber-50/50 transition-colors"
+              onClick={() => setIsPopularAccordionOpen((prev) => !prev)}
+              aria-expanded={isPopularAccordionOpen}
+              aria-controls="popular-fonts-accordion-content"
+            >
+              <div className="flex items-center gap-2">
+                <span className="text-[13px]">⭐</span>
+                <span className="text-xs font-semibold uppercase tracking-wide text-amber-600">Populares</span>
+                <span className="ml-auto text-[10px] text-slate-400">{isPopularAccordionOpen ? "▲" : "▼"}</span>
+              </div>
+            </button>
+
+            {isPopularAccordionOpen && (
+              <div
+                id="popular-fonts-accordion-content"
+                className="px-0 py-1"
+              >
+                {popularFonts.length === 0 ? (
+                  <div className="py-3 text-xs text-slate-500">
+                    Ainda não há dados de popularidade suficientes para exibir fontes populares.
+                  </div>
+                ) : (
+                  <div className={[fixedLibraryHeightClass, "overflow-auto", "scroll-thin"].join(" ")}>
+                    <ul className="divide-y divide-gray-100 px-1 py-1">
+                      {popularFonts.map((f) => {
+                        const isActive =
+                          normalizeName(value != null ? value : internalSelected) === normalizeName(f.family);
+                        const isStarred = favorites.has(f.family);
+                        const isPreviewReady = resolvedFamilies.has(f.family);
+                        const isPreviewLoading = loadingFamilies.has(f.family);
+                        return (
+                          <FontRow
+                            key={`popular-${f.family}`}
+                            item={f}
+                            isActive={isActive}
+                            isPreviewReady={isPreviewReady}
+                            isPreviewLoading={isPreviewLoading}
+                            starred={isStarred}
+                            onToggleStar={toggleFavorite}
+                            onPrefetch={prefetchFamily}
+                            onClick={() => handleFontSelect(f)}
+                            previewFallback={DEFAULT_PREVIEW_TEXT}
+                          />
+                        );
+                      })}
+                    </ul>
+                  </div>
+                )}
+              </div>
+            )}
+          </div>
+        )}
+
+        {!shouldHideFullLibrary && (
+        <div className="border-l-2 border-purple-300 pl-2">
         <div
           ref={scrollRef}
           onScroll={onScroll}
           onWheel={onWheel}
           onKeyDown={onKeyDown}
-          className={["rounded-lg border border-gray-200 overflow-auto", "scroll-thin", maxHeightClass].join(" ")}
+          className={[fixedLibraryHeightClass, "overflow-auto", "scroll-thin"].join(" ")}
           role="listbox"
           aria-label="Biblioteca de fontes"
           tabIndex={0}
@@ -858,9 +970,11 @@ export default function FontPicker({
             contain: "content",
           }}
         >
-          {filtered.length === 0 && (
+          {visibleFonts.length === 0 && (
             <div className="py-6 text-center text-sm text-gray-500">
-              {filterTag === "favoritos" 
+              {isAllMode && isPopularAccordionOpen
+                ? "Nenhuma fonte popular disponível para os filtros atuais."
+                : filterTag === "favoritos" 
                 ? "Você ainda não marcou nenhuma fonte como favorita." 
                 : filterTag === "recentes"
                 ? "Você ainda não utilizou nenhuma fonte neste projeto."
@@ -892,32 +1006,7 @@ export default function FontPicker({
                     starred={isStarred}
                     onToggleStar={toggleFavorite}
                     onPrefetch={prefetchFamily}
-                    onClick={async () => {
-                      // Atualiza seleção imediatamente (não bloqueia a UI)
-                      if (value == null) setInternalSelected(f.family);
-                      onSelect?.(f.family);
-
-                      // Adiciona à lista de fontes recentes
-                      addRecentFont(f.family);
-
-                      // Dispara carregamento em background (com subsetting)
-                      const variants =
-                        f.source === "local"
-                          ? { weights: toNumberArray(f.weights as any) ?? [400, 700], styles: (f.styles?.length ? f.styles : ["normal"]) as any }
-                          : wantVariantsFor(f.family);
-
-                      const text = previewSubsetText(f.previewText || DEFAULT_PREVIEW_TEXT);
-                      ensureFontForFabric(f.family, f.source || "google", { ...variants, text }).catch((err) => {
-                        // Não bloqueia — apenas informa (opcional)
-                        toast({
-                          title: "Fonte selecionada. Carregando em segundo plano…",
-                          description: `Se a fonte não aparecer imediatamente, aguarde um instante (display: swap).`,
-                          variant: "default",
-                        });
-                        // eslint-disable-next-line no-console
-                        console.warn("Falha ao carregar imediatamente a fonte", f.family, err);
-                      });
-                    }}
+                    onClick={() => handleFontSelect(f)}
                     previewFallback={DEFAULT_PREVIEW_TEXT}
                   />
                 );
@@ -925,6 +1014,8 @@ export default function FontPicker({
             </ul>
           </div>
         </div>
+        </div>
+        )}
       </div>
     </>
   );

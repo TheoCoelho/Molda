@@ -28,6 +28,7 @@ export type DecalStateSnapshot = {
   height?: number;
   depth?: number;
   angle?: number;
+  historyCommit?: boolean;
   viability?: {
     approxAreaCm2?: number;
     normalizedPosition?: {

@@ -15,6 +15,7 @@ import { cn } from "@/lib/utils";
 import { UPLOAD_MODEL_API } from "@/lib/constants/storage";
 import { invalidateModelCache } from "@/lib/models";
 import DecalZoneEditor, { type DecalZoneDraft } from "@/components/admin/DecalZoneEditor";
+import { parseColorList } from "@/lib/productColors";
 
 type Part = {
   id: string;
@@ -66,6 +67,7 @@ type Product = {
   available: boolean;
   visible: boolean;
   cover_image_path?: string | null;
+  available_colors?: string[] | null;
 };
 
 type Inventory = {
@@ -252,6 +254,7 @@ const Admin = () => {
     sku: "",
     name: "",
     description: "",
+    available_colors_text: "",
     available: true,
     visible: true,
     cover_image_path: "",
@@ -499,6 +502,7 @@ const Admin = () => {
       sku: "",
       name: "",
       description: "",
+      available_colors_text: "",
       available: true,
       visible: true,
       cover_image_path: "",
@@ -703,15 +707,28 @@ const Admin = () => {
 
   const handleSaveProduct = async (event: React.FormEvent) => {
     event.preventDefault();
+    const parsedAvailableColors = parseColorList(productForm.available_colors_text);
     const payload = {
       type_id: productForm.type_id,
       subtype_id: productForm.subtype_id || null,
       sku: productForm.sku.trim(),
       name: productForm.name.trim(),
       description: productForm.description.trim() || null,
+      available_colors: parsedAvailableColors.length ? parsedAvailableColors : null,
       available: productForm.available,
       visible: productForm.visible,
       cover_image_path: productForm.cover_image_path || null,
+    };
+
+    const payloadLegacy = {
+      type_id: payload.type_id,
+      subtype_id: payload.subtype_id,
+      sku: payload.sku,
+      name: payload.name,
+      description: payload.description,
+      available: payload.available,
+      visible: payload.visible,
+      cover_image_path: payload.cover_image_path,
     };
 
     if (!payload.type_id || !payload.sku || !payload.name || !productForm.material_id) {
@@ -726,21 +743,46 @@ const Admin = () => {
 
       let productId = productForm.id;
       if (productForm.id) {
-        const { data, error } = await supabase
+        let { data, error } = await supabase
           .from("products")
           .update(payload)
           .eq("id", productForm.id)
           .select("id")
           .single();
+        if (error && String(error.message || "").includes("available_colors")) {
+          const fallback = await supabase
+            .from("products")
+            .update(payloadLegacy)
+            .eq("id", productForm.id)
+            .select("id")
+            .single();
+          data = fallback.data;
+          error = fallback.error;
+          if (!error) {
+            toast.warning("Produto salvo sem cores disponiveis. Execute o SQL 10_add_product_available_colors.sql no Supabase.");
+          }
+        }
         if (error) throw error;
         productId = data.id;
         toast.success("Produto atualizado.");
       } else {
-        const { data, error } = await supabase
+        let { data, error } = await supabase
           .from("products")
           .insert(payload)
           .select("id")
           .single();
+        if (error && String(error.message || "").includes("available_colors")) {
+          const fallback = await supabase
+            .from("products")
+            .insert(payloadLegacy)
+            .select("id")
+            .single();
+          data = fallback.data;
+          error = fallback.error;
+          if (!error) {
+            toast.warning("Produto salvo sem cores disponiveis. Execute o SQL 10_add_product_available_colors.sql no Supabase.");
+          }
+        }
         if (error) throw error;
         productId = data.id;
         toast.success("Produto criado.");
@@ -1676,6 +1718,15 @@ const Admin = () => {
                   />
                 </div>
                 <div className="space-y-2">
+                  <Label>Cores disponiveis (HEX)</Label>
+                  <Textarea
+                    value={productForm.available_colors_text}
+                    onChange={(e) => setProductForm((prev) => ({ ...prev, available_colors_text: e.target.value }))}
+                    placeholder="#ffffff, #111827, #ef4444"
+                  />
+                  <p className="text-xs text-muted-foreground">Use cores no formato #RRGGBB separadas por virgula, ponto e virgula ou quebra de linha.</p>
+                </div>
+                <div className="space-y-2">
                   <Label>Imagem de capa</Label>
                   <Input type="file" accept="image/*" onChange={(e) => setProductImageFile(e.target.files?.[0] || null)} />
                   {productImagePreview && (
@@ -1738,6 +1789,18 @@ const Admin = () => {
                             {materialById.get(productMaterialByProductId.get(product.id)?.material_id || "")?.name ||
                               "Sem tecido"}
                           </div>
+                          {Array.isArray(product.available_colors) && product.available_colors.length > 0 && (
+                            <div className="mt-1 flex flex-wrap gap-1">
+                              {product.available_colors.slice(0, 6).map((color) => (
+                                <span
+                                  key={`${product.id}-${color}`}
+                                  className="h-4 w-4 rounded-full border"
+                                  style={{ backgroundColor: color }}
+                                  title={color}
+                                />
+                              ))}
+                            </div>
+                          )}
                         </div>
                       </div>
                       <Button
@@ -1752,6 +1815,7 @@ const Admin = () => {
                             sku: product.sku,
                             name: product.name,
                             description: product.description || "",
+                            available_colors_text: Array.isArray(product.available_colors) ? product.available_colors.join(", ") : "",
                             available: product.available,
                             visible: product.visible,
                             cover_image_path: product.cover_image_path || "",

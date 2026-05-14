@@ -51,6 +51,7 @@ export default function Canvas3DViewer({
       <DecalEngineHost
         className="w-full h-full"
         selection={{ part, type, subtype }}
+        baseColor={baseColor}
         decalZonesOverride={decalZonesOverride}
         decals={externalDecals}
         onDecalsChange={onDecalsChange}

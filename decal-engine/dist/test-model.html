@@ -1,0 +1,79 @@
+<!DOCTYPE html>
+<html>
+<head>
+  <title>Test Model Loading</title>
+  <style>
+    html, body { margin: 0; padding: 0; width: 100%; height: 100%; }
+    #canvas { display: block; }
+    #log { position: absolute; top: 10px; left: 10px; background: rgba(0,0,0,0.8); color: #0f0; padding: 10px; font-family: monospace; max-height: 300px; overflow-y: auto; }
+  </style>
+</head>
+<body>
+  <div id="log"></div>
+  <script src="https://cdnjs.cloudflare.com/ajax/libs/three.js/r128/three.min.js"></script>
+  <script src="https://cdn.jsdelivr.net/npm/three@r128/examples/js/loaders/GLTFLoader.js"></script>
+  
+  <script>
+    const log = document.getElementById('log');
+    function addLog(msg) {
+      console.log(msg);
+      log.innerHTML += msg + '\n';
+    }
+
+    const scene = new THREE.Scene();
+    const camera = new THREE.PerspectiveCamera(75, window.innerWidth / window.innerHeight, 0.1, 1000);
+    const renderer = new THREE.WebGLRenderer({ antialias: true });
+    renderer.setSize(window.innerWidth, window.innerHeight);
+    renderer.setClearColor(0x111111);
+    document.body.appendChild(renderer.domElement);
+
+    const light = new THREE.HemisphereLight(0xffffff, 0x222244, 1.0);
+    scene.add(light);
+    const dirLight = new THREE.DirectionalLight(0xffffff, 1.2);
+    dirLight.position.set(5, 10, 5);
+    scene.add(dirLight);
+
+    addLog('🔧 Three.js initialized');
+    addLog('Attempting to load: /models/long_sleeve_t-_shirt/scene.gltf');
+
+    const loader = new THREE.GLTFLoader();
+    loader.load(
+      '/models/long_sleeve_t-_shirt/scene.gltf',
+      (gltf) => {
+        addLog('✅ Model loaded successfully!');
+        addLog('Scene children: ' + gltf.scene.children.length);
+        scene.add(gltf.scene);
+        
+        const bbox = new THREE.Box3().setFromObject(gltf.scene);
+        const size = bbox.getSize(new THREE.Vector3());
+        addLog('Model size: ' + size.x.toFixed(2) + 'x' + size.y.toFixed(2) + 'x' + size.z.toFixed(2));
+        
+        const center = bbox.getCenter(new THREE.Vector3());
+        addLog('Model center: ' + center.x.toFixed(2) + ', ' + center.y.toFixed(2) + ', ' + center.z.toFixed(2));
+        
+        camera.position.z = 100;
+        camera.lookAt(center);
+      },
+      (progress) => {
+        addLog('📦 Loading: ' + ((progress.loaded / progress.total) * 100).toFixed(1) + '%');
+      },
+      (error) => {
+        addLog('❌ Error loading model: ' + error.message);
+        console.error(error);
+      }
+    );
+
+    function animate() {
+      requestAnimationFrame(animate);
+      renderer.render(scene, camera);
+    }
+    animate();
+
+    window.addEventListener('resize', () => {
+      camera.aspect = window.innerWidth / window.innerHeight;
+      camera.updateProjectionMatrix();
+      renderer.setSize(window.innerWidth, window.innerHeight);
+    });
+  </script>
+</body>
+</html>

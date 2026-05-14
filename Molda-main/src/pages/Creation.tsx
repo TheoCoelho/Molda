@@ -9,6 +9,7 @@ import { Plus, X, Check } from "lucide-react";
 import FloatingEditorToolbar from "../components/FloatingEditorToolbar";
 import TextToolbar from "../components/TextToolbar";
 import ImageToolbar from "../components/ImageToolbar";
+import HistoryManager from "../lib/HistoryManager";
 import { useRecentFonts } from "../hooks/use-recent-fonts";
 import { EyeTabDivider } from "../components/ui/EyeTabDivider";
 
@@ -94,6 +95,9 @@ const nearlyEqual = (a?: number | null, b?: number | null) => {
 };
 
 const DRAFT_EPHEMERAL_TTL_MS = 5 * 60 * 1000;
+const DRAFT_SAVE_DEBOUNCE_MS = 700;
+const PREVIEW_CAPTURE_DEBOUNCE_MS = 180;
+const DECAL_HISTORY_LIMIT = 120;
 
 const VIABILITY_WARNING_LABELS: Record<string, string> = {
   min_area_violation: "Decal abaixo da area minima recomendada para a peca.",
@@ -139,6 +143,25 @@ const decalMapEquals = (a: Record<string, DecalTransform>, b: Record<string, Dec
     if (!transformNearlyEqual(a[key], b[key])) return false;
   }
   return true;
+};
+
+const serializeDecalPlacements = (placements: Record<string, DecalTransform>) => {
+  const sortedKeys = Object.keys(placements).sort();
+  const normalized: Record<string, DecalTransform> = {};
+  sortedKeys.forEach((key) => {
+    normalized[key] = placements[key];
+  });
+  return JSON.stringify(normalized);
+};
+
+const parseDecalPlacementsSnapshot = (snapshot: string): Record<string, DecalTransform> => {
+  try {
+    const parsed = JSON.parse(snapshot);
+    if (!parsed || typeof parsed !== "object") return {};
+    return parsed as Record<string, DecalTransform>;
+  } catch {
+    return {};
+  }
 };
 
 const Creation = () => {
@@ -196,6 +219,10 @@ const Creation = () => {
     { id: "3d", name: subtype || "3D", type: "3d" },
   ]);
   const [activeCanvasTab, setActiveCanvasTab] = useState("3d");
+  const activeCanvasTabRef = useRef(activeCanvasTab);
+  useEffect(() => {
+    activeCanvasTabRef.current = activeCanvasTab;
+  }, [activeCanvasTab]);
   const [tabTransitionDirection, setTabTransitionDirection] = useState<"left" | "right">("right");
   const [isTransitioning, setIsTransitioning] = useState(false);
   const [isToolbarTransitioning, setIsToolbarTransitioning] = useState(false);
@@ -706,9 +733,23 @@ const Creation = () => {
   /** Automatic gizmo dimensions derived from canvas content bounds (fallback for tabs without explicit placement). */
   const [tabDecalAutoSizes, setTabDecalAutoSizes] = useState<Record<string, { width: number; height: number }>>({});
   const tabDecalAutoSizesRef = useRef<Record<string, { width: number; height: number }>>({});
+  const tabPreviewCaptureTimersRef = useRef<Record<string, number | null>>({});
+  const tabPreviewCaptureInFlightRef = useRef<Set<string>>(new Set());
+  const tabPreviewCaptureQueuedRef = useRef<Set<string>>(new Set());
+  const tabPreviewCaptureCacheRef = useRef<
+    Record<
+      string,
+      {
+        fullDataUrl: string;
+        boundsKey: string;
+        finalDataUrl: string;
+      }
+    >
+  >({});
   const tabVisibilityRef = useRef<Record<string, boolean>>(tabVisibility);
   const tabDecalPreviewsRef = useRef<Record<string, string>>(tabDecalPreviews);
   const tabDecalPlacementsRef = useRef<Record<string, DecalTransform>>(tabDecalPlacements);
+  const decalHistoryRef = useRef<HistoryManager | null>(null);
   const tabPrintTypesRef = useRef<Record<string, string>>(tabPrintTypes);
   useEffect(() => {
     tabVisibilityRef.current = tabVisibility;
@@ -726,91 +767,160 @@ const Creation = () => {
     tabDecalAutoSizesRef.current = tabDecalAutoSizes;
   }, [tabDecalAutoSizes]);
 
-  const captureTabImage = useCallback(async (tabId: string): Promise<string | null> => {
-    const inst = editorRefs.current[tabId];
-    if (!inst) return null;
+  const captureTabImage = useCallback(async (tabId: string, options?: { force?: boolean }): Promise<string | null> => {
+    if (!tabId) return null;
+
+    const tabExists = () => canvasTabsRef.current.some((t) => t.id === tabId && t.type === "2d");
+    if (!tabExists()) return null;
+
+    if (tabPreviewCaptureInFlightRef.current.has(tabId) && !options?.force) {
+      tabPreviewCaptureQueuedRef.current.add(tabId);
+      return tabDecalPreviewsRef.current[tabId] ?? null;
+    }
+
+    tabPreviewCaptureInFlightRef.current.add(tabId);
+
     try {
-      await inst.waitForIdle?.();
-    } catch { }
-    try {
-      inst.refresh?.();
-    } catch { }
+      const inst = editorRefs.current[tabId];
+      if (!inst) return null;
 
-    const fullDataUrl = inst.exportPNG?.() ?? null;
-    const bounds = inst.getContentBounds?.() ?? null;
-
-    let finalDataUrl: string | null = fullDataUrl;
-
-    if (fullDataUrl && bounds) {
-      // Crop the exported PNG to the actual content region so the 3D texture
-      // fills the gizmo box completely (no transparent padding around the design).
       try {
-        const img = new Image();
-        img.src = fullDataUrl;
-        await img.decode();
-        const pw = img.naturalWidth;
-        const ph = img.naturalHeight;
-        const cropX = Math.round(bounds.ratioLeft * pw);
-        const cropY = Math.round(bounds.ratioTop * ph);
-        const cropW = Math.max(1, Math.round(bounds.ratioW * pw));
-        const cropH = Math.max(1, Math.round(bounds.ratioH * ph));
-        const offscreen = document.createElement("canvas");
-        offscreen.width = cropW;
-        offscreen.height = cropH;
-        const ctx = offscreen.getContext("2d");
-        if (ctx) {
-          ctx.drawImage(img, cropX, cropY, cropW, cropH, 0, 0, cropW, cropH);
-          finalDataUrl = offscreen.toDataURL("image/png");
+        await inst.waitForIdle?.();
+      } catch { }
+      try {
+        inst.refresh?.();
+      } catch { }
+
+      const fullDataUrl = inst.exportPNG?.() ?? null;
+      const bounds = inst.getContentBounds?.() ?? null;
+
+      let finalDataUrl: string | null = fullDataUrl;
+
+      if (fullDataUrl && bounds) {
+        const boundsKey = [
+          bounds.ratioLeft,
+          bounds.ratioTop,
+          bounds.ratioW,
+          bounds.ratioH,
+        ]
+          .map((n) => Number(n).toFixed(4))
+          .join("|");
+        const cached = tabPreviewCaptureCacheRef.current[tabId];
+
+        // Crop the exported PNG to the actual content region so the 3D texture
+        // fills the gizmo box completely (no transparent padding around the design).
+        const isFullCanvasBounds =
+          bounds.ratioLeft <= 0.001 &&
+          bounds.ratioTop <= 0.001 &&
+          bounds.ratioW >= 0.999 &&
+          bounds.ratioH >= 0.999;
+
+        if (isFullCanvasBounds) {
+          finalDataUrl = fullDataUrl;
+        } else if (cached && cached.fullDataUrl === fullDataUrl && cached.boundsKey === boundsKey) {
+          finalDataUrl = cached.finalDataUrl;
+        } else {
+          try {
+            const img = new Image();
+            img.src = fullDataUrl;
+            await img.decode();
+            const pw = img.naturalWidth;
+            const ph = img.naturalHeight;
+            const cropX = Math.round(bounds.ratioLeft * pw);
+            const cropY = Math.round(bounds.ratioTop * ph);
+            const cropW = Math.max(1, Math.round(bounds.ratioW * pw));
+            const cropH = Math.max(1, Math.round(bounds.ratioH * ph));
+            const offscreen = document.createElement("canvas");
+            offscreen.width = cropW;
+            offscreen.height = cropH;
+            const ctx = offscreen.getContext("2d");
+            if (ctx) {
+              ctx.drawImage(img, cropX, cropY, cropW, cropH, 0, 0, cropW, cropH);
+              finalDataUrl = offscreen.toDataURL("image/png");
+            }
+          } catch {
+            // fall back to full canvas PNG on any error
+          }
         }
-      } catch {
-        // fall back to full canvas PNG on any error
+
+        // --------------- Gizmo sizing ---------------
+        // DECAL_DOMINANT_SIZE is the single reference parameter that controls
+        // how large decals appear on the 3D model. It sets the world-unit size
+        // of the dominant axis (width or height, whichever is larger).
+        // The other axis is scaled proportionally to preserve the crop aspect ratio.
+        //
+        //   Increase DECAL_DOMINANT_SIZE -> bigger decals on the model.
+        //   Decrease DECAL_DOMINANT_SIZE -> smaller decals on the model.
+        //
+        const DECAL_DOMINANT_SIZE = 0.85; // world units - change ONLY this value to resize all decals
+
+        const cropAspect = bounds.ratioH > 0 ? bounds.ratioW / bounds.ratioH : 1; // W/H of crop
+        let autoW: number, autoH: number;
+        if (cropAspect >= 1) {
+          // wider than tall - dominant axis is width
+          autoW = DECAL_DOMINANT_SIZE;
+          autoH = DECAL_DOMINANT_SIZE / cropAspect;
+        } else {
+          // taller than wide - dominant axis is height
+          autoH = DECAL_DOMINANT_SIZE;
+          autoW = DECAL_DOMINANT_SIZE * cropAspect;
+        }
+        const clamp = (v: number, lo: number, hi: number) => Math.min(hi, Math.max(lo, v));
+        autoW = clamp(autoW, 0.10, 1.50);
+        autoH = clamp(autoH, 0.10, 1.50);
+
+        if (tabExists()) {
+          const prev = tabDecalAutoSizesRef.current;
+          if (!prev[tabId] || Math.abs(prev[tabId].width - autoW) > 0.001 || Math.abs(prev[tabId].height - autoH) > 0.001) {
+            const next = { ...prev, [tabId]: { width: autoW, height: autoH } };
+            tabDecalAutoSizesRef.current = next;
+            setTabDecalAutoSizes(next);
+          }
+        }
+
+        if (finalDataUrl) {
+          tabPreviewCaptureCacheRef.current[tabId] = {
+            fullDataUrl,
+            boundsKey,
+            finalDataUrl,
+          };
+        }
       }
 
-      // --------------- Gizmo sizing ---------------
-      // DECAL_DOMINANT_SIZE is the single reference parameter that controls
-      // how large decals appear on the 3D model. It sets the world-unit size
-      // of the dominant axis (width or height, whichever is larger).
-      // The other axis is scaled proportionally to preserve the crop aspect ratio.
-      //
-      //   Increase DECAL_DOMINANT_SIZE → bigger decals on the model.
-      //   Decrease DECAL_DOMINANT_SIZE → smaller decals on the model.
-      //
-      const DECAL_DOMINANT_SIZE = 0.85; // world units — change ONLY this value to resize all decals
-
-      const cropAspect = bounds.ratioH > 0 ? bounds.ratioW / bounds.ratioH : 1; // W/H of crop
-      let autoW: number, autoH: number;
-      if (cropAspect >= 1) {
-        // wider than tall — dominant axis is width
-        autoW = DECAL_DOMINANT_SIZE;
-        autoH = DECAL_DOMINANT_SIZE / cropAspect;
-      } else {
-        // taller than wide — dominant axis is height
-        autoH = DECAL_DOMINANT_SIZE;
-        autoW = DECAL_DOMINANT_SIZE * cropAspect;
+      if (finalDataUrl && tabExists()) {
+        const current = tabDecalPreviewsRef.current;
+        if (current[tabId] !== finalDataUrl) {
+          const next = { ...current, [tabId]: finalDataUrl };
+          tabDecalPreviewsRef.current = next;
+          setTabDecalPreviews(next);
+        }
       }
-      const clamp = (v: number, lo: number, hi: number) => Math.min(hi, Math.max(lo, v));
-      autoW = clamp(autoW, 0.10, 1.50);
-      autoH = clamp(autoH, 0.10, 1.50);
 
-      const prev = tabDecalAutoSizesRef.current;
-      if (!prev[tabId] || Math.abs(prev[tabId].width - autoW) > 0.001 || Math.abs(prev[tabId].height - autoH) > 0.001) {
-        const next = { ...prev, [tabId]: { width: autoW, height: autoH } };
-        tabDecalAutoSizesRef.current = next;
-        setTabDecalAutoSizes(next);
+      return tabDecalPreviewsRef.current[tabId] ?? null;
+    } finally {
+      tabPreviewCaptureInFlightRef.current.delete(tabId);
+      if (tabPreviewCaptureQueuedRef.current.has(tabId)) {
+        tabPreviewCaptureQueuedRef.current.delete(tabId);
+        void captureTabImage(tabId, { force: true });
       }
     }
-
-    if (finalDataUrl) {
-      const current = tabDecalPreviewsRef.current;
-      if (current[tabId] !== finalDataUrl) {
-        const next = { ...current, [tabId]: finalDataUrl };
-        tabDecalPreviewsRef.current = next;
-        setTabDecalPreviews(next);
-      }
-    }
-
-    return tabDecalPreviewsRef.current[tabId] ?? null;
   }, [setTabDecalPreviews, setTabDecalAutoSizes]);
+
+  const scheduleTabPreviewCapture = useCallback(
+    (tabId: string, options?: { immediate?: boolean }) => {
+      if (!tabId) return;
+      const existingTimer = tabPreviewCaptureTimersRef.current[tabId];
+      if (existingTimer) {
+        window.clearTimeout(existingTimer);
+      }
+      const delay = options?.immediate ? 0 : PREVIEW_CAPTURE_DEBOUNCE_MS;
+      tabPreviewCaptureTimersRef.current[tabId] = window.setTimeout(() => {
+        tabPreviewCaptureTimersRef.current[tabId] = null;
+        void captureTabImage(tabId);
+      }, delay);
+    },
+    [captureTabImage]
+  );
 
   const ensureTabHasDecalPreview = useCallback(async (tabId: string) => {
     const result = await captureTabImage(tabId);
@@ -957,6 +1067,9 @@ const Creation = () => {
       const placements = payload.tabDecalPlacements as Record<string, DecalTransform>;
       tabDecalPlacementsRef.current = placements;
       setTabDecalPlacements(placements);
+    } else {
+      tabDecalPlacementsRef.current = {};
+      setTabDecalPlacements({});
     }
     if (payload.tabPrintTypes && typeof payload.tabPrintTypes === "object") {
       const ptypes = payload.tabPrintTypes as Record<string, string>;
@@ -1389,8 +1502,9 @@ const Creation = () => {
 
   useEffect(() => {
     if (!activeIs2D) {
-      setCanUndo(false);
-      setCanRedo(false);
+      const history = decalHistoryRef.current;
+      setCanUndo(!!history?.canUndo());
+      setCanRedo(!!history?.canRedo());
       setSelectionKind("none");
       setSelectionInfo(null);
       setCanSaveSelectedImage(false);
@@ -1435,7 +1549,7 @@ const Creation = () => {
     const id = tabId || activeCanvasTab;
     if (!id) return tabSnapshotsRef.current;
     // Captura imagem para preview 3D
-    void captureTabImage(id);
+    scheduleTabPreviewCapture(id, { immediate: true });
     // Salva JSON apenas para persistência (draft/export)
     const tabType = canvasTabs.find(t => t.id === id)?.type;
     if (tabType === "2d") {
@@ -1455,7 +1569,7 @@ const Creation = () => {
       }
     }
     return tabSnapshotsRef.current;
-  }, [activeCanvasTab, canvasTabs, editorRefs, captureTabImage]);
+  }, [activeCanvasTab, canvasTabs, editorRefs, scheduleTabPreviewCapture]);
 
 
   const syncFontsFromEditor = useCallback(
@@ -1467,10 +1581,42 @@ const Creation = () => {
       try {
         const fonts = editorInstance.listUsedFonts();
         fonts.forEach((family) => fn(family));
+        window.dispatchEvent(
+          new CustomEvent("editor2d:fontsInUse", {
+            detail: {
+              tabId: activeCanvasTab,
+              fontFamilies: fonts,
+            },
+          })
+        );
       } catch { }
     },
     [activeCanvasTab]
   );
+
+  useEffect(() => {
+    const onRequestFontsInUse = () => {
+      const inst = editorRefs.current[activeCanvasTab];
+      if (!inst?.listUsedFonts) return;
+
+      try {
+        const fonts = inst.listUsedFonts();
+        window.dispatchEvent(
+          new CustomEvent("editor2d:fontsInUse", {
+            detail: {
+              tabId: activeCanvasTab,
+              fontFamilies: fonts,
+            },
+          })
+        );
+      } catch { }
+    };
+
+    window.addEventListener("editor2d:requestFontsInUse", onRequestFontsInUse as EventListener);
+    return () => {
+      window.removeEventListener("editor2d:requestFontsInUse", onRequestFontsInUse as EventListener);
+    };
+  }, [activeCanvasTab]);
 
   useEffect(() => {
     if (!activeIs2D) return;
@@ -1527,6 +1673,16 @@ const Creation = () => {
 
   const removeCanvasTab = (tabId: string) => {
     if (tabId === "3d") return;
+
+    const previewTimer = tabPreviewCaptureTimersRef.current[tabId];
+    if (previewTimer) {
+      window.clearTimeout(previewTimer);
+      tabPreviewCaptureTimersRef.current[tabId] = null;
+    }
+    tabPreviewCaptureQueuedRef.current.delete(tabId);
+    tabPreviewCaptureInFlightRef.current.delete(tabId);
+    delete tabPreviewCaptureCacheRef.current[tabId];
+
     setTabDecalPreviews((prev) => {
       const next = { ...prev };
       delete next[tabId];
@@ -1539,13 +1695,15 @@ const Creation = () => {
       tabVisibilityRef.current = next;
       return next;
     });
-    setTabDecalPlacements((prev) => {
-      if (!(tabId in prev)) return prev;
-      const next = { ...prev };
-      delete next[tabId];
-      tabDecalPlacementsRef.current = next;
-      return next;
-    });
+    const currentPlacements = tabDecalPlacementsRef.current;
+    if (tabId in currentPlacements) {
+      const nextPlacements = { ...currentPlacements };
+      delete nextPlacements[tabId];
+      tabDecalPlacementsRef.current = nextPlacements;
+      setTabDecalPlacements(nextPlacements);
+      push3DHistory("remove");
+      scheduleDraftSave();
+    }
     const updated = canvasTabs.filter((t) => t.id !== tabId);
     canvasTabsRef.current = updated;
     setCanvasTabs(updated);
@@ -1768,13 +1926,106 @@ const Creation = () => {
         const tabId = pendingScheduledTabRef.current ?? undefined;
         pendingScheduledTabRef.current = null;
         void saveDraft({ tabId });
-      }, 500);
+      }, DRAFT_SAVE_DEBOUNCE_MS);
     },
     [saveDraft]
   );
 
+  const emit3DHistory = useCallback(() => {
+    const history = decalHistoryRef.current;
+    if (!history || activeCanvasTabRef.current !== "3d") return;
+    setCanUndo(history.canUndo());
+    setCanRedo(history.canRedo());
+  }, []);
+
+  const push3DHistory = useCallback((label?: string) => {
+    decalHistoryRef.current?.push(label);
+    emit3DHistory();
+  }, [emit3DHistory]);
+
+  const undo3D = useCallback(async () => {
+    await decalHistoryRef.current?.undo();
+    emit3DHistory();
+  }, [emit3DHistory]);
+
+  const redo3D = useCallback(async () => {
+    await decalHistoryRef.current?.redo();
+    emit3DHistory();
+  }, [emit3DHistory]);
+
+  const handleUndo = useCallback(() => {
+    if (activeCanvasTabRef.current === "3d") {
+      void undo3D();
+      return;
+    }
+    editorRefs.current[activeCanvasTabRef.current]?.undo?.();
+  }, [undo3D]);
+
+  const handleRedo = useCallback(() => {
+    if (activeCanvasTabRef.current === "3d") {
+      void redo3D();
+      return;
+    }
+    editorRefs.current[activeCanvasTabRef.current]?.redo?.();
+  }, [redo3D]);
+
+  useEffect(() => {
+    if (decalHistoryRef.current) return;
+    decalHistoryRef.current = new HistoryManager({
+      limit: DECAL_HISTORY_LIMIT,
+      snapshot: () => serializeDecalPlacements(tabDecalPlacementsRef.current),
+      restore: async (snapshot: string) => {
+        const placements = parseDecalPlacementsSnapshot(snapshot);
+        tabDecalPlacementsRef.current = placements;
+        setTabDecalPlacements(placements);
+        scheduleDraftSave();
+        await new Promise<void>((resolve) => {
+          window.setTimeout(() => resolve(), 0);
+        });
+        emit3DHistory();
+      },
+    });
+    decalHistoryRef.current.captureInitial();
+    emit3DHistory();
+  }, [emit3DHistory, scheduleDraftSave]);
+
+  useEffect(() => {
+    const onKeyDown = (event: KeyboardEvent) => {
+      if (!(event.ctrlKey || event.metaKey)) return;
+
+      const key = event.key.toLowerCase();
+      const shouldUndo = key === "z" && !event.shiftKey;
+      const shouldRedo = key === "y" || (key === "z" && event.shiftKey);
+      if (!shouldUndo && !shouldRedo) return;
+
+      event.preventDefault();
+      event.stopPropagation();
+
+      const history = decalHistoryRef.current;
+
+      if (shouldUndo) {
+        if (history?.canUndo()) {
+          void undo3D();
+          return;
+        }
+        editorRefs.current[activeCanvasTabRef.current]?.undo?.();
+      } else {
+        if (history?.canRedo()) {
+          void redo3D();
+          return;
+        }
+        editorRefs.current[activeCanvasTabRef.current]?.redo?.();
+      }
+    };
+
+    // capture=true ensures shortcuts are handled consistently before nested editors swallow the event
+    window.addEventListener("keydown", onKeyDown, true);
+    return () => window.removeEventListener("keydown", onKeyDown, true);
+  }, [redo3D, undo3D]);
+
   const handleDecalStateChange = useCallback(
     (snapshots: DecalStateSnapshot[]) => {
+      const shouldCommitHistory = snapshots.some((snapshot) => snapshot.historyCommit);
       const nextAlerts: Record<string, string[]> = {};
       const minArea = subtypePrintConstraints?.min_decal_area_cm2 ?? 5;
       const neckYMin = subtypePrintConstraints?.neck_zone_y_min ?? 0.82;
@@ -1840,11 +2091,19 @@ const Creation = () => {
         placementsChanged = true;
         return next;
       });
-      if (placementsChanged) {
+      if (shouldCommitHistory) {
+        // Commit is transactional (end of move/resize/rotate), just like 2D.
+        // It must be recorded even if the final frame equals the last preview frame.
+        push3DHistory("modify");
         scheduleDraftSave();
+        return;
+      }
+
+      if (placementsChanged && activeCanvasTabRef.current === "3d") {
+        emit3DHistory();
       }
     },
-    [scheduleDraftSave, subtypePrintConstraints]
+    [emit3DHistory, push3DHistory, scheduleDraftSave, subtypePrintConstraints]
   );
 
   useEffect(() => {
@@ -1877,6 +2136,14 @@ const Creation = () => {
         window.clearTimeout(scheduledDraftSaveRef.current);
         scheduledDraftSaveRef.current = null;
       }
+      decalHistoryRef.current = null;
+      Object.values(tabPreviewCaptureTimersRef.current).forEach((timerId) => {
+        if (timerId) window.clearTimeout(timerId);
+      });
+      tabPreviewCaptureTimersRef.current = {};
+      tabPreviewCaptureQueuedRef.current.clear();
+      tabPreviewCaptureInFlightRef.current.clear();
+      tabPreviewCaptureCacheRef.current = {};
     };
   }, []);
 
@@ -2013,8 +2280,8 @@ const Creation = () => {
               editor2DRef={{ current: editorRefs.current[activeCanvasTab] as Editor2DHandle | undefined }}
               canUndo={canUndo}
               canRedo={canRedo}
-              onUndo={activeIs2D ? () => editorRefs.current[activeCanvasTab]?.undo?.() : undefined}
-              onRedo={activeIs2D ? () => editorRefs.current[activeCanvasTab]?.redo?.() : undefined}
+              onUndo={handleUndo}
+              onRedo={handleRedo}
             />
           </div>
 
@@ -2316,8 +2583,8 @@ const Creation = () => {
                       setTrashMode={setTrashMode}
                       selectionKind="none"
                       editor2DRef={editorRefs.current[activeCanvasTab] as Editor2DHandle}
-                      onUndo={activeIs2D ? () => editorRefs.current[activeCanvasTab]?.undo?.() : undefined}
-                      onRedo={activeIs2D ? () => editorRefs.current[activeCanvasTab]?.redo?.() : undefined}
+                      onUndo={handleUndo}
+                      onRedo={handleRedo}
                       canUndo={canUndo}
                       canRedo={canRedo}
                       onApplyGradient={(gradient) => editorRefs.current[activeCanvasTab]?.applyGradientToSelection?.(gradient)}
@@ -2415,7 +2682,7 @@ const Creation = () => {
 
                                     if (!selectionListenerGuard.current.has(inst)) {
                                       inst.onSelectionChange?.((kind) => {
-                                        if (tab.id === activeCanvasTab) {
+                                        if (tab.id === activeCanvasTabRef.current) {
                                           setSelectionKind(kind);
                                           if (kind === "none") {
                                             setSelectionInfo(null);
@@ -2431,30 +2698,23 @@ const Creation = () => {
 
                                     if (!cropListenerGuard.current.has(inst)) {
                                       inst.onCropModeChange?.((active) => {
-                                        if (tab.id === activeCanvasTab) setCropModeActive(active);
+                                        if (tab.id === activeCanvasTabRef.current) setCropModeActive(active);
                                       });
                                       cropListenerGuard.current.add(inst);
                                     }
 
                                     if (!colorCutListenerGuard.current.has(inst)) {
                                       inst.onColorCutModeChange?.((active) => {
-                                        if (tab.id === activeCanvasTab) setColorCutModeActive(active);
+                                        if (tab.id === activeCanvasTabRef.current) setColorCutModeActive(active);
                                       });
                                       colorCutListenerGuard.current.add(inst);
                                     }
 
                                     if (!effectsListenerGuard.current.has(inst)) {
                                       inst.onEffectEditModeChange?.((active) => {
-                                        if (tab.id === activeCanvasTab) setEffectsEditModeActive(active);
+                                        if (tab.id === activeCanvasTabRef.current) setEffectsEditModeActive(active);
                                       });
                                       effectsListenerGuard.current.add(inst);
-                                    }
-
-                                    // sincroniza o estado imediatamente ao montar/reativar
-                                    if (tab.id === activeCanvasTab) {
-                                      setCropModeActive(!!inst.isCropActive?.());
-                                      setEffectsEditModeActive(!!inst.isEffectBrushActive?.() || !!inst.isEffectLassoActive?.());
-                                      setColorCutModeActive(!!inst.isColorCutActive?.());
                                     }
                                   }}
                                   isActive={activeIs2D && tab.id === activeCanvasTab}
@@ -2482,7 +2742,7 @@ const Creation = () => {
                                       setCanUndo(u);
                                       setCanRedo(r);
                                       if (tabVisibility[tab.id]) {
-                                        void captureTabImage(tab.id);
+                                        scheduleTabPreviewCapture(tab.id);
                                       }
                                       // Salva o rascunho automaticamente a cada modificação
                                       scheduleDraftSave({ tabId: tab.id });
@@ -2617,8 +2877,8 @@ const Creation = () => {
                                 setTrashMode={setTrashMode}
                                 selectionKind={selectionKind}
                                 editor2DRef={editorRefs.current[activeCanvasTab] as Editor2DHandle}
-                                onUndo={activeIs2D ? () => editorRefs.current[activeCanvasTab]?.undo?.() : undefined}
-                                onRedo={activeIs2D ? () => editorRefs.current[activeCanvasTab]?.redo?.() : undefined}
+                                onUndo={handleUndo}
+                                onRedo={handleRedo}
                                 canUndo={canUndo}
                                 canRedo={canRedo}
                                 onApplyGradient={(gradient) => editorRefs.current[activeCanvasTab]?.applyGradientToSelection?.(gradient)}
