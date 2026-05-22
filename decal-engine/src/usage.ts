@@ -12,6 +12,7 @@ export type ExternalDecalPayload = {
   id: string;
   label?: string;
   src: string;
+  printType?: string;
   locked?: boolean;
   width?: number;
   height?: number;
@@ -283,6 +284,89 @@ export async function initDecalDemo(container: HTMLElement, opts?: InitDecalDemo
   const textureLoader = new THREE.TextureLoader();
   let currentModelBaseColor = new THREE.Color(opts?.baseColor || "#ffffff");
 
+  const createFabricMaps = () => {
+    const size = 256;
+    const bumpCanvas = document.createElement("canvas");
+    bumpCanvas.width = size;
+    bumpCanvas.height = size;
+    const bumpCtx = bumpCanvas.getContext("2d");
+    if (!bumpCtx) return null;
+
+    // Trama procedural simples: fios ortogonais + ruído leve para aparência têxtil.
+    const base = bumpCtx.createImageData(size, size);
+    for (let y = 0; y < size; y++) {
+      for (let x = 0; x < size; x++) {
+        const i = (y * size + x) * 4;
+        const warp = Math.sin((x / size) * Math.PI * 2 * 48);
+        const weft = Math.sin((y / size) * Math.PI * 2 * 48);
+        const cross = Math.sin(((x + y) / size) * Math.PI * 2 * 6) * 0.08;
+        const noise = (Math.random() - 0.5) * 0.05;
+        const h = Math.min(1, Math.max(0, 0.5 + warp * 0.2 + weft * 0.2 + cross + noise));
+        const v = Math.round(h * 255);
+        base.data[i] = v;
+        base.data[i + 1] = v;
+        base.data[i + 2] = v;
+        base.data[i + 3] = 255;
+      }
+    }
+    bumpCtx.putImageData(base, 0, 0);
+
+    const roughCanvas = document.createElement("canvas");
+    roughCanvas.width = size;
+    roughCanvas.height = size;
+    const roughCtx = roughCanvas.getContext("2d");
+    if (!roughCtx) return null;
+    const roughData = roughCtx.createImageData(size, size);
+    for (let y = 0; y < size; y++) {
+      for (let x = 0; x < size; x++) {
+        const i = (y * size + x) * 4;
+        const grain = 0.74 + (Math.random() - 0.5) * 0.18;
+        const v = Math.round(Math.min(1, Math.max(0, grain)) * 255);
+        roughData.data[i] = v;
+        roughData.data[i + 1] = v;
+        roughData.data[i + 2] = v;
+        roughData.data[i + 3] = 255;
+      }
+    }
+    roughCtx.putImageData(roughData, 0, 0);
+
+    const bumpMap = new THREE.CanvasTexture(bumpCanvas);
+    const roughnessMap = new THREE.CanvasTexture(roughCanvas);
+    [bumpMap, roughnessMap].forEach((tex) => {
+      tex.wrapS = THREE.RepeatWrapping;
+      tex.wrapT = THREE.RepeatWrapping;
+      tex.repeat.set(20, 20);
+      tex.needsUpdate = true;
+    });
+
+    return { bumpMap, roughnessMap };
+  };
+
+  const fabricMaps = createFabricMaps();
+
+  const applyFabricLookToMaterial = (material: THREE.Material) => {
+    const anyMat = material as any;
+    if (!anyMat) return;
+
+    if ("roughness" in anyMat) anyMat.roughness = 0.92;
+    if ("metalness" in anyMat) anyMat.metalness = 0.02;
+    if ("envMapIntensity" in anyMat) anyMat.envMapIntensity = 0.45;
+
+    if (fabricMaps) {
+      const maxAnisotropy = renderer.capabilities.getMaxAnisotropy?.() ?? 1;
+      fabricMaps.bumpMap.anisotropy = maxAnisotropy;
+      fabricMaps.roughnessMap.anisotropy = maxAnisotropy;
+
+      if ("bumpMap" in anyMat) {
+        anyMat.bumpMap = fabricMaps.bumpMap;
+        anyMat.bumpScale = 0.02;
+      }
+      if ("roughnessMap" in anyMat) {
+        anyMat.roughnessMap = fabricMaps.roughnessMap;
+      }
+    }
+  };
+
   const setModelBaseColor = (color: string) => {
     const nextColor = new THREE.Color(color || "#ffffff");
     currentModelBaseColor = nextColor;
@@ -296,6 +380,7 @@ export async function initDecalDemo(container: HTMLElement, opts?: InitDecalDemo
         const colorProp = (material as THREE.MeshStandardMaterial).color;
         if (!colorProp || !(colorProp instanceof THREE.Color)) return;
         colorProp.copy(nextColor);
+        applyFabricLookToMaterial(material);
         material.needsUpdate = true;
       };
 
@@ -324,6 +409,7 @@ export async function initDecalDemo(container: HTMLElement, opts?: InitDecalDemo
   type DecalRecord = {
     id: string;
     galleryItemId: string;
+    printType: string | null;
     locked: boolean;
     projector: ProjectorLike;
     texture: THREE.Texture;
@@ -341,6 +427,67 @@ export async function initDecalDemo(container: HTMLElement, opts?: InitDecalDemo
   let activeDecalId: string | null = null;
   const pendingExternalDecals = new Set<string>();
   const pendingExternalPayloads = new Map<string, ExternalDecalPayload>();
+
+  const normalizePrintType = (value?: string | null): "dtf" | "embroidery" | "default" => {
+    if (!value) return "default";
+    const normalized = value
+      .toLowerCase()
+      .normalize("NFD")
+      .replace(/[\u0300-\u036f]/g, "")
+      .trim();
+
+    if (normalized.includes("bordad") || normalized.includes("embroid")) return "embroidery";
+    if (normalized.includes("dtf")) return "dtf";
+    return "default";
+  };
+
+  const applyDecalVisualStyleToMesh = (mesh: THREE.Mesh | null, printType?: string | null) => {
+    if (!mesh) return;
+
+    const style = normalizePrintType(printType);
+
+    const applyToMaterial = (material: THREE.Material) => {
+      if (material instanceof THREE.MeshBasicMaterial || material instanceof THREE.MeshStandardMaterial) {
+        if (style === "embroidery") {
+          material.transparent = true;
+          material.opacity = 0.9;
+          material.alphaTest = 0.16;
+          material.color.setRGB(0.9, 0.9, 0.9);
+          if (material instanceof THREE.MeshStandardMaterial) {
+            material.roughness = 0.98;
+            material.metalness = 0;
+          }
+        } else {
+          material.transparent = true;
+          material.opacity = 1;
+          material.alphaTest = 0.03;
+          material.color.setRGB(1, 1, 1);
+          if (material instanceof THREE.MeshStandardMaterial) {
+            material.roughness = 0.7;
+            material.metalness = 0;
+          }
+        }
+        material.needsUpdate = true;
+        return;
+      }
+
+      if (material instanceof THREE.ShaderMaterial) {
+        if (material.uniforms?.opacity) {
+          material.uniforms.opacity.value = style === "embroidery" ? 0.9 : 1;
+        }
+        if (material.uniforms?.feather) {
+          material.uniforms.feather.value = style === "embroidery" ? 0.045 : 0.02;
+        }
+        material.needsUpdate = true;
+      }
+    };
+
+    if (Array.isArray(mesh.material)) {
+      mesh.material.forEach(applyToMaterial);
+    } else {
+      applyToMaterial(mesh.material);
+    }
+  };
 
   const depthMultiplier = 1.0;
   const GIZMO_EXTENT_SCALE = 1.18; // margem extra para reduzir clipping nas bordas
@@ -874,6 +1021,7 @@ export async function initDecalDemo(container: HTMLElement, opts?: InitDecalDemo
 
       const ext = pendingExternalPayloads.get(item.id);
       const locked = !!ext?.locked;
+      const printType = ext?.printType ?? null;
       if (ext) {
         if (typeof ext.width === "number") width = ext.width;
         if (typeof ext.height === "number") height = ext.height;
@@ -924,10 +1072,12 @@ export async function initDecalDemo(container: HTMLElement, opts?: InitDecalDemo
       if (mesh) {
         mesh.userData = mesh.userData || {};
         (mesh.userData as Record<string, unknown>).__decalId = item.id;
+        applyDecalVisualStyleToMesh(mesh, printType);
       }
       const record: DecalRecord = {
         id: item.id,
         galleryItemId: item.id,
+        printType,
         locked,
         projector: adapter,
         texture,
@@ -1005,8 +1155,9 @@ export async function initDecalDemo(container: HTMLElement, opts?: InitDecalDemo
         const prevDepth = record.depth;
         const prevAngle = record.angle;
 
-        record.texture = texture;
-        record.aspect = getTextureAspect(texture);
+  record.texture = texture;
+  record.aspect = getTextureAspect(texture);
+  record.printType = payload.printType ?? null;
         record.locked = !!payload.locked;
         const hasWidth = typeof payload.width === "number";
         const hasHeight = typeof payload.height === "number";
@@ -1055,6 +1206,7 @@ export async function initDecalDemo(container: HTMLElement, opts?: InitDecalDemo
             record.angle
           );
         }
+        applyDecalVisualStyleToMesh(record.projector.getMesh?.() ?? record.mesh, record.printType);
         if (record.locked) {
           galleryState.selectedIds.delete(id);
           if (activeDecalId === id) setActiveDecal(null);
@@ -1147,6 +1299,7 @@ export async function initDecalDemo(container: HTMLElement, opts?: InitDecalDemo
         mesh.userData = mesh.userData || {};
         (mesh.userData as Record<string, unknown>).__decalId = record.id;
       }
+      applyDecalVisualStyleToMesh(record.mesh, record.printType);
     }
     queueEmitDecalState();
   }
@@ -2909,6 +3062,10 @@ export async function initDecalDemo(container: HTMLElement, opts?: InitDecalDemo
     resizeObserver.disconnect();
     controls.dispose();
     renderer.dispose();
+    if (fabricMaps) {
+      fabricMaps.bumpMap.dispose();
+      fabricMaps.roughnessMap.dispose();
+    }
     container.innerHTML = "";
   };
 
