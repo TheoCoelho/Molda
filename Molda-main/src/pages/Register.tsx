@@ -3,7 +3,7 @@ import React, { useState } from "react";
 import Header from "@/components/Header";
 import { useAuth } from "@/contexts/AuthContext";
 import { Link, useNavigate } from "react-router-dom";
-import { supabase } from "@/integrations/supabase/client";
+import { ApiError, apiRequest } from "@/api/backend";
 import { Card, CardContent, CardDescription, CardHeader, CardTitle } from "@/components/ui/card";
 import { Label } from "@/components/ui/label";
 import { Input } from "@/components/ui/input";
@@ -53,23 +53,29 @@ const Register: React.FC = () => {
   }) {
     if (!checkEmail && !checkCpf && !checkPhone && !checkUsername) return;
 
-    const { data, error } = await supabase.rpc("check_availability", {
-      p_email:    checkEmail    ? email.trim()    : null,
-      p_cpf:      checkCpf      ? clamp11(cpf)    : null,
-      p_phone:    checkPhone    ? clamp11(phone)  : null,
-      p_username: checkUsername ? username.trim() : null,
-    });
+    try {
+      const data = await apiRequest<{
+        email_taken?: boolean;
+        cpf_taken?: boolean;
+        phone_taken?: boolean;
+        username_taken?: boolean;
+      }>("/auth/check-availability", {
+        method: "POST",
+        body: {
+          email: checkEmail ? email.trim() : undefined,
+          cpf: checkCpf ? clamp11(cpf) : undefined,
+          phone: checkPhone ? clamp11(phone) : undefined,
+          username: checkUsername ? username.trim() : undefined,
+        },
+      });
 
-    if (error) {
+      if (checkEmail) setEmailTaken(Boolean(data.email_taken));
+      if (checkCpf) setCpfTaken(Boolean(data.cpf_taken));
+      if (checkPhone) setPhoneTaken(Boolean(data.phone_taken));
+      if (checkUsername) setUsernameTaken(Boolean(data.username_taken));
+    } catch (error) {
       console.error("Falha ao checar disponibilidade:", error);
-      return;
     }
-
-    const d = (data as any) || {};
-    if (checkEmail)    setEmailTaken(Boolean(d.email_taken));
-    if (checkCpf)      setCpfTaken(Boolean(d.cpf_taken));
-    if (checkPhone)    setPhoneTaken(Boolean(d.phone_taken));
-    if (checkUsername) setUsernameTaken(Boolean(d.username_taken));
   }
 
   const onSubmit = async (e: React.FormEvent) => {
@@ -99,19 +105,38 @@ const Register: React.FC = () => {
 
     // Checagem final
     {
-      const { data, error } = await supabase.rpc("check_availability", {
-        p_email: email.trim(),
-        p_cpf: normalizedCpf,
-        p_phone: normalizedPhone,
-        p_username: username.trim(),
-      });
+      let data:
+        | {
+            email_taken?: boolean;
+            cpf_taken?: boolean;
+            phone_taken?: boolean;
+            username_taken?: boolean;
+          }
+        | undefined;
 
-      if (error) {
-        setErrMsg("Erro ao verificar disponibilidade. Tente novamente.");
-        return;
+      try {
+        data = await apiRequest<{
+          email_taken?: boolean;
+          cpf_taken?: boolean;
+          phone_taken?: boolean;
+          username_taken?: boolean;
+        }>("/auth/check-availability", {
+          method: "POST",
+          body: {
+            email: email.trim(),
+            cpf: normalizedCpf,
+            phone: normalizedPhone,
+            username: username.trim(),
+          },
+        });
+      } catch (error) {
+        if (!(error instanceof ApiError) || error.status !== 0) {
+          setErrMsg("Erro ao verificar disponibilidade. Tente novamente.");
+          return;
+        }
       }
 
-      const { email_taken, cpf_taken, phone_taken, username_taken } = (data as any) || {};
+      const { email_taken, cpf_taken, phone_taken, username_taken } = data || {};
       setEmailTaken(Boolean(email_taken));
       setCpfTaken(Boolean(cpf_taken));
       setPhoneTaken(Boolean(phone_taken));

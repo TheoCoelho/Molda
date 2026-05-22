@@ -26,4 +26,7 @@ export default defineConfig(({ mode }) => ({
     include: ["three"],
     exclude: ["@imgly/background-removal"],
   },
+  worker: {
+    format: "es",
+  },
 }));

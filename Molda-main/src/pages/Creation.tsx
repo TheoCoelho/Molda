@@ -20,7 +20,6 @@ import Editor2D, {
   ShapeKind,
   SelectionInfo,
 } from "../components/Editor2D";
-import { supabase } from "../integrations/supabase/client";
 import {
   ContextMenu,
   ContextMenuContent,
@@ -36,7 +35,8 @@ import { PatternSubmenu } from "../components/PatternSubmenuEnhanced";
 import type { PatternDefinition } from "../lib/patterns";
 import { useAuth } from "../contexts/AuthContext";
 import type { ExternalDecalData, DecalTransform, DecalStateSnapshot } from "../types/decals";
-import { STORAGE_BUCKET } from "../lib/supabaseClient";
+import { apiRequest } from "@/api/backend";
+import { ensureBackendAccessToken } from "@/lib/backendAuth";
 import { toast } from "sonner";
 import { normalizeDbDecalZones, type ModelDecalZone } from "../lib/models";
 
@@ -247,38 +247,24 @@ const Creation = () => {
       if (!subtype) return;
 
       try {
-        let typeId: string | null = null;
-        if (type) {
-          const { data: typeRow } = await supabase
-            .from("product_types")
-            .select("id")
-            .ilike("name", type)
-            .maybeSingle();
-          typeId = typeRow?.id ?? null;
-        }
+        const [typeRows, subtypeRows] = await Promise.all([
+          apiRequest<Array<{ id: string; name?: string }>>("/catalog/product-types"),
+          apiRequest<Array<SubtypePrintConstraints & { type_id?: string; name?: string }>>("/catalog/product-subtypes"),
+        ]);
 
-        let subtypeQuery = supabase
-          .from("product_subtypes")
-          .select("id, print_area_width_cm, print_area_height_cm, min_decal_area_cm2, neck_zone_y_min, underarm_zone_y_min, underarm_zone_y_max, underarm_zone_abs_x_min, decal_zones_json")
-          .ilike("name", subtype)
-          .limit(1);
+        const typeId = type
+          ? (typeRows.find((row) => String(row?.name ?? "").toLowerCase() === type.toLowerCase())?.id ?? null)
+          : null;
 
-        if (typeId) {
-          subtypeQuery = supabase
-            .from("product_subtypes")
-            .select("id, print_area_width_cm, print_area_height_cm, min_decal_area_cm2, neck_zone_y_min, underarm_zone_y_min, underarm_zone_y_max, underarm_zone_abs_x_min, decal_zones_json")
-            .eq("type_id", typeId)
-            .ilike("name", subtype)
-            .limit(1);
-        }
+        const subtypeMeta = subtypeRows.find((row) => {
+          const matchesName = String(row?.name ?? "").toLowerCase() === subtype.toLowerCase();
+          if (!matchesName) return false;
+          if (!typeId) return true;
+          return row.type_id === typeId;
+        });
 
-        const { data: subtypeRows, error: subtypeErr } = await subtypeQuery;
-        if (subtypeErr) throw subtypeErr;
+        if (!subtypeMeta) return;
 
-        const subtypeId = subtypeRows?.[0]?.id;
-        if (!subtypeId) return;
-
-        const subtypeMeta = subtypeRows?.[0] as SubtypePrintConstraints | undefined;
         if (subtypeMeta) {
           setSubtypePrintConstraints({
             id: subtypeMeta.id,
@@ -293,31 +279,6 @@ const Creation = () => {
           });
           setSubtypeDecalZonesOverride(normalizeDbDecalZones(subtypeMeta.decal_zones_json));
         }
-
-        const { data: relRows, error: relErr } = await supabase
-          .from("subtype_materials")
-          .select("material_id")
-          .eq("subtype_id", subtypeId)
-          .limit(1);
-        if (relErr) throw relErr;
-
-        const materialId = relRows?.[0]?.material_id;
-        if (!materialId) return;
-
-        const { data: materialRow, error: materialErr } = await supabase
-          .from("materials")
-          .select("name")
-          .eq("id", materialId)
-          .maybeSingle();
-        if (materialErr) throw materialErr;
-
-        if (cancelled) return;
-        const resolvedFabric = materialRow?.name ?? null;
-        if (!resolvedFabric) return;
-
-        setFixedSubtypeFabric(resolvedFabric);
-        setFabric(resolvedFabric);
-        setIsSubtypeFabricLocked(true);
       } catch (err) {
         console.warn("[creation.resolveSubtypeFabric]", err);
       }
@@ -973,10 +934,11 @@ const Creation = () => {
           id: tab.id,
           label: tab.name,
           dataUrl: tabDecalPreviews[tab.id],
+          printType: tabPrintTypes[tab.id],
           transform,
         };
       });
-  }, [canvasTabs, tabDecalPreviews, tabVisibility, tabDecalPlacements, tabDecalAutoSizes]);
+  }, [canvasTabs, tabDecalPreviews, tabVisibility, tabDecalPlacements, tabDecalAutoSizes, tabPrintTypes]);
 
   const viabilityAlertItems = useMemo(() => {
     return Object.entries(decalViabilityAlerts).map(([id, messages]) => {
@@ -1133,47 +1095,43 @@ const Creation = () => {
 
     const loadRemote = async () => {
       try {
-        if (!supabase) return;
+        const auth = await ensureBackendAccessToken();
+        if (!auth?.token) return;
 
         const targetDraftId = navigationState.draftId ?? draftIdRef.current;
         const targetDraftKey = draftKeyRef.current ?? navigationState.draftKey ?? navigationState.projectKey ?? null;
 
         let response: any = null;
-        let error: any = null;
 
         if (targetDraftId) {
-          const result = await supabase
-            .from("project_drafts")
-            .select("id, project_key, data")
-            .eq("id", targetDraftId)
-            .maybeSingle();
-          response = result.data ?? null;
-          error = result.error ?? null;
+          response = await apiRequest<any>(`/drafts/${targetDraftId}`, {
+            token: auth.token,
+          });
         } else if (targetDraftKey) {
-          const result = await supabase
-            .from("project_drafts")
-            .select("id, project_key, data")
-            .eq("project_key", targetDraftKey)
-            .order("updated_at", { ascending: false })
-            .maybeSingle();
-          response = result.data ?? null;
-          error = result.error ?? null;
+          const result = await apiRequest<{ items: any[] }>("/drafts?limit=100", {
+            token: auth.token,
+          });
+          response = (result.items ?? []).find((row) => {
+            const data = (row?.design_data ?? {}) as Record<string, unknown>;
+            const key = String(data?.draftKey ?? data?.projectKey ?? "");
+            return key === targetDraftKey;
+          }) ?? null;
         } else {
-          const result = await supabase
-            .from("project_drafts")
-            .select("id, project_key, data")
-            .eq("project_key", legacyProjectKey)
-            .order("updated_at", { ascending: false })
-            .maybeSingle();
-          response = result.data ?? null;
-          error = result.error ?? null;
+          const result = await apiRequest<{ items: any[] }>("/drafts?limit=100", {
+            token: auth.token,
+          });
+          response = (result.items ?? []).find((row) => {
+            const data = (row?.design_data ?? {}) as Record<string, unknown>;
+            const key = String(data?.draftKey ?? data?.projectKey ?? "");
+            return key === legacyProjectKey;
+          }) ?? null;
         }
 
-        if (error || !response || !mounted) return;
+        if (!response || !mounted) return;
 
-        const payload = { ...(response.data ?? {}) } as Record<string, unknown>;
-        if (response.project_key) {
-          const projectKeyStr = String(response.project_key);
+        const payload = { ...((response.design_data ?? response.data ?? {}) as Record<string, unknown>) };
+        if (response.project_key || payload.projectKey || payload.draftKey) {
+          const projectKeyStr = String(response.project_key ?? payload.projectKey ?? payload.draftKey);
           if (typeof payload.draftKey !== "string") payload.draftKey = projectKeyStr;
           if (typeof payload.projectKey !== "string") payload.projectKey = projectKeyStr;
         }
@@ -1428,13 +1386,19 @@ const Creation = () => {
         a.click();
       } catch { }
 
-      // 2) Salvar na galeria (Supabase Storage) para aparecer no UploadGallery
+      // 2) Salvar na galeria da API para aparecer no UploadGallery
       if (!user?.id) {
         toast.error("Faça login para salvar na galeria (o download foi feito localmente).");
         return;
       }
 
       try {
+        const auth = await ensureBackendAccessToken();
+        if (!auth?.token) {
+          toast.error("Sessao expirada. Faca login novamente para salvar na galeria.");
+          return;
+        }
+
         const blob = await (await fetch(dataUrl)).blob();
         const rawBaseName =
           (typeof selectedMeta?.originalName === "string" && selectedMeta.originalName.length
@@ -1444,38 +1408,49 @@ const Creation = () => {
         const filename = selectedGroupId
           ? `${tsPrefix()}-${base}__g-${selectedGroupId}__v.png`
           : `${tsPrefix()}-${base}.png`;
-        const path = `${user.id}/images/${filename}`;
 
-        const { error: uploadErr } = await supabase.storage
-          .from(STORAGE_BUCKET)
-          .upload(path, blob, { upsert: false, contentType: "image/png" });
-        if (uploadErr) throw uploadErr;
-
-        const { error: visibilityErr } = await supabase.from("gallery_visibility").upsert(
-          {
-            user_id: user.id,
-            storage_path: path,
-            is_public: false,
+        const uploadTarget = await apiRequest<{
+          uploadUrl: string;
+          objectKey: string;
+        }>("/gallery/upload-url", {
+          method: "POST",
+          token: auth.token,
+          body: {
+            filename,
+            contentType: "image/png",
           },
-          { onConflict: "user_id,storage_path" }
-        );
-        if (visibilityErr && visibilityErr.code !== "42P01") throw visibilityErr;
+        });
 
-        const { data: signed, error: signErr } = await supabase.storage
-          .from(STORAGE_BUCKET)
-          .createSignedUrl(path, 60 * 60 * 24 * 7);
-        if (signErr) throw signErr;
+        const uploadResponse = await fetch(uploadTarget.uploadUrl, {
+          method: "PUT",
+          headers: {
+            "Content-Type": "image/png",
+          },
+          body: blob,
+        });
 
-        const previewUrl =
-          signed?.signedUrl ||
-          supabase.storage.from(STORAGE_BUCKET).getPublicUrl(path).data.publicUrl ||
-          dataUrl;
+        if (!uploadResponse.ok) {
+          throw new Error("Falha ao enviar imagem para storage.");
+        }
+
+        const createdItem = await apiRequest<{ id: string; image_url: string }>("/gallery/confirm-upload", {
+          method: "POST",
+          token: auth.token,
+          body: {
+            objectKey: uploadTarget.objectKey,
+            title: base,
+            description: selectedGroupId ? `group:${selectedGroupId}` : undefined,
+            isPublic: false,
+          },
+        });
+
+        const previewUrl = createdItem.image_url || dataUrl;
 
         try {
           window.dispatchEvent(
             new CustomEvent("uploadGallery:newItem", {
               detail: {
-                id: path,
+                id: createdItem.id,
                 previewUrl,
                 originalName: `${base}.png`,
                 sortKey: filename.slice(0, 17),
@@ -1758,34 +1733,32 @@ const Creation = () => {
   const flushRemoteSave = useCallback(async () => {
     if (remoteSaveInFlightRef.current) return;
     if (!pendingRemotePayloadRef.current) return;
-    if (!supabase || !user?.id) return;
+    const auth = await ensureBackendAccessToken();
+    if (!auth?.token || !auth.userId) return;
 
     const payload = pendingRemotePayloadRef.current;
     pendingRemotePayloadRef.current = null;
     remoteSaveInFlightRef.current = true;
 
     try {
-      const item = {
-        user_id: user.id,
-        project_key: payload.draftKey,
-        data: payload,
-        updated_at: payload.savedAt,
-        ephemeral_expires_at: payload.ephemeralExpiresAt ?? null,
-      } as const;
+      const nextDraftId = draftIdRef.current || crypto.randomUUID();
+      draftIdRef.current = nextDraftId;
+      setDraftId(nextDraftId);
 
-      const { data: upserted, error } = await supabase
-        .from("project_drafts")
-        .upsert(item, { onConflict: "user_id,project_key" })
-        .select();
-      if (error) {
-        console.error("Falha ao salvar rascunho remoto:", error);
-      } else if (upserted && upserted.length) {
-        const first = upserted[0] as { id?: string; project_key?: string };
-        if (first?.id) {
-          draftIdRef.current = String(first.id);
-          setDraftId(String(first.id));
-        }
-        if (first?.project_key) draftKeyRef.current = first.project_key;
+      const upserted = await apiRequest<{ id: string; version?: number }>(`/drafts/${nextDraftId}`, {
+        method: "PUT",
+        token: auth.token,
+        body: {
+          status: "draft",
+          title: payload.projectName || "Untitled draft",
+          designData: payload,
+          decalPlacements: payload.tabDecalPlacements || {},
+        },
+      });
+
+      if (upserted?.id) {
+        draftIdRef.current = String(upserted.id);
+        setDraftId(String(upserted.id));
       }
     } catch (err) {
       console.error("Erro ao persistir rascunho:", err);
@@ -1803,7 +1776,8 @@ const Creation = () => {
   const queueRemoteSave = useCallback(
     async (payload: DraftPayload, options?: { immediate?: boolean }) => {
       pendingRemotePayloadRef.current = payload;
-      if (!supabase || !user?.id) return;
+      const auth = await ensureBackendAccessToken();
+      if (!auth?.token || !auth.userId) return;
 
       if (options?.immediate) {
         if (remoteSaveTimeoutRef.current) {

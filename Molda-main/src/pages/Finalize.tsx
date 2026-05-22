@@ -11,9 +11,10 @@ import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@
 import { Tabs, TabsContent, TabsList, TabsTrigger } from "@/components/ui/tabs";
 import { ArrowLeft, Loader2, MapPin, PackageCheck, Save, Search, Send } from "lucide-react";
 import { useAuth } from "@/contexts/AuthContext";
-import { supabase } from "@/integrations/supabase/client";
 import { getModelConfigFromSelection } from "@/lib/models";
 import type { ExternalDecalData } from "@/types/decals";
+import { apiRequest } from "@/api/backend";
+import { ensureBackendAccessToken } from "@/lib/backendAuth";
 import { toast } from "sonner";
 
 type ProjectData = {
@@ -47,7 +48,6 @@ type AddressForm = {
 
 type SavedAddressRow = {
   id: string;
-  user_id: string;
   postal_code: string;
   street: string;
   number: string;
@@ -58,6 +58,8 @@ type SavedAddressRow = {
   is_default: boolean;
   created_at: string;
 };
+
+const SAVED_ADDRESSES_KEY = "finalize_saved_addresses_v1";
 
 const DELIVERY_PRICE: Record<DeliveryType, number> = {
   standard: 18,
@@ -133,70 +135,30 @@ const Finalize = () => {
   }, []);
 
   useEffect(() => {
-    if (!user?.id) {
-      setSavedAddresses([]);
-      setSelectedAddressId(null);
-      setShowAddressForm(true);
-      setAddress(EMPTY_ADDRESS);
-      return;
-    }
-
-    let cancelled = false;
-
-    const fetchAddresses = async () => {
-      setLoadingAddresses(true);
-
-      const { data, error } = await supabase
-        .from("profile_addresses")
-        .select("id, user_id, postal_code, street, number, complement, district, city, state, is_default, created_at")
-        .eq("user_id", user.id)
-        .order("is_default", { ascending: false })
-        .order("created_at", { ascending: false });
-
-      if (cancelled) return;
-
-      setLoadingAddresses(false);
-
-      if (error) {
-        console.error("[profile_addresses fetch]", error);
-        const isMissingTable = String(error.code) === "42P01" || String(error.message ?? "").includes("does not exist");
-        if (isMissingTable) {
-          // Tabela ainda não criada no Supabase — tratar como sem endereços cadastrados
-          setSavedAddresses([]);
-          setSelectedAddressId(null);
-          setShowAddressForm(true);
-          setAddress(EMPTY_ADDRESS);
-          return;
-        }
-        toast.error("Não foi possível carregar seus endereços.");
-        setSavedAddresses([]);
-        setSelectedAddressId(null);
-        setShowAddressForm(true);
-        setAddress(EMPTY_ADDRESS);
-        return;
-      }
-
-      const rows = (data ?? []) as SavedAddressRow[];
+    setLoadingAddresses(true);
+    try {
+      const raw = localStorage.getItem(SAVED_ADDRESSES_KEY);
+      const rows = raw ? (JSON.parse(raw) as SavedAddressRow[]) : [];
       setSavedAddresses(rows);
 
       if (rows.length === 0) {
         setSelectedAddressId(null);
         setShowAddressForm(true);
         setAddress(EMPTY_ADDRESS);
-        return;
+      } else {
+        const defaultRow = rows.find((row) => row.is_default) ?? rows[0];
+        setSelectedAddressId(defaultRow.id);
+        setAddress(rowToAddress(defaultRow));
+        setShowAddressForm(false);
       }
-
-      const defaultRow = rows.find((row) => row.is_default) ?? rows[0];
-      setSelectedAddressId(defaultRow.id);
-      setAddress(rowToAddress(defaultRow));
-      setShowAddressForm(false);
-    };
-
-    fetchAddresses();
-
-    return () => {
-      cancelled = true;
-    };
+    } catch {
+      setSavedAddresses([]);
+      setSelectedAddressId(null);
+      setShowAddressForm(true);
+      setAddress(EMPTY_ADDRESS);
+    } finally {
+      setLoadingAddresses(false);
+    }
   }, [user?.id]);
 
   const unitPrice = BASE_PRICE;
@@ -312,37 +274,23 @@ const Finalize = () => {
 
     setSavingAddress(true);
 
-    const { data, error } = await supabase
-      .from("profile_addresses")
-      .insert({
-        user_id: user.id,
-        postal_code: normalizePostalCode(address.postalCode),
-        street: address.street.trim(),
-        number: address.number.trim(),
-        complement: address.complement.trim() || null,
-        district: address.district.trim(),
-        city: address.city.trim(),
-        state: address.state.trim().toUpperCase(),
-        is_default: savedAddresses.length === 0,
-      })
-      .select("id, user_id, postal_code, street, number, complement, district, city, state, is_default, created_at")
-      .single();
+    const inserted: SavedAddressRow = {
+      id: crypto.randomUUID(),
+      postal_code: normalizePostalCode(address.postalCode),
+      street: address.street.trim(),
+      number: address.number.trim(),
+      complement: address.complement.trim() || null,
+      district: address.district.trim(),
+      city: address.city.trim(),
+      state: address.state.trim().toUpperCase(),
+      is_default: savedAddresses.length === 0,
+      created_at: new Date().toISOString(),
+    };
+
+    const nextAddresses = [inserted, ...savedAddresses];
+    localStorage.setItem(SAVED_ADDRESSES_KEY, JSON.stringify(nextAddresses));
 
     setSavingAddress(false);
-
-    if (error) {
-      console.error("[profile_addresses insert]", error);
-      const isMissingTable = String(error.code) === "42P01" || String(error.message ?? "").includes("does not exist");
-      if (isMissingTable) {
-        toast.error("Execute a migration 05_create_profile_addresses.sql no Supabase para ativar endereços.");
-      } else {
-        toast.error(`Não foi possível salvar o endereço. (${String(error.code ?? error.message)})`);
-      }
-      return;
-    }
-
-    const inserted = data as SavedAddressRow;
-    const nextAddresses = [inserted, ...savedAddresses];
 
     setSavedAddresses(nextAddresses);
     setSelectedAddressId(inserted.id);
@@ -381,66 +329,64 @@ const Finalize = () => {
       visibleDecalAssets[0] ??
       null;
 
-    const orderPayload: Record<string, unknown> = {
-      user_id: user.id,
-      status: "pending",
-      design_3d_model_path: modelConfig.src ?? null,
-      design_preview_url: designPreviewUrl,
-      design_specifications: {
-        part: projectData.part ?? null,
-        type: projectData.type ?? null,
-        subtype: projectData.subtype ?? null,
-        size: projectData.size ?? null,
-        fabric: projectData.fabric ?? null,
-      },
-      material_quantity: quantity,
-      material_unit: "un",
-      decals_paths: visibleDecalAssets,
-      colors: { base: projectData.baseColor ?? null },
-      inscriptions: projectData.notes ?? null,
-      custom_metadata: {
-        project_name: projectData.projectName ?? null,
-        canvas_tabs: projectData.canvasTabs ?? [],
-        print_types: projectData.tabPrintTypes ?? {},
-      },
-      unit_price: unitPrice,
-      quantity,
-      material_cost: Number((quantity * 12).toFixed(2)),
-      production_cost: Number((quantity * 20).toFixed(2)),
-      total_cost: Number(totalCost.toFixed(2)),
-      delivery_type: deliveryType,
-      shipping_cost: shippingCost,
-      shipping_address_street: address.street,
-      shipping_address_number: address.number,
-      shipping_address_complement: address.complement || null,
-      shipping_address_district: address.district,
-      shipping_address_city: address.city,
-      shipping_address_state: address.state,
-      shipping_address_postal_code: normalizePostalCode(address.postalCode),
-    };
-
-    const { data, error } = await supabase
-      .from("orders")
-      .insert(orderPayload)
-      .select("id, order_number")
-      .single();
-
-    setSubmitting(false);
-
-    if (error) {
-      console.error(error);
-      const isOrderNumberFormatError = String(error.code) === "22023" && String(error.message ?? "").includes("format()");
-      if (isOrderNumberFormatError) {
-        toast.error("O banco precisa da correção da função de número do pedido (execute 06_fix_assign_order_number_format.sql).");
-      } else {
-        toast.error(`Não foi possível criar o pedido. (${String(error.code ?? error.message)})`);
+    try {
+      const auth = await ensureBackendAccessToken();
+      if (!auth?.token) {
+        navigate("/login", { state: { from: "/finalize" } });
+        return;
       }
-      return;
-    }
 
-    localStorage.removeItem("currentProject");
-    toast.success(`Pedido ${data.order_number} enviado para produção.`);
-    navigate("/profile");
+      const data = await apiRequest<{ order_number?: string }>("/orders", {
+        method: "POST",
+        token: auth.token,
+        body: {
+          shippingCents: Math.round(shippingCost * 100),
+          currency: "BRL",
+          idempotencyKey: `web-${Date.now()}-${Math.random().toString(36).slice(2, 10)}`,
+          items: [
+            {
+              quantity,
+              unitPriceCents: Math.round(unitPrice * 100),
+              designSnapshotUrl: designPreviewUrl,
+              metadata: {
+                model_path: modelConfig.src ?? null,
+                part: projectData.part ?? null,
+                type: projectData.type ?? null,
+                subtype: projectData.subtype ?? null,
+                size: projectData.size ?? null,
+                fabric: projectData.fabric ?? null,
+                base_color: projectData.baseColor ?? null,
+                decals_paths: visibleDecalAssets,
+                notes: projectData.notes ?? null,
+                project_name: projectData.projectName ?? null,
+                canvas_tabs: projectData.canvasTabs ?? [],
+                print_types: projectData.tabPrintTypes ?? {},
+                delivery_type: deliveryType,
+                shipping_address: {
+                  street: address.street,
+                  number: address.number,
+                  complement: address.complement || null,
+                  district: address.district,
+                  city: address.city,
+                  state: address.state,
+                  postal_code: normalizePostalCode(address.postalCode),
+                },
+              },
+            },
+          ],
+        },
+      });
+
+      localStorage.removeItem("currentProject");
+      toast.success(`Pedido ${data.order_number ?? "criado"} enviado para produção.`);
+      navigate("/profile");
+    } catch (error: any) {
+      console.error(error);
+      toast.error(error?.message || "Não foi possível criar o pedido.");
+      return;
+    } finally {
+      setSubmitting(false);
+    }
   };
 
   if (!projectData) {
