@@ -1,5 +1,4 @@
 import React, { useEffect, useMemo, useState, useCallback } from "react";
-import { supabase } from "../integrations/supabase/client";
 import { Button } from "../components/ui/button";
 import { Input } from "../components/ui/input";
 import { Label } from "../components/ui/label";
@@ -35,6 +34,7 @@ import FontPicker from "../components/FontPicker";
 import { FONT_LIBRARY } from "../fonts/library";
 import { generateCreativeName } from "../lib/creativeNames";
 import { DEFAULT_PRODUCT_COLOR_OPTIONS, normalizeHexColor } from "../lib/productColors";
+import { apiRequest } from "@/api/backend";
 
 import type { BrushVariant, Editor2DHandle } from "./Editor2D";
 import ShapeEffectsPanel from "./ShapeEffectsPanel";
@@ -613,19 +613,20 @@ function SettingsContent(props: {
   const availableBaseColors = useMemo(() => [...DEFAULT_PRODUCT_COLOR_OPTIONS], []);
 
   const [dbMaterials, setDbMaterials] = useState<{ id: string; name: string }[]>([]);
-  const [dbPrintingMethods, setDbPrintingMethods] = useState<{ id: string; name: string; sort_order: number | null }[]>([]);
-  const [dbMaterialPrinting, setDbMaterialPrinting] = useState<{ material_id: string; printing_method_id: string }[]>([]);
+  const [dbPrintingMethods] = useState<{ id: string; name: string; sort_order: number | null }[]>([
+    { id: "digital", name: "Digital", sort_order: 1 },
+    { id: "serigrafia", name: "Serigrafia", sort_order: 2 },
+    { id: "bordado", name: "Bordado", sort_order: 3 },
+  ]);
 
   useEffect(() => {
     (async () => {
-      const [mRes, pmRes, mpmRes] = await Promise.all([
-        supabase.from("materials").select("id,name").eq("is_active", true).order("name"),
-        supabase.from("printing_methods").select("id,name,sort_order").eq("is_active", true).order("sort_order"),
-        supabase.from("material_printing_methods").select("material_id,printing_method_id"),
-      ]);
-      if (!mRes.error && mRes.data) setDbMaterials(mRes.data);
-      if (!pmRes.error && pmRes.data) setDbPrintingMethods(pmRes.data);
-      if (!mpmRes.error && mpmRes.data) setDbMaterialPrinting(mpmRes.data);
+      try {
+        const materials = await apiRequest<Array<{ id: string; name: string }>>("/catalog/materials");
+        setDbMaterials(materials);
+      } catch {
+        setDbMaterials([]);
+      }
     })();
   }, []);
 
@@ -651,14 +652,7 @@ function SettingsContent(props: {
     }, [dbMaterials, selectedMaterial, fabric, setFabric]);
 
     const selectedMaterialId = selectedMaterial?.id ?? "";
-    const allowedMethodIds = selectedMaterial
-      ? new Set(dbMaterialPrinting.filter((r) => r.material_id === selectedMaterial.id).map((r) => r.printing_method_id))
-      : null;
-    // Material encontrado no DB: exibe somente metodos vinculados
-    // Material nao encontrado no DB: nao exibe metodos (evita liberar todos por engano)
-    const allowedMethods = selectedMaterial
-      ? dbPrintingMethods.filter((m) => allowedMethodIds!.has(m.id))
-      : [];
+    const allowedMethods = selectedMaterial ? dbPrintingMethods : [];
 
     // Reseta tabPrintTypes quando fabric muda e metodos disponiveis mudam
     const allowedMethodsKey = allowedMethods.map((m) => m.id).join(",");

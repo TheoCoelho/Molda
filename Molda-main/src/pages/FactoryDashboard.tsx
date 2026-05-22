@@ -27,7 +27,8 @@ import {
   TableRow,
 } from "@/components/ui/table";
 import { Textarea } from "@/components/ui/textarea";
-import { supabase } from "@/integrations/supabase/client";
+import { apiRequest } from "@/api/backend";
+import { ensureBackendAccessToken } from "@/lib/backendAuth";
 import { Box, Download, Loader2, PackageCheck, Search, Shirt, Truck } from "lucide-react";
 import { toast } from "sonner";
 
@@ -148,67 +149,67 @@ export default function FactoryDashboard() {
   const [saving, setSaving] = useState(false);
   const [note, setNote] = useState("");
 
-  useEffect(() => {
-    let active = true;
-
-    const loadOrders = async () => {
-      setLoading(true);
-      const { data, error } = await supabase
-        .from("orders")
-        .select("*")
-        .order("created_at", { ascending: false });
-
-      if (!active) return;
-
-      if (error) {
-        console.error(error);
-        toast.error("Não foi possível carregar os pedidos da fábrica.");
+  const loadOrders = async () => {
+    setLoading(true);
+    try {
+      const auth = await ensureBackendAccessToken();
+      if (!auth?.token) {
+        toast.error("Sessão inválida para acessar o painel da fábrica.");
         setOrders([]);
-        setLoading(false);
         return;
       }
 
-      const nextOrders = ((data ?? []) as FactoryOrder[]);
-      setOrders(nextOrders);
+      const params = new URLSearchParams({ limit: "100" });
+      if (statusFilter !== "all") params.set("status", statusFilter);
 
-      const orderIds = nextOrders.map((order) => order.id);
-      if (orderIds.length === 0) {
-        setEvents({});
-        setLoading(false);
-        return;
-      }
-
-      const { data: eventRows, error: eventsError } = await supabase
-        .from("order_events")
-        .select("id, order_id, event_type, notes, previous_status, new_status, created_at")
-        .in("order_id", orderIds)
-        .order("created_at", { ascending: false });
-
-      if (!active) return;
-
-      if (eventsError) {
-        console.error(eventsError);
-        setEvents({});
-      } else {
-        const grouped = ((eventRows ?? []) as Array<OrderEvent & { order_id: string }>).reduce(
-          (acc, item) => {
-            if (!acc[item.order_id]) acc[item.order_id] = [];
-            acc[item.order_id].push(item);
-            return acc;
-          },
-          {} as Record<string, OrderEvent[]>
-        );
-        setEvents(grouped);
-      }
-
+      const response = await apiRequest<{ items: FactoryOrder[] }>(`/orders?${params.toString()}`, {
+        token: auth.token,
+      });
+      setOrders(response.items ?? []);
+    } catch (error) {
+      console.error(error);
+      toast.error("Não foi possível carregar os pedidos da fábrica.");
+      setOrders([]);
+    } finally {
       setLoading(false);
+    }
+  };
+
+  useEffect(() => {
+    void loadOrders();
+  }, [statusFilter]);
+
+  useEffect(() => {
+    let cancelled = false;
+
+    const loadEvents = async () => {
+      if (!selectedOrder) return;
+
+      try {
+        const auth = await ensureBackendAccessToken();
+        if (!auth?.token) return;
+
+        const response = await apiRequest<{ items: OrderEvent[] }>(`/orders/${selectedOrder.id}/events`, {
+          token: auth.token,
+        });
+
+        if (!cancelled) {
+          setEvents((prev) => ({
+            ...prev,
+            [selectedOrder.id]: response.items ?? [],
+          }));
+        }
+      } catch (error) {
+        console.error(error);
+      }
     };
 
-    void loadOrders();
+    void loadEvents();
+
     return () => {
-      active = false;
+      cancelled = true;
     };
-  }, []);
+  }, [selectedOrder?.id]);
 
   useEffect(() => {
     if (!selectedOrder) return;
@@ -249,49 +250,47 @@ export default function FactoryDashboard() {
     if (!selectedOrder || !nextStatus) return;
     setSaving(true);
 
-    const payload: Record<string, unknown> = {
-      status: nextStatus,
-      tracking_number: trackingNumber || null,
-      quality_check_notes: qualityNotes || null,
-      production_started_at:
-        nextStatus === "production" && !selectedOrder.production_started_at
-          ? new Date().toISOString()
-          : selectedOrder.production_started_at ?? null,
-      production_completed_at:
-        ["ready_to_ship", "shipped", "delivered"].includes(nextStatus)
-          ? new Date().toISOString()
-          : selectedOrder.production_completed_at ?? null,
-    };
+    try {
+      const auth = await ensureBackendAccessToken();
+      if (!auth?.token) {
+        toast.error("Sessão inválida para atualizar pedido.");
+        return;
+      }
 
-    const { data, error } = await supabase
-      .from("orders")
-      .update(payload)
-      .eq("id", selectedOrder.id)
-      .select("*")
-      .single();
+      const updatedOrder = await apiRequest<FactoryOrder>(`/orders/${selectedOrder.id}/status`, {
+        method: "PATCH",
+        token: auth.token,
+        body: {
+          status: nextStatus,
+          trackingNumber: trackingNumber || null,
+          qualityCheckNotes: qualityNotes || null,
+          note: note.trim() || null,
+        },
+      });
 
-    if (error) {
+      setOrders((prev) => prev.map((order) => (order.id === updatedOrder.id ? updatedOrder : order)));
+      setSelectedOrder(updatedOrder);
+
+      try {
+        const eventsResponse = await apiRequest<{ items: OrderEvent[] }>(`/orders/${selectedOrder.id}/events`, {
+          token: auth.token,
+        });
+        setEvents((prev) => ({
+          ...prev,
+          [selectedOrder.id]: eventsResponse.items ?? [],
+        }));
+      } catch (eventsError) {
+        console.error(eventsError);
+      }
+
+      toast.success("Pedido atualizado.");
+      setNote("");
+    } catch (error) {
       console.error(error);
       toast.error("Não foi possível atualizar o pedido.");
+    } finally {
       setSaving(false);
-      return;
     }
-
-    if (note.trim()) {
-      await supabase.from("order_events").insert({
-        order_id: selectedOrder.id,
-        event_type: "factory_note",
-        notes: note.trim(),
-        previous_status: selectedOrder.status,
-        new_status: nextStatus,
-      });
-    }
-
-    const updatedOrder = data as FactoryOrder;
-    setOrders((prev) => prev.map((order) => (order.id === updatedOrder.id ? updatedOrder : order)));
-    setSelectedOrder(updatedOrder);
-    toast.success("Pedido atualizado.");
-    setSaving(false);
   };
 
   return (

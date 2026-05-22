@@ -1,18 +1,28 @@
 import React, { createContext, useContext, useEffect, useMemo, useState } from "react";
-import { supabase } from "@/integrations/supabase/client";
+import bcrypt from "bcryptjs";
+import { apiRequest, ApiError } from "@/api/backend";
+import {
+  clearStoredAuth,
+  ensureBackendAccessToken,
+  readStoredAuth,
+  type BackendUser,
+  writeStoredAuth,
+} from "@/lib/backendAuth";
 
 export type Profile = {
   id: string;
-  nickname: string; // renomeado de nickname
+  nickname: string;
   username: string;
   email?: string | null;
   phone?: string | null;
-  birth_date?: string | null; // yyyy-mm-dd
+  birth_date?: string | null;
   cpf?: string | null;
   role?: "admin" | "editor" | "viewer" | "factory" | null;
   created_at?: string | null;
   updated_at?: string | null;
   avatar_path?: string | null;
+  bio?: string | null;
+  is_public?: boolean;
 };
 
 
@@ -39,178 +49,187 @@ type AuthContextType = {
 
 const AuthContext = createContext<AuthContextType>({} as any);
 
-const isInvalidRefreshTokenError = (error: unknown) => {
-  const message = String((error as any)?.message ?? error ?? "").toLowerCase();
-  return message.includes("invalid refresh token") || message.includes("refresh token not found");
+const toLegacyUser = (user: BackendUser, profile?: Profile | null) => ({
+  id: user.id,
+  email: user.email,
+  role: user.role,
+  status: user.status,
+  created_at: user.createdAt,
+  updated_at: user.updatedAt,
+  user_metadata: {
+    full_name: profile?.nickname || user.username || user.email,
+    username: profile?.username || user.username || null,
+    avatar_url: profile?.avatar_path || null,
+  },
+});
+
+const createLocalProfile = (input: {
+  id: string;
+  nickname: string;
+  username: string;
+  email: string;
+  phone: string;
+  birth_date: string;
+  cpf: string;
+}): Profile => ({
+  id: input.id,
+  nickname: input.nickname,
+  username: input.username,
+  email: input.email,
+  phone: input.phone,
+  birth_date: input.birth_date,
+  cpf: input.cpf,
+  role: "viewer",
+  created_at: new Date().toISOString(),
+  updated_at: new Date().toISOString(),
+  avatar_path: null,
+  bio: null,
+  is_public: false,
+});
+
+const createLocalAuthRecord = async (params: SignUpParams) => {
+  const id = globalThis.crypto?.randomUUID?.() ?? `local-${Date.now()}`;
+  const now = new Date().toISOString();
+  const passwordHash = await bcrypt.hash(params.password, 10);
+  const user: BackendUser = {
+    id,
+    email: params.email,
+    username: params.username,
+    role: "viewer",
+    status: "active",
+    createdAt: now,
+    updatedAt: now,
+  };
+  const profile = createLocalProfile({
+    id,
+    nickname: params.nickname,
+    username: params.username,
+    email: params.email,
+    phone: params.phone,
+    birth_date: params.birth_date,
+    cpf: params.cpf,
+  });
+
+  return {
+    accessToken: `local-access-${id}`,
+    refreshToken: `local-refresh-${id}`,
+    passwordHash,
+    user,
+    profile,
+  };
 };
-
-const recoverInvalidSession = async (error: unknown) => {
-  if (!isInvalidRefreshTokenError(error)) return;
-  try {
-    await supabase.auth.signOut({ scope: "local" });
-  } catch {
-    // silencioso: objetivo é limpar sessão local corrompida
-  }
-};
-
-// Persistência de seed entre registro -> confirmação de e-mail -> primeiro login
-const SEED_KEY = "cc_register_seed";
-
-function saveSeed(seed: Partial<Profile>) {
-  try {
-    localStorage.setItem(SEED_KEY, JSON.stringify(seed));
-  } catch {}
-}
-function readSeed(): Partial<Profile> | null {
-  try {
-    const raw = localStorage.getItem(SEED_KEY);
-    return raw ? (JSON.parse(raw) as Partial<Profile>) : null;
-  } catch {
-    return null;
-  }
-}
-function clearSeed() {
-  try {
-    localStorage.removeItem(SEED_KEY);
-  } catch {}
-}
 
 export const AuthProvider: React.FC<{ children: React.ReactNode }> = ({ children }) => {
   const [session, setSession] = useState<any>(null);
   const [user, setUser] = useState<any>(null);
   const [loading, setLoading] = useState(true);
+  const [profile, setProfile] = useState<Profile | null>(null);
 
-  const ensureProfile = async (seed?: Partial<Profile>) => {
-    let sessData: any = null;
+  const fetchOwnProfile = async (): Promise<Profile | null> => {
+    const stored = readStoredAuth();
+    if (stored?.mode === "local") {
+      const nextProfile = (stored.profile as Profile | undefined) || {
+        id: stored.user.id,
+        nickname: stored.user.username || stored.user.email,
+        username: stored.user.username || stored.user.email,
+        email: stored.user.email,
+        phone: null,
+        birth_date: null,
+        cpf: null,
+        role: stored.user.role ?? "viewer",
+        created_at: stored.user.createdAt ?? null,
+        updated_at: stored.user.updatedAt ?? null,
+        avatar_path: null,
+        bio: null,
+        is_public: false,
+      };
+      setProfile(nextProfile);
+      return nextProfile;
+    }
+
+    const auth = await ensureBackendAccessToken();
+    if (!auth?.token) return null;
+
     try {
-      const { data, error } = await supabase.auth.getSession();
-      if (error) {
-        await recoverInvalidSession(error);
-        return;
-      }
-      sessData = data;
+      const me = await apiRequest<Profile>("/profiles/me", {
+        token: auth.token,
+      });
+      setProfile(me);
+      return me;
     } catch (error) {
-      await recoverInvalidSession(error);
-      return;
-    }
-
-    const currentUser = sessData.session?.user;
-    if (!currentUser) return;
-
-    const uid = currentUser.id as string;
-
-    // 1) Já existe?
-    const { data: prof, error: selErr } = await supabase
-      .from("profiles")
-      .select("*")
-      .eq("id", uid)
-      .maybeSingle();
-
-    if (selErr && selErr.code !== "PGRST116") {
-      console.error("Falha ao consultar profiles:", selErr);
-      return;
-    }
-    if (prof) return; // nada a fazer
-
-    // 2) Montar dados a partir de seed / metadados
-    const lsSeed = readSeed() || undefined;
-
-    const fromSeed = {
-      nickname: seed?.nickname?.trim() ?? lsSeed?.nickname?.trim(),
-      username: seed?.username?.trim() ?? lsSeed?.username?.trim(),
-      email: seed?.email ?? lsSeed?.email ?? currentUser.email ?? null,
-      phone: seed?.phone?.toString().trim() ?? lsSeed?.phone?.toString().trim(),
-      birth_date: seed?.birth_date?.toString().trim() ?? lsSeed?.birth_date?.toString().trim(),
-      cpf: seed?.cpf?.toString().trim() ?? lsSeed?.cpf?.toString().trim(),
-    };
-
-    const fromMeta = {
-      nickname: currentUser.user_metadata?.nickname,
-      username: currentUser.user_metadata?.username,
-      phone: currentUser.user_metadata?.phone,
-      birth_date: currentUser.user_metadata?.birth_date,
-      cpf: currentUser.user_metadata?.cpf,
-    };
-
-    const setNickname = fromSeed.nickname || fromMeta.nickname || "Usuário";
-    const baseUsername = fromSeed.username || fromMeta.username || `user_${uid.slice(0, 8)}`;
-    const safeEmail = fromSeed.email;
-    const safePhone = fromSeed.phone || fromMeta.phone;
-    const safeBirthDate = fromSeed.birth_date || fromMeta.birth_date;
-    const safeCpf = fromSeed.cpf || fromMeta.cpf;
-
-    if (!safePhone || !safeBirthDate || !safeCpf) {
-      console.error("Campos obrigatórios ausentes para criar profile");
-      return;
-    }
-
-    const newProfile: Profile = {
-      id: uid,
-      nickname: setNickname,
-      username: baseUsername,
-      email: safeEmail ?? null,
-      phone: safePhone,
-      birth_date: safeBirthDate,
-      cpf: safeCpf,
-      avatar_path: null, // 👈 começa vazio
-    };
-
-    let insErr = (await supabase.from("profiles").insert(newProfile)).error;
-    if (insErr && String(insErr.code) === "23505") {
-      const fallback = `${baseUsername}_${uid.slice(0, 6)}`;
-      const { error: retryErr } = await supabase
-        .from("profiles")
-        .insert({ ...newProfile, username: fallback });
-      insErr = retryErr || null;
-    }
-
-    if (insErr) {
-      console.error("Falha ao inserir profile:", insErr);
-    } else {
-      clearSeed();
+      if (error instanceof ApiError && error.status === 401) {
+        clearStoredAuth();
+      }
+      return null;
     }
   };
 
   useEffect(() => {
-    let mounted = true;
+    const stored = readStoredAuth();
+    if (!stored) {
+      setSession(null);
+      setUser(null);
+      setProfile(null);
+      setLoading(false);
+      return;
+    }
 
-    (async () => {
-      try {
-        const { data, error } = await supabase.auth.getSession();
-        if (error) {
-          await recoverInvalidSession(error);
-          if (!mounted) return;
-          setSession(null);
-          setUser(null);
-          setLoading(false);
-          return;
-        }
+    if (stored.mode === "local") {
+      const nextProfile = (stored.profile as Profile | undefined) || {
+        id: stored.user.id,
+        nickname: stored.user.username || stored.user.email,
+        username: stored.user.username || stored.user.email,
+        email: stored.user.email,
+        phone: null,
+        birth_date: null,
+        cpf: null,
+        role: stored.user.role ?? "viewer",
+        created_at: stored.user.createdAt ?? null,
+        updated_at: stored.user.updatedAt ?? null,
+        avatar_path: null,
+        bio: null,
+        is_public: false,
+      };
 
-        if (!mounted) return;
-        setSession(data.session);
-        setUser(data.session?.user ?? null);
-        setLoading(false);
-      } catch (error) {
-        await recoverInvalidSession(error);
-        if (!mounted) return;
+      setSession({
+        access_token: stored.accessToken,
+        refresh_token: stored.refreshToken,
+      });
+      setUser(toLegacyUser(stored.user, nextProfile));
+      setProfile(nextProfile);
+      setLoading(false);
+      return;
+    }
+
+    const sync = async () => {
+      const auth = await ensureBackendAccessToken();
+      if (!auth?.token) {
         setSession(null);
         setUser(null);
+        setProfile(null);
         setLoading(false);
+        return;
       }
-    })();
 
-    const { data: sub } = supabase.auth.onAuthStateChange((event, sess) => {
-      setSession(sess);
-      setUser(sess?.user ?? null);
-      if (event === "SIGNED_IN") {
-        ensureProfile().catch(console.error);
+      const nextProfile = await fetchOwnProfile();
+      const latestStored = readStoredAuth();
+      if (!latestStored) {
+        setSession(null);
+        setUser(null);
+        setProfile(null);
+        setLoading(false);
+        return;
       }
-    });
 
-    return () => {
-      mounted = false;
-      sub?.subscription?.unsubscribe();
+      setSession({
+        access_token: latestStored.accessToken,
+        refresh_token: latestStored.refreshToken,
+      });
+      setUser(toLegacyUser(latestStored.user, nextProfile));
+      setLoading(false);
     };
+
+    void sync();
   }, []);
 
   const signUp: AuthContextType["signUp"] = async ({
@@ -222,83 +241,224 @@ export const AuthProvider: React.FC<{ children: React.ReactNode }> = ({ children
     birth_date,
     cpf,
   }) => {
-    saveSeed({ email, nickname, username, phone, birth_date, cpf });
+    try {
+      const response = await apiRequest<{
+        user: BackendUser;
+        accessToken: string;
+        refreshToken: string;
+      }>("/auth/sign-up", {
+        method: "POST",
+        body: {
+          email,
+          password,
+          nickname,
+          username,
+          phone,
+          birth_date,
+          cpf,
+        },
+      });
 
-    const { data, error } = await supabase.auth.signUp({
-      email,
-      password,
-      options: {
-        data: { nickname, username, phone, birth_date, cpf },
-      },
-    });
+      writeStoredAuth({
+        accessToken: response.accessToken,
+        refreshToken: response.refreshToken,
+        user: response.user,
+        mode: "backend",
+      });
 
-    if (error) return { error };
-    if (data.session?.user) {
-      ensureProfile({ email, nickname, username, phone, birth_date, cpf }).catch(console.error);
+      const nextProfile = await fetchOwnProfile();
+      setSession({ access_token: response.accessToken, refresh_token: response.refreshToken });
+      setUser(toLegacyUser(response.user, nextProfile));
+
+      return { error: null };
+    } catch (error: any) {
+      if (error instanceof ApiError && error.status === 0) {
+        try {
+          const localAuth = await createLocalAuthRecord({
+            email,
+            password,
+            nickname,
+            username,
+            phone,
+            birth_date,
+            cpf,
+          });
+
+          writeStoredAuth({
+            accessToken: localAuth.accessToken,
+            refreshToken: localAuth.refreshToken,
+            user: localAuth.user,
+            mode: "local",
+            passwordHash: localAuth.passwordHash,
+            profile: localAuth.profile,
+          });
+
+          setSession({
+            access_token: localAuth.accessToken,
+            refresh_token: localAuth.refreshToken,
+          });
+          setUser(toLegacyUser(localAuth.user, localAuth.profile));
+          setProfile(localAuth.profile);
+
+          return { error: null };
+        } catch (localError: any) {
+          return { error: localError };
+        }
+      }
+
+      return { error };
     }
-    return { error: null };
   };
 
   const signIn: AuthContextType["signIn"] = async ({ email, password }) => {
-    const { error } = await supabase.auth.signInWithPassword({ email, password });
-    if (error) return { error };
-    ensureProfile().catch(console.error);
-    return { error: null };
+    try {
+      const response = await apiRequest<{
+        user: BackendUser;
+        accessToken: string;
+        refreshToken: string;
+      }>("/auth/sign-in", {
+        method: "POST",
+        body: {
+          email,
+          password,
+        },
+      });
+
+      writeStoredAuth({
+        accessToken: response.accessToken,
+        refreshToken: response.refreshToken,
+        user: response.user,
+        mode: "backend",
+      });
+
+      const nextProfile = await fetchOwnProfile();
+      setSession({ access_token: response.accessToken, refresh_token: response.refreshToken });
+      setUser(toLegacyUser(response.user, nextProfile));
+
+      return { error: null };
+    } catch (error: any) {
+      const stored = readStoredAuth();
+      if (stored?.mode === "local") {
+        const passwordHash = stored.passwordHash;
+        if (
+          stored.user.email.toLowerCase() === email.toLowerCase() &&
+          typeof passwordHash === "string" &&
+          bcrypt.compareSync(password, passwordHash)
+        ) {
+          const nextProfile = (stored.profile as Profile | undefined) || {
+            id: stored.user.id,
+            nickname: stored.user.username || stored.user.email,
+            username: stored.user.username || stored.user.email,
+            email: stored.user.email,
+            phone: null,
+            birth_date: null,
+            cpf: null,
+            role: stored.user.role ?? "viewer",
+            created_at: stored.user.createdAt ?? null,
+            updated_at: stored.user.updatedAt ?? null,
+            avatar_path: null,
+            bio: null,
+            is_public: false,
+          };
+
+          setSession({
+            access_token: stored.accessToken,
+            refresh_token: stored.refreshToken,
+          });
+          setUser(toLegacyUser(stored.user, nextProfile));
+          setProfile(nextProfile);
+
+          return { error: null };
+        }
+
+        return { error: new Error("Credenciais invalidas.") };
+      }
+
+      return { error };
+    }
   };
 
   const signOut: AuthContextType["signOut"] = async () => {
-    const { error } = await supabase.auth.signOut();
-    return { error };
+    try {
+      const stored = readStoredAuth();
+      if (stored && stored.mode !== "local") {
+        await apiRequest("/auth/sign-out", {
+          method: "POST",
+          token: stored.accessToken,
+          body: {
+            refreshToken: stored.refreshToken,
+          },
+        });
+      }
+      clearStoredAuth();
+      setSession(null);
+      setUser(null);
+      setProfile(null);
+      return { error: null };
+    } catch (error: any) {
+      clearStoredAuth();
+      setSession(null);
+      setUser(null);
+      setProfile(null);
+      return { error };
+    }
   };
 
   const getProfile = async (): Promise<Profile | null> => {
-    let sess: any = null;
-    try {
-      const { data, error } = await supabase.auth.getSession();
-      if (error) {
-        await recoverInvalidSession(error);
-        return null;
-      }
-      sess = data;
-    } catch (error) {
-      await recoverInvalidSession(error);
-      return null;
-    }
-
-    const uid = sess.session?.user?.id;
-    if (!uid) return null;
-
-    const { data, error } = await supabase
-      .from("profiles")
-      .select("*")
-      .eq("id", uid)
-      .maybeSingle();
-
-    if (error) {
-      console.error("Falha ao obter profile:", error);
-      return null;
-    }
-    return (data as Profile) ?? null;
+    if (profile) return profile;
+    return fetchOwnProfile();
   };
 
   const updateOwnProfile: AuthContextType["updateOwnProfile"] = async (payload) => {
-    let sess: any = null;
     try {
-      const { data, error } = await supabase.auth.getSession();
-      if (error) {
-        await recoverInvalidSession(error);
-        return { error };
+      const stored = readStoredAuth();
+      if (stored?.mode === "local") {
+        const nextProfile: Profile = {
+          id: stored.user.id,
+          nickname: String((payload as Partial<Profile>).nickname ?? stored.profile?.nickname ?? stored.user.username ?? stored.user.email),
+          username: String((payload as Partial<Profile>).username ?? stored.profile?.username ?? stored.user.username ?? stored.user.email),
+          email: stored.user.email,
+          phone: (payload as Partial<Profile>).phone ?? (stored.profile?.phone as string | null | undefined) ?? null,
+          birth_date: (payload as Partial<Profile>).birth_date ?? (stored.profile?.birth_date as string | null | undefined) ?? null,
+          cpf: (payload as Partial<Profile>).cpf ?? (stored.profile?.cpf as string | null | undefined) ?? null,
+          role: (payload as Partial<Profile>).role ?? (stored.profile?.role as Profile["role"]) ?? stored.user.role ?? "viewer",
+          created_at: (stored.profile?.created_at as string | null | undefined) ?? stored.user.createdAt ?? null,
+          updated_at: new Date().toISOString(),
+          avatar_path: (payload as Partial<Profile>).avatar_path ?? (stored.profile?.avatar_path as string | null | undefined) ?? null,
+          bio: (payload as Partial<Profile>).bio ?? (stored.profile?.bio as string | null | undefined) ?? null,
+          is_public: (payload as Partial<Profile>).is_public ?? Boolean(stored.profile?.is_public),
+        };
+
+        writeStoredAuth({
+          ...stored,
+          profile: nextProfile,
+        });
+        setProfile(nextProfile);
+        setUser(toLegacyUser(stored.user, nextProfile));
+        return { error: null };
       }
-      sess = data;
+
+      const auth = await ensureBackendAccessToken();
+      if (!auth?.token) {
+        return { error: new Error("Sem sessão") };
+      }
+
+      const updated = await apiRequest<Profile>("/profiles/me", {
+        method: "PATCH",
+        token: auth.token,
+        body: payload,
+      });
+
+      setProfile(updated);
+      const latestStored = readStoredAuth();
+      if (latestStored) {
+        setUser(toLegacyUser(latestStored.user, updated));
+      }
+
+      return { error: null };
     } catch (error: any) {
-      await recoverInvalidSession(error);
       return { error };
     }
-
-    const uid = sess.session?.user?.id;
-    if (!uid) return { error: new Error("Sem sessão") };
-    const { error } = await supabase.from("profiles").update(payload).eq("id", uid);
-    return { error };
   };
 
   const value = useMemo<AuthContextType>(

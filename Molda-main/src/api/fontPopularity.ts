@@ -1,5 +1,3 @@
-import { getSupabase } from "../lib/supabaseClient";
-
 export const FONT_POPULARITY_UPDATED_EVENT = "font-popularity:updated";
 
 const LOCAL_STORAGE_KEY = "molda_font_popularity_daily";
@@ -100,21 +98,7 @@ export async function incrementFontPopularity(family: string): Promise<void> {
   const normalizedFamily = typeof family === "string" ? family.trim() : "";
   if (!normalizedFamily) return;
 
-  const sb = getSupabase();
-  if (!sb) {
-    incrementLocalPopularity(normalizedFamily);
-    dispatchPopularityUpdated(normalizedFamily);
-    return;
-  }
-
-  const { error } = await sb.rpc("increment_font_popularity", {
-    p_family: normalizedFamily,
-  });
-
-  if (error) {
-    console.warn("[fontPopularity] increment rpc failed, using local fallback:", error);
-    incrementLocalPopularity(normalizedFamily);
-  }
+  incrementLocalPopularity(normalizedFamily);
 
   dispatchPopularityUpdated(normalizedFamily);
 }
@@ -124,31 +108,7 @@ export async function fetchFontPopularityScores(families?: string[]): Promise<Re
     ?.map((family) => (typeof family === "string" ? family.trim() : ""))
     .filter(Boolean);
 
-  const sb = getSupabase();
-  if (!sb) {
-    const localStore = pruneBuckets(readLocalStore());
-    writeLocalStore(localStore);
-    return computeScoresFromLocalStore(localStore, normalizedFamilies);
-  }
-
-  const { data, error } = await sb.rpc("get_font_popularity_scores", {
-    p_families: normalizedFamilies?.length ? normalizedFamilies : null,
-  });
-
-  if (error) {
-    console.warn("[fontPopularity] score rpc failed, using local fallback:", error);
-    const localStore = pruneBuckets(readLocalStore());
-    writeLocalStore(localStore);
-    return computeScoresFromLocalStore(localStore, normalizedFamilies);
-  }
-
-  const scores: Record<string, number> = {};
-  for (const row of (data || []) as Array<{ family?: string; score_30d?: number | string }>) {
-    const family = typeof row.family === "string" ? row.family.trim() : "";
-    if (!family) continue;
-    const score = typeof row.score_30d === "number" ? row.score_30d : Number(row.score_30d || 0);
-    scores[family] = Number.isFinite(score) ? score : 0;
-  }
-
-  return scores;
+  const localStore = pruneBuckets(readLocalStore());
+  writeLocalStore(localStore);
+  return computeScoresFromLocalStore(localStore, normalizedFamilies);
 }

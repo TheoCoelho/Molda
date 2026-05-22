@@ -4,13 +4,13 @@ import Header from "../components/Header";
 import SocialFeed from "../components/SocialFeed";
 import { Input } from "../components/ui/input";
 import { Search } from "lucide-react";
-import { supabase } from "@/integrations/supabase/client";
+import { apiRequest } from "@/api/backend";
 
-type ProfileRow = {
-  id?: string | null;
-  user_id?: string | null;
+type PublicProfile = {
+  user_id: string;
   username: string | null;
   nickname: string | null;
+  designs_count?: number;
 };
 
 type Suggestion = {
@@ -71,18 +71,15 @@ export default function Index() {
       setError(null);
 
       try {
-        const { data, error: rpcError } = await supabase.rpc("search_social_profiles", {
-          search_term: normalizedSearch,
-          limit_count: 80,
-        });
+        const result = await apiRequest<{ items: PublicProfile[] }>(
+          `/profiles/public-search?search=${encodeURIComponent(normalizedSearch)}&limit=80`
+        );
 
-        if (rpcError) throw rpcError;
-
-        const rows = (data ?? []) as ProfileRow[];
+        const rows = result.items ?? [];
 
         const ranked = rows
           .map((row) => {
-            const id = row.id ?? row.user_id ?? "";
+            const id = row.user_id ?? "";
             const username = normalizeText(row.username || "");
             const nickname = normalizeText(row.nickname || "");
 

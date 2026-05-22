@@ -345,16 +345,14 @@ export function getModelConfigFromSelection(sel: Selection): ModelConfig {
 }
 
 /**
- * Versão assíncrona: primeiro tenta buscar `model_3d_path` do subtipo
- * correspondente no banco (Supabase). Se encontrar, retorna config com esse path.
- * Caso contrário, fallback para o REGISTRY hardcoded.
+ * Versao assincrona para manter compatibilidade com chamadas existentes.
+ * Atualmente retorna o fallback local do registry.
  */
 const _dbCache = new Map<string, { config: ModelConfig; ts: number }>();
 const DB_CACHE_TTL = 60_000; // 1 minuto
 
 export async function getModelConfigFromSelectionAsync(
-  sel: Selection,
-  supabaseClient: { from: (table: string) => any }
+  sel: Selection
 ): Promise<ModelConfig> {
   const canon = canonicalize(sel);
   const key = keyFrom(canon);
@@ -363,106 +361,6 @@ export async function getModelConfigFromSelectionAsync(
   const cached = _dbCache.get(key);
   if (cached && Date.now() - cached.ts < DB_CACHE_TTL) {
     return cached.config;
-  }
-
-  // Try to find from DB
-  try {
-    const subtypeSlug = canon.subtype;
-    const typeSlug = canon.type;
-
-    if (subtypeSlug) {
-      // Converte para o mesmo formato de slug usado no Admin (hyphens)
-      const dbSlug = subtypeSlug
-        .replace(/[^a-z0-9]+/g, "-")
-        .replace(/(^-|-$)+/g, "");
-
-      let resolvedTypeId: string | null = null;
-      if (typeSlug) {
-        const dbTypeSlug = typeSlug
-          .replace(/[^a-z0-9]+/g, "-")
-          .replace(/(^-|-$)+/g, "");
-        // Aceita tanto slug quanto nome, para cobrir fluxos que navegam com label.
-        let typeLookup = await supabaseClient
-          .from("product_types")
-          .select("id")
-          .eq("slug", dbTypeSlug)
-          .maybeSingle();
-        if (!typeLookup.data) {
-          typeLookup = await supabaseClient
-            .from("product_types")
-            .select("id")
-            .ilike("name", typeSlug)
-            .maybeSingle();
-        }
-        resolvedTypeId = (typeLookup.data?.id as string | undefined) ?? null;
-      }
-
-      // Busca subtipo por slug e, se não achar, por nome (resiliente a custom slugs).
-      const findSubtypeWithZones = async () => {
-        const bySlugQuery = supabaseClient
-          .from("product_subtypes")
-          .select("model_3d_path, slug, decal_zones_json")
-          .eq("slug", dbSlug);
-        const bySlug = resolvedTypeId
-          ? await bySlugQuery.eq("type_id", resolvedTypeId).maybeSingle()
-          : await bySlugQuery.maybeSingle();
-        if (bySlug.data) return bySlug;
-
-        const byNameQuery = supabaseClient
-          .from("product_subtypes")
-          .select("model_3d_path, slug, decal_zones_json")
-          .ilike("name", subtypeSlug);
-        const byName = resolvedTypeId
-          ? await byNameQuery.eq("type_id", resolvedTypeId).maybeSingle()
-          : await byNameQuery.maybeSingle();
-        return byName;
-      };
-
-      const withZones = await findSubtypeWithZones();
-
-      let data = withZones.data as { model_3d_path?: string; decal_zones_json?: unknown } | null;
-      if (!data && withZones.error && String(withZones.error.message || "").includes("decal_zones_json")) {
-        // Compatibilidade: banco ainda sem a coluna json de zonas.
-        const findLegacySubtype = async () => {
-          const bySlugQuery = supabaseClient
-            .from("product_subtypes")
-            .select("model_3d_path, slug")
-            .eq("slug", dbSlug);
-          const bySlug = resolvedTypeId
-            ? await bySlugQuery.eq("type_id", resolvedTypeId).maybeSingle()
-            : await bySlugQuery.maybeSingle();
-          if (bySlug.data) return bySlug;
-
-          const byNameQuery = supabaseClient
-            .from("product_subtypes")
-            .select("model_3d_path, slug")
-            .ilike("name", subtypeSlug);
-          const byName = resolvedTypeId
-            ? await byNameQuery.eq("type_id", resolvedTypeId).maybeSingle()
-            : await byNameQuery.maybeSingle();
-          return byName;
-        };
-
-        const legacy = await findLegacySubtype();
-        data = legacy.data as { model_3d_path?: string } | null;
-      }
-
-      if (data?.model_3d_path) {
-        const config: ModelConfig = {
-          src: data.model_3d_path,
-          camera: { position: [0, 1.5, 5], fov: 45 },
-          controls: { minDistance: 3, maxDistance: 10, enableZoom: true, enablePan: false },
-          scale: 0.8,
-          rotation: [0, 0, 0],
-          position: [0, 0, 0],
-          decalZones: normalizeDbDecalZones(data.decal_zones_json),
-        };
-        _dbCache.set(key, { config, ts: Date.now() });
-        return config;
-      }
-    }
-  } catch (err) {
-    console.warn("[models] DB lookup failed, using fallback:", err);
   }
 
   // Fallback to hardcoded registry

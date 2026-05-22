@@ -1,15 +1,12 @@
-// src/components/DesignFinder.tsx
-import React, { useCallback, useEffect, useRef, useState } from "react";
-import { getSupabase, STORAGE_BUCKET } from "../lib/supabaseClient";
-import { Clock, ImageOff, Loader2, Search, TrendingUp } from "lucide-react";
+import React, { useCallback, useEffect, useState } from "react";
+import { Clock, ImageOff, Loader2, Search } from "lucide-react";
+import { apiRequest } from "@/api/backend";
 
 type DesignItem = {
-  storage_path: string;
-  design_name: string | null;
-  design_value: number;
-  user_id: string;
-  updated_at: string;
-  previewUrl?: string;
+  id: string;
+  title: string;
+  image_url: string;
+  created_at: string;
 };
 
 type SortMode = "recent" | "popular";
@@ -26,66 +23,27 @@ export default function DesignFinder({ onImageInsert }: Props) {
   const [sortMode, setSortMode] = useState<SortMode>("recent");
   const [items, setItems] = useState<DesignItem[]>([]);
   const [loading, setLoading] = useState(false);
-  const abortRef = useRef<AbortController | null>(null);
 
   const fetchDesigns = useCallback(async () => {
-    const supabase = getSupabase();
-    if (!supabase) return;
-
-    abortRef.current?.abort();
-    abortRef.current = new AbortController();
-
     setLoading(true);
     try {
-      let q = supabase
-        .from("gallery_visibility")
-        .select("storage_path, design_name, design_value, user_id, updated_at")
-        .eq("is_public", true)
-        .limit(48);
+      const response = await apiRequest<{ items: DesignItem[] }>("/gallery/public?limit=80");
+      let next = response.items ?? [];
 
       if (query.trim()) {
-        q = q.ilike("design_name", `%${query.trim()}%`);
+        const q = query.trim().toLowerCase();
+        next = next.filter((item) => (item.title || "").toLowerCase().includes(q));
       }
 
-      q =
-        sortMode === "popular"
-          ? q.order("design_value", { ascending: false })
-          : q.order("updated_at", { ascending: false });
-
-      const { data, error } = await q;
-
-      if (error || !data || data.length === 0) {
-        setItems([]);
-        return;
+      if (sortMode === "popular") {
+        next = next.slice().sort((a, b) => (b.title || "").localeCompare(a.title || ""));
+      } else {
+        next = next.slice().sort((a, b) => new Date(b.created_at).getTime() - new Date(a.created_at).getTime());
       }
 
-      // Batch signed URLs
-      const paths = (data as any[]).map((d) => d.storage_path).filter(Boolean);
-      const signedMap: Record<string, string> = {};
-
-      if (paths.length > 0) {
-        const { data: signedData } = await supabase.storage
-          .from(STORAGE_BUCKET)
-          .createSignedUrls(paths, 3600);
-
-        if (signedData) {
-          for (const entry of signedData as any[]) {
-            if (entry.signedUrl && entry.path) {
-              signedMap[String(entry.path)] = entry.signedUrl;
-            }
-          }
-        }
-      }
-
-      setItems(
-        (data as any[]).map((d) => ({
-          ...d,
-          previewUrl:
-            signedMap[d.storage_path] ||
-            supabase.storage.from(STORAGE_BUCKET).getPublicUrl(d.storage_path).data
-              .publicUrl,
-        }))
-      );
+      setItems(next.slice(0, 48));
+    } catch {
+      setItems([]);
     } finally {
       setLoading(false);
     }
@@ -98,7 +56,6 @@ export default function DesignFinder({ onImageInsert }: Props) {
 
   return (
     <div className="space-y-3">
-      {/* Search bar */}
       <div className="relative">
         <Search className="pointer-events-none absolute left-3 top-1/2 -translate-y-1/2 h-3.5 w-3.5 text-black/40 dark:text-white/40" />
         <input
@@ -110,7 +67,6 @@ export default function DesignFinder({ onImageInsert }: Props) {
         />
       </div>
 
-      {/* Sort pills */}
       <div className="flex gap-1.5">
         <button
           type="button"
@@ -122,7 +78,7 @@ export default function DesignFinder({ onImageInsert }: Props) {
           }`}
         >
           <Clock className="h-3 w-3" />
-          Em alta
+          Recentes
         </button>
         <button
           type="button"
@@ -133,12 +89,10 @@ export default function DesignFinder({ onImageInsert }: Props) {
               : "bg-black/5 dark:bg-white/10 text-black/60 dark:text-white/60 hover:bg-black/10 dark:hover:bg-white/15"
           }`}
         >
-          <TrendingUp className="h-3 w-3" />
-          Mais populares
+          Mais vistos
         </button>
       </div>
 
-      {/* Results */}
       {loading ? (
         <div className="flex justify-center py-10">
           <Loader2 className="h-5 w-5 animate-spin text-black/30 dark:text-white/30" />
@@ -152,24 +106,13 @@ export default function DesignFinder({ onImageInsert }: Props) {
         <div className="grid grid-cols-2 gap-2">
           {items.map((item) => (
             <button
-              key={item.storage_path}
+              key={item.id}
               type="button"
-              title={item.design_name || "Design"}
-              onClick={() => item.previewUrl && onImageInsert?.(item.previewUrl)}
+              title={item.title || "Design"}
+              onClick={() => item.image_url && onImageInsert?.(item.image_url)}
               className="aspect-square overflow-hidden rounded-xl border border-black/10 dark:border-white/10 bg-black/5 dark:bg-white/5 transition hover:border-black/25 dark:hover:border-white/25 hover:scale-[1.02] focus:outline-none focus-visible:ring-2 focus-visible:ring-black/30 dark:focus-visible:ring-white/30"
             >
-              {item.previewUrl ? (
-                <img
-                  src={item.previewUrl}
-                  alt={item.design_name || "Design"}
-                  className="h-full w-full object-cover"
-                  loading="lazy"
-                />
-              ) : (
-                <div className="flex h-full items-center justify-center">
-                  <ImageOff className="h-5 w-5 text-black/20 dark:text-white/20" />
-                </div>
-              )}
+              <img src={item.image_url} alt={item.title || "Design"} className="h-full w-full object-cover" loading="lazy" />
             </button>
           ))}
         </div>

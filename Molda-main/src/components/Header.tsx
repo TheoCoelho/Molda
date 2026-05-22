@@ -5,8 +5,6 @@ import { Building2, Moon, Shield, Sun, User, LogOut } from "lucide-react";
 import { useAuth } from "../contexts/AuthContext";
 import { useTheme } from "../contexts/ThemeContext";
 import { Avatar, AvatarFallback, AvatarImage } from "../components/ui/avatar";
-import { supabase } from "../integrations/supabase/client";
-import { AVATAR_BUCKET } from "../lib/constants/storage";
 import {
   DropdownMenu,
   DropdownMenuContent,
@@ -40,11 +38,8 @@ const Header = () => {
         if (!mounted) return;
         setRole(profile?.role ?? null);
         if (profile?.avatar_path) {
-          const { data } = supabase.storage.from(AVATAR_BUCKET).getPublicUrl(profile.avatar_path);
-          if (data?.publicUrl) {
-            setAvatarUrl(data.publicUrl);
-            return;
-          }
+          setAvatarUrl(profile.avatar_path);
+          return;
         }
       } catch {
         /* silently ignore */

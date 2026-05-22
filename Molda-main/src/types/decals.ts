@@ -17,6 +17,7 @@ export type ExternalDecalData = {
   id: string;
   label?: string;
   dataUrl: string;
+  printType?: string;
   transform?: DecalTransform | null;
 };
 

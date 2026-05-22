@@ -1,4 +1,4 @@
-import { Suspense, useCallback, useEffect, useMemo, useRef, useState } from "react";
+import { Suspense, useCallback, useEffect, useMemo, useRef, useState, type ChangeEvent, type MouseEvent as ReactMouseEvent } from "react";
 import { useNavigate } from "react-router-dom";
 import Header from "@/components/Header";
 import { Button } from "@/components/ui/button";
@@ -7,11 +7,11 @@ import LinearInfiniteCarousel from "@/components/LinearInfiniteCarousel";
 import { Tabs, TabsContent, TabsList, TabsTrigger } from "@/components/ui/tabs";
 import Canvas3DViewer from "@/components/Canvas3DViewer";
 import ExpirationTimer from "@/components/ExpirationTimer";
-import { supabase } from "@/integrations/supabase/client";
 import { cn } from "@/lib/utils";
 import type { ExternalDecalData, DecalTransform } from "../types/decals";
 import { getProjectDisplayName } from "@/lib/creativeNames";
-import { PRODUCT_IMAGES_BUCKET } from "@/lib/constants/storage";
+import { apiRequest } from "@/api/backend";
+import { ensureBackendAccessToken } from "@/lib/backendAuth";
 import { Canvas, type ThreeEvent } from "@react-three/fiber";
 import { Bounds, Center, Environment, Html, OrbitControls, useGLTF } from "@react-three/drei";
 import * as THREE from "three";
@@ -39,6 +39,7 @@ type CatalogPart = {
 type CatalogType = {
   id: string;
   part_id: string;
+  part_slug?: string | null;
   name: string;
   description?: string | null;
   card_image_path?: string | null;
@@ -49,6 +50,7 @@ type CatalogType = {
 type CatalogSubtype = {
   id: string;
   type_id: string;
+  type_name?: string | null;
   name: string;
   description?: string | null;
   card_image_path?: string | null;
@@ -67,6 +69,31 @@ const PALETTE = [
 ];
 
 const EMPTY_MODEL_MAP: Record<string, ModelItem[]> = {};
+
+const PART_LABEL_BY_SLUG: Record<string, string> = {
+  head: "Cabeca",
+  torso: "Tronco",
+  legs: "Pernas",
+};
+
+const toSafeString = (value: unknown): string => {
+  if (typeof value === "string") return value.trim();
+  if (typeof value === "number") return String(value);
+  return "";
+};
+
+const toNullableString = (value: unknown): string | null => {
+  const parsed = toSafeString(value);
+  return parsed.length ? parsed : null;
+};
+
+const toSlug = (value: unknown): string =>
+  toSafeString(value)
+    .toLowerCase()
+    .normalize("NFD")
+    .replace(/[\u0300-\u036f]/g, "")
+    .replace(/[^a-z0-9]+/g, "-")
+    .replace(/^-+|-+$/g, "");
 
 
 
@@ -89,6 +116,7 @@ type DraftData = {
   tabVisibility?: Record<string, boolean>;
   tabDecalPreviews?: Record<string, string>;
   tabDecalPlacements?: Record<string, DecalTransform>;
+  tabPrintTypes?: Record<string, string>;
   canvasSnapshots?: Record<string, string>;
   activeCanvasTab?: string;
   savedAt?: string;
@@ -103,10 +131,68 @@ type DraftRecord = {
   id: string;
   projectKey: string;
   updatedAt: string | null;
+  version?: number;
   data: DraftData;
 };
 
 const COUNTDOWN_TICK_MS = 1000;
+const CATALOG_CACHE_KEY = "create_catalog_cache_v1";
+const CURRENT_PROJECT_STORAGE_KEY = "currentProject";
+
+type CatalogCachePayload = {
+  parts: CatalogPart[];
+  types: CatalogType[];
+  subtypes: CatalogSubtype[];
+};
+
+const readCatalogCache = (): CatalogCachePayload | null => {
+  try {
+    const raw = localStorage.getItem(CATALOG_CACHE_KEY);
+    if (!raw) return null;
+    const parsed = JSON.parse(raw) as Partial<CatalogCachePayload>;
+    if (!parsed || typeof parsed !== "object") return null;
+    return {
+      parts: Array.isArray(parsed.parts) ? (parsed.parts as CatalogPart[]) : [],
+      types: Array.isArray(parsed.types) ? (parsed.types as CatalogType[]) : [],
+      subtypes: Array.isArray(parsed.subtypes) ? (parsed.subtypes as CatalogSubtype[]) : [],
+    };
+  } catch {
+    return null;
+  }
+};
+
+const writeCatalogCache = (payload: CatalogCachePayload) => {
+  try {
+    localStorage.setItem(CATALOG_CACHE_KEY, JSON.stringify(payload));
+  } catch {
+    // ignore cache write failures
+  }
+};
+
+const readLocalCurrentDraft = (): DraftRecord | null => {
+  try {
+    const raw = localStorage.getItem(CURRENT_PROJECT_STORAGE_KEY);
+    if (!raw) return null;
+    const parsed = JSON.parse(raw) as DraftData;
+    if (!parsed || typeof parsed !== "object") return null;
+
+    const localId = toSafeString(parsed.draftId) || "local-current";
+    const localProjectKey = toSafeString(parsed.draftKey) || toSafeString(parsed.projectKey) || "local-current";
+    return {
+      id: localId,
+      projectKey: localProjectKey,
+      updatedAt: parsed.savedAt ?? new Date().toISOString(),
+      data: parsed,
+    };
+  } catch {
+    try {
+      localStorage.removeItem(CURRENT_PROJECT_STORAGE_KEY);
+    } catch {
+      // ignore
+    }
+    return null;
+  }
+};
 
 const Create = () => {
   const navigate = useNavigate();
@@ -131,8 +217,9 @@ const Create = () => {
 
   const resolveCatalogImage = useCallback((path?: string | null) => {
     if (!path) return undefined;
-    const { data } = supabase.storage.from(PRODUCT_IMAGES_BUCKET).getPublicUrl(path);
-    return data?.publicUrl || undefined;
+    if (/^(https?:|data:|blob:)/i.test(path)) return path;
+    if (path.startsWith("/")) return path;
+    return `/storage/${path.replace(/^\/+/, "")}`;
   }, []);
 
   const [drafts, setDrafts] = useState<DraftRecord[]>([]);
@@ -141,6 +228,15 @@ const Create = () => {
   const [selectedDraftId, setSelectedDraftId] = useState<string | null>(null);
   const [nowTs, setNowTs] = useState(() => Date.now());
   const pendingDeletionRef = useRef<Set<string>>(new Set());
+
+  const getBackendAuthContext = useCallback(async () => {
+    const auth = await ensureBackendAccessToken();
+    if (!auth?.token || !auth.userId) {
+      throw new Error("Sessao autenticada nao encontrada.");
+    }
+
+    return auth;
+  }, []);
 
   useEffect(() => {
     const prev = prevViewModeRef.current;
@@ -187,59 +283,129 @@ const Create = () => {
       setCatalogLoading(true);
       setCatalogError(null);
 
-      if (!supabase) {
-        setCatalogError("Supabase nao configurado no frontend.");
-        setCatalogParts([]);
-        setCatalogTypes([]);
-        setCatalogSubtypes([]);
-        setCatalogLoading(false);
-        return;
-      }
-
       try {
-        const [partsRes, typesRes] = await Promise.all([
-          supabase.from("parts").select("id, slug, name, description, sort_order, is_active").order("sort_order", { ascending: true }),
-          supabase.from("product_types").select("id, part_id, name, description, card_image_path, sort_order, is_active").order("sort_order", { ascending: true }),
+        const [rawParts, rawTypes, rawSubtypes] = await Promise.all([
+          apiRequest<any[]>("/catalog/parts"),
+          apiRequest<any[]>("/catalog/product-types"),
+          apiRequest<any[]>("/catalog/product-subtypes"),
         ]);
-
-        const subtypeBaseSelect = "id, type_id, name, description, card_image_path, sort_order, is_active";
-        const subtypeExtendedSelect = `${subtypeBaseSelect}, print_area_width_cm, print_area_height_cm, min_decal_area_cm2`;
-
-        let subtypesRes = await supabase
-          .from("product_subtypes")
-          .select(subtypeExtendedSelect)
-          .order("sort_order", { ascending: true });
-
-        if (subtypesRes.error) {
-          const message = `${subtypesRes.error.message || ""} ${subtypesRes.error.details || ""}`.toLowerCase();
-          const hasMissingNewColumns =
-            message.includes("print_area_width_cm") ||
-            message.includes("print_area_height_cm") ||
-            message.includes("min_decal_area_cm2") ||
-            (message.includes("column") && message.includes("does not exist"));
-
-          if (hasMissingNewColumns) {
-            console.warn("[Create] Fallback para consulta legada de subtipos: colunas de restricao de estampa nao encontradas.");
-            subtypesRes = await supabase
-              .from("product_subtypes")
-              .select(subtypeBaseSelect)
-              .order("sort_order", { ascending: true });
-          }
-        }
-
-        if (partsRes.error) throw partsRes.error;
-        if (typesRes.error) throw typesRes.error;
-        if (subtypesRes.error) throw subtypesRes.error;
 
         if (cancelled) return;
 
-        setCatalogParts((partsRes.data as CatalogPart[]) || []);
-        setCatalogTypes((typesRes.data as CatalogType[]) || []);
-        setCatalogSubtypes((subtypesRes.data as CatalogSubtype[]) || []);
+        const normalizedParts = rawParts
+          .map((row: any) => {
+            const slug = toSlug(row?.slug ?? row?.name ?? row?.id);
+            const id = toSafeString(row?.id) || slug;
+            if (!id || !slug) return null;
+            return {
+              id,
+              slug,
+              name: toSafeString(row?.name) || PART_LABEL_BY_SLUG[slug] || slug,
+              description: toNullableString(row?.description),
+              sort_order: typeof row?.sort_order === "number" ? row.sort_order : null,
+              is_active:
+                typeof row?.is_active === "boolean"
+                  ? row.is_active
+                  : typeof row?.active === "boolean"
+                    ? row.active
+                    : null,
+            } satisfies CatalogPart;
+          })
+          .filter(Boolean) as CatalogPart[];
+
+        const normalizedTypes = rawTypes
+          .map((row: any) => {
+            const id = toSafeString(row?.id);
+            const name = toSafeString(row?.name);
+            if (!id || !name) return null;
+            return {
+              id,
+              part_id: toSafeString(row?.part_id),
+              part_slug: toNullableString(row?.part_slug ?? row?.part ?? row?.body_part),
+              name,
+              description: toNullableString(row?.description),
+              card_image_path: toNullableString(row?.card_image_path),
+              sort_order: typeof row?.sort_order === "number" ? row.sort_order : null,
+              is_active:
+                typeof row?.is_active === "boolean"
+                  ? row.is_active
+                  : typeof row?.active === "boolean"
+                    ? row.active
+                    : null,
+            } satisfies CatalogType;
+          })
+          .filter(Boolean) as CatalogType[];
+
+        const normalizedSubtypes = rawSubtypes
+          .map((row: any) => {
+            const id = toSafeString(row?.id);
+            const name = toSafeString(row?.name);
+            if (!id || !name) return null;
+            return {
+              id,
+              type_id: toSafeString(row?.type_id ?? row?.product_type_id),
+              type_name: toNullableString(row?.type_name ?? row?.type ?? row?.product_type),
+              name,
+              description: toNullableString(row?.description),
+              card_image_path: toNullableString(row?.card_image_path),
+              print_area_width_cm: typeof row?.print_area_width_cm === "number" ? row.print_area_width_cm : null,
+              print_area_height_cm: typeof row?.print_area_height_cm === "number" ? row.print_area_height_cm : null,
+              min_decal_area_cm2: typeof row?.min_decal_area_cm2 === "number" ? row.min_decal_area_cm2 : null,
+              sort_order: typeof row?.sort_order === "number" ? row.sort_order : null,
+              is_active:
+                typeof row?.is_active === "boolean"
+                  ? row.is_active
+                  : typeof row?.active === "boolean"
+                    ? row.active
+                    : null,
+            } satisfies CatalogSubtype;
+          })
+          .filter(Boolean) as CatalogSubtype[];
+
+        const fallbackPartsBySlug = new Map<string, CatalogPart>();
+        normalizedParts.forEach((part) => {
+          fallbackPartsBySlug.set(part.slug, part);
+        });
+        normalizedTypes.forEach((typeItem, index) => {
+          const fallbackSlug = toSlug(typeItem.part_slug);
+          if (!fallbackSlug || fallbackPartsBySlug.has(fallbackSlug)) return;
+          fallbackPartsBySlug.set(fallbackSlug, {
+            id: `derived-${fallbackSlug}-${index}`,
+            slug: fallbackSlug,
+            name: PART_LABEL_BY_SLUG[fallbackSlug] || fallbackSlug,
+            description: null,
+            sort_order: index,
+            is_active: true,
+          });
+        });
+
+        setCatalogParts(Array.from(fallbackPartsBySlug.values()));
+        setCatalogTypes(normalizedTypes);
+        setCatalogSubtypes(normalizedSubtypes);
+        writeCatalogCache({
+          parts: Array.from(fallbackPartsBySlug.values()),
+          types: normalizedTypes,
+          subtypes: normalizedSubtypes,
+        });
       } catch (err) {
         if (!cancelled) {
           console.error("Erro ao carregar catalogo dinamico:", err);
-          setCatalogError("Nao foi possivel carregar o catalogo dinamico.");
+          const errorMessage =
+            err && typeof err === "object" && "message" in err
+              ? String((err as { message?: string }).message || "")
+              : "";
+          setCatalogError(
+            errorMessage
+              ? `Nao foi possivel carregar o catalogo dinamico. (${errorMessage})`
+              : "Nao foi possivel carregar o catalogo dinamico."
+          );
+
+          const cache = readCatalogCache();
+          if (cache) {
+            setCatalogParts(cache.parts);
+            setCatalogTypes(cache.types);
+            setCatalogSubtypes(cache.subtypes);
+          }
         }
       } finally {
         if (!cancelled) setCatalogLoading(false);
@@ -261,63 +427,40 @@ const Create = () => {
       setDraftsLoading(true);
       setDraftsError(null);
 
-      if (!supabase) {
-        setDraftsError("Supabase não configurado no frontend.");
-        setDrafts([]);
-        setDraftsLoading(false);
-        return;
-      }
-
       try {
-        const { data: userRes, error: userErr } = await supabase.auth.getUser();
-        if (userErr) {
-          if (!cancelled) {
-            console.error("Erro ao obter usuário para listar rascunhos:", userErr);
-            setDraftsError("Não foi possível confirmar o usuário.");
-            setDrafts([]);
-          }
-          return;
-        }
-        const user = userRes?.user;
-        if (!user) {
-          if (!cancelled) {
-            setDraftsError("Faça login para acessar seus rascunhos.");
-            setDrafts([]);
-          }
-          return;
-        }
-
-        // Limpeza server-side: exclui rascunhos efêmeros expirados antes de buscar
-        await supabase
-          .from("project_drafts")
-          .delete()
-          .eq("user_id", user.id)
-          .not("ephemeral_expires_at", "is", null)
-          .lt("ephemeral_expires_at", new Date().toISOString());
-
-        const { data, error } = await supabase
-          .from("project_drafts")
-          .select("id, project_key, data, updated_at")
-          .eq("user_id", user.id)
-          .order("updated_at", { ascending: false });
-
-        if (error) {
-          if (!cancelled) {
-            console.error("Erro ao carregar rascunhos:", error);
-            setDraftsError("Erro ao carregar rascunhos.");
-            setDrafts([]);
-          }
-          return;
-        }
+        const { token } = await getBackendAuthContext();
+        const response = await apiRequest<{
+          items: Array<{
+            id: string;
+            updated_at?: string | null;
+            version?: number;
+            status?: string;
+            design_data?: DraftData;
+          }>;
+        }>("/drafts", { token });
 
         if (cancelled) return;
 
-        const mapped: DraftRecord[] = (data ?? []).map((row: any) => ({
-          id: row.id as string,
-          projectKey: (row.project_key ?? "") as string,
-          updatedAt: (row.updated_at ?? null) as string | null,
-          data: (row.data ?? {}) as DraftData,
-        }));
+        const mapped: DraftRecord[] = (response.items ?? []).map((row: any) => {
+          const designData = (row.design_data ?? {}) as DraftData;
+          const projectKey =
+            toSafeString(designData.draftKey) ||
+            toSafeString(designData.projectKey) ||
+            toSafeString(row.id);
+
+          return {
+            id: row.id,
+            projectKey,
+            updatedAt: row.updated_at ?? null,
+            version: typeof row.version === "number" ? row.version : undefined,
+            data: {
+              ...designData,
+              draftId: row.id,
+              draftKey: projectKey,
+              projectKey,
+            },
+          };
+        });
 
         setDrafts(mapped);
         if (mapped.length) {
@@ -330,9 +473,16 @@ const Create = () => {
         }
       } catch (err) {
         if (!cancelled) {
-          console.error("Erro inesperado ao buscar rascunhos:", err);
-          setDraftsError("Erro inesperado ao carregar rascunhos.");
-          setDrafts([]);
+          console.error("Erro ao buscar rascunhos via API:", err);
+          const localDraft = readLocalCurrentDraft();
+          if (localDraft) {
+            setDrafts([localDraft]);
+            setSelectedDraftId(localDraft.id);
+            setDraftsError("Falha de conexão com API. Mostrando rascunho local.");
+          } else {
+            setDraftsError("Erro ao carregar rascunhos.");
+            setDrafts([]);
+          }
         }
       } finally {
         if (!cancelled) setDraftsLoading(false);
@@ -344,7 +494,7 @@ const Create = () => {
     return () => {
       cancelled = true;
     };
-  }, [viewMode]);
+  }, [getBackendAuthContext, viewMode]);
 
   const resolveExpirationTs = useCallback((draft: DraftRecord): number | null => {
     if (draft.data.isPermanent) return null;
@@ -362,19 +512,19 @@ const Create = () => {
   const handleExpireDraft = useCallback(
     async (draft: DraftRecord) => {
       removeDraftLocally(draft.id);
-      if (!supabase) {
-        pendingDeletionRef.current.delete(draft.id);
-        return;
-      }
       try {
-        await supabase.from("project_drafts").delete().eq("id", draft.id);
+        const { token } = await getBackendAuthContext();
+        await apiRequest(`/drafts/${draft.id}`, {
+          method: "DELETE",
+          token,
+        });
       } catch (err) {
         console.error("Falha ao excluir rascunho expirado:", err);
       } finally {
         pendingDeletionRef.current.delete(draft.id);
       }
     },
-    [removeDraftLocally]
+    [getBackendAuthContext, removeDraftLocally]
   );
 
   const handleMakePermanent = useCallback(
@@ -402,14 +552,30 @@ const Create = () => {
         console.warn("Falha ao atualizar localStorage ao tornar draft permanente:", err);
       }
 
-      if (!supabase) return;
       try {
-        await supabase.from("project_drafts").update({ data: nextData }).eq("id", draft.id);
+        const { token } = await getBackendAuthContext();
+        const updated = await apiRequest<{ version?: number }>(`/drafts/${draft.id}`, {
+          method: "PUT",
+          token,
+          body: {
+            status: "draft",
+            expectedVersion: draft.version,
+            designData: nextData,
+          },
+        });
+
+        if (typeof updated?.version === "number") {
+          setDrafts((prev) =>
+            prev.map((item) =>
+              item.id === draft.id ? { ...item, version: updated.version } : item,
+            ),
+          );
+        }
       } catch (err) {
         console.error("Falha ao manter rascunho permanentemente:", err);
       }
     },
-    []
+    [getBackendAuthContext]
   );
 
   useEffect(() => {
@@ -434,24 +600,43 @@ const Create = () => {
     const previews = selectedDraft.data.tabDecalPreviews ?? {};
     const visibility = selectedDraft.data.tabVisibility ?? {};
     const placements = selectedDraft.data.tabDecalPlacements ?? {};
+    const printTypes = selectedDraft.data.tabPrintTypes ?? {};
     return tabs
       .filter((tab) => tab.type === "2d" && visibility[tab.id] && previews[tab.id])
-      .map((tab) => ({
-        id: tab.id,
-        label: tab.name,
-        dataUrl: previews[tab.id],
-        // clone to avoid decal-engine mutating the stored object
-        transform: placements[tab.id]
+      .map((tab) => {
+        const placement = placements[tab.id];
+        const transform: DecalTransform | null = placement
           ? {
-              position: placements[tab.id].position ? { ...placements[tab.id].position } : null,
-              normal: placements[tab.id].normal ? { ...placements[tab.id].normal } : null,
-              width: placements[tab.id].width,
-              height: placements[tab.id].height,
-              depth: placements[tab.id].depth,
-              angle: placements[tab.id].angle,
+              position: placement.position
+                ? {
+                    x: placement.position.x,
+                    y: placement.position.y,
+                    z: placement.position.z,
+                  }
+                : null,
+              normal: placement.normal
+                ? {
+                    x: placement.normal.x,
+                    y: placement.normal.y,
+                    z: placement.normal.z,
+                  }
+                : null,
+              width: placement.width,
+              height: placement.height,
+              depth: placement.depth,
+              angle: placement.angle,
             }
-          : null,
-      }));
+          : null;
+
+        return {
+          id: tab.id,
+          label: tab.name,
+          dataUrl: previews[tab.id],
+          printType: printTypes[tab.id],
+          // clone to avoid decal-engine mutating the stored object
+          transform,
+        };
+      });
   }, [selectedDraft]);
 
   const selectedDraftBaseColor = selectedDraft?.data.baseColor || "#ffffff";
@@ -533,6 +718,7 @@ const Create = () => {
   const clothingTypes = useMemo<Record<string, ModelItem[]>>(() => {
     if (!catalogParts.length || !catalogTypes.length) return EMPTY_MODEL_MAP;
     const partById = new Map(catalogParts.map((part) => [part.id, part]));
+    const partBySlug = new Map(catalogParts.map((part) => [part.slug, part]));
     const map: Record<PartKey, ModelItem[]> = {};
 
     catalogParts.forEach((part) => {
@@ -542,7 +728,9 @@ const Create = () => {
 
     catalogTypes.forEach((typeItem) => {
       if (typeItem.is_active === false) return;
-      const part = partById.get(typeItem.part_id);
+      const part =
+        partById.get(typeItem.part_id) ||
+        (typeItem.part_slug ? partBySlug.get(toSlug(typeItem.part_slug)) : undefined);
       if (!part || part.is_active === false) return;
       const list = map[part.slug] ?? (map[part.slug] = []);
       list.push({
@@ -558,11 +746,14 @@ const Create = () => {
   const specificModels = useMemo<Record<string, ModelItem[]>>(() => {
     if (!catalogTypes.length || !catalogSubtypes.length) return EMPTY_MODEL_MAP;
     const typeById = new Map(catalogTypes.map((typeItem) => [typeItem.id, typeItem]));
+    const typeByName = new Map(catalogTypes.map((typeItem) => [normalizeText(typeItem.name), typeItem]));
     const map: Record<string, ModelItem[]> = {};
 
     catalogSubtypes.forEach((subtype) => {
       if (subtype.is_active === false) return;
-      const typeItem = typeById.get(subtype.type_id);
+      const typeItem =
+        typeById.get(subtype.type_id) ||
+        (subtype.type_name ? typeByName.get(normalizeText(subtype.type_name)) : undefined);
       if (!typeItem || typeItem.is_active === false) return;
       const list = map[typeItem.name] ?? (map[typeItem.name] = []);
       list.push({
@@ -573,7 +764,7 @@ const Create = () => {
     });
 
     return map;
-  }, [catalogTypes, catalogSubtypes, resolveCatalogImage]);
+  }, [catalogTypes, catalogSubtypes, normalizeText, resolveCatalogImage]);
 
   const typeEntries = useMemo(() => {
     const entries: {
@@ -667,11 +858,17 @@ const Create = () => {
     () => {
       const parts = catalogParts.filter((part) => part.is_active !== false);
       const sorted = [...parts].sort((a, b) => (a.sort_order ?? 0) - (b.sort_order ?? 0));
-      return sorted.map((part) => ({
+      const mapped = sorted.map((part) => ({
         id: part.slug,
         label: part.name,
         description: part.description || "Sem descricao",
       }));
+      if (mapped.length) return mapped;
+      return [
+        { id: "head", label: "Cabeca", description: "Parte superior" },
+        { id: "torso", label: "Tronco", description: "Regiao central" },
+        { id: "legs", label: "Pernas", description: "Parte inferior" },
+      ];
     },
     [catalogParts]
   );
@@ -912,7 +1109,7 @@ const Create = () => {
               <div className="w-full md:max-w-xl">
                 <Input
                   value={searchQuery}
-                  onChange={(event) => setSearchQuery(event.target.value)}
+                  onChange={(event: ChangeEvent<HTMLInputElement>) => setSearchQuery(event.target.value)}
                   placeholder="Pesquisar modelo direto: ex. camiseta, camiseta oversized, jaqueta..."
                   aria-label="Pesquisar modelos"
                 />

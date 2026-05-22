@@ -1,0 +1,10 @@
+node_modules
+
+# Local environment / tooling noise
+.copilot_tmp/
+.pgdata17/
+backend/.env
+
+# Build outputs
+backend/dist/
+decal-engine/dist/

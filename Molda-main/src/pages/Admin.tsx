@@ -8,14 +8,13 @@ import { Textarea } from "@/components/ui/textarea";
 import { Switch } from "@/components/ui/switch";
 import { Label } from "@/components/ui/label";
 import { Checkbox } from "@/components/ui/checkbox";
-import { supabase } from "@/integrations/supabase/client";
-import { PRODUCT_IMAGES_BUCKET } from "@/lib/constants/storage";
 import { toast } from "sonner";
 import { cn } from "@/lib/utils";
 import { UPLOAD_MODEL_API } from "@/lib/constants/storage";
 import { invalidateModelCache } from "@/lib/models";
 import DecalZoneEditor, { type DecalZoneDraft } from "@/components/admin/DecalZoneEditor";
 import { parseColorList } from "@/lib/productColors";
+import { apiRequest } from "@/api/backend";
 
 type Part = {
   id: string;
@@ -117,6 +116,15 @@ type SubtypeMaterial = {
   material_id: string;
 };
 
+const VIRTUAL_PART_PREFIX = "__slug__:";
+const CREATE_CATALOG_CACHE_KEY = "create_catalog_cache_v1";
+
+const DEFAULT_BODY_PARTS = [
+  { slug: "head", name: "Cabeca", description: "Parte superior", sort_order: 1 },
+  { slug: "torso", name: "Tronco", description: "Regiao central", sort_order: 2 },
+  { slug: "legs", name: "Pernas", description: "Parte inferior", sort_order: 3 },
+] as const;
+
 const slugify = (value: string) =>
   value
     .toLowerCase()
@@ -135,6 +143,14 @@ const toNullableNumber = (value: string | number | null | undefined) => {
   const num = typeof value === "string" ? Number(value) : value;
   return Number.isFinite(num) ? (num as number) : null;
 };
+
+const normalizePartSlug = (value: string | null | undefined) =>
+  (value || "")
+    .toLowerCase()
+    .normalize("NFD")
+    .replace(/[\u0300-\u036f]/g, "")
+    .replace(/[^a-z0-9]+/g, "-")
+    .replace(/(^-|-$)+/g, "");
 
 const parseDecalZones = (value: unknown): DecalZoneDraft[] => {
   if (!Array.isArray(value)) return [];
@@ -289,51 +305,34 @@ const Admin = () => {
         productsRes,
         inventoryRes,
         materialsRes,
-        suppliersRes,
         printingMethodsRes,
         materialPrintingMethodsRes,
         productMaterialsRes,
         subtypeMaterialsRes,
       ] = await Promise.all([
-        supabase.from("parts").select("*").order("sort_order", { ascending: true }),
-        supabase.from("product_types").select("*").order("sort_order", { ascending: true }),
-        supabase.from("product_subtypes").select("*").order("sort_order", { ascending: true }),
-        supabase.from("products").select("*").order("name", { ascending: true }),
-        supabase.from("inventory").select("*"),
-        supabase.from("materials").select("*").order("name", { ascending: true }),
-        supabase.from("suppliers").select("*").order("name", { ascending: true }),
-        supabase.from("printing_methods").select("*").order("sort_order", { ascending: true }),
-        supabase.from("material_printing_methods").select("*"),
-        supabase.from("product_materials").select("*"),
-        supabase.from("subtype_materials").select("*"),
+        apiRequest<Part[]>("/catalog/parts"),
+        apiRequest<ProductType[]>("/catalog/product-types"),
+        apiRequest<ProductSubtype[]>("/catalog/product-subtypes"),
+        apiRequest<Product[]>("/catalog/products"),
+        apiRequest<Inventory[]>("/catalog/inventory"),
+        apiRequest<Material[]>("/catalog/materials"),
+        apiRequest<PrintingMethod[]>("/catalog/printing-methods"),
+        apiRequest<MaterialPrintingMethod[]>("/catalog/material-printing-methods"),
+        apiRequest<ProductMaterial[]>("/catalog/product-materials"),
+        apiRequest<SubtypeMaterial[]>("/catalog/subtype-materials"),
       ]);
 
-      // Tabelas principais — erro aqui aborta o carregamento
-      if (partsRes.error) throw partsRes.error;
-      if (typesRes.error) throw typesRes.error;
-      if (subtypesRes.error) throw subtypesRes.error;
-      if (productsRes.error) throw productsRes.error;
-      if (inventoryRes.error) throw inventoryRes.error;
-      if (materialsRes.error) throw materialsRes.error;
-      if (suppliersRes.error) throw suppliersRes.error;
-
-      // Tabelas de migração — falha silenciosa se ainda não existirem no DB
-      if (printingMethodsRes.error) console.warn("[admin] printing_methods:", printingMethodsRes.error.message);
-      if (materialPrintingMethodsRes.error) console.warn("[admin] material_printing_methods:", materialPrintingMethodsRes.error.message);
-      if (productMaterialsRes.error) console.warn("[admin] product_materials:", productMaterialsRes.error.message);
-      if (subtypeMaterialsRes.error) console.warn("[admin] subtype_materials:", subtypeMaterialsRes.error.message);
-
-      setParts((partsRes.data as Part[]) || []);
-      setTypes((typesRes.data as ProductType[]) || []);
-      setSubtypes((subtypesRes.data as ProductSubtype[]) || []);
-      setProducts((productsRes.data as Product[]) || []);
-      setInventory((inventoryRes.data as Inventory[]) || []);
-      setMaterials((materialsRes.data as Material[]) || []);
-      setSuppliers((suppliersRes.data as Supplier[]) || []);
-      setPrintingMethods((printingMethodsRes.data as PrintingMethod[]) || []);
-      setMaterialPrintingMethods((materialPrintingMethodsRes.data as MaterialPrintingMethod[]) || []);
-      setProductMaterials((productMaterialsRes.data as ProductMaterial[]) || []);
-      setSubtypeMaterials((subtypeMaterialsRes.data as SubtypeMaterial[]) || []);
+      setParts(partsRes || []);
+      setTypes(typesRes || []);
+      setSubtypes(subtypesRes || []);
+      setProducts(productsRes || []);
+      setInventory(inventoryRes || []);
+      setMaterials(materialsRes || []);
+      setPrintingMethods(printingMethodsRes || []);
+      setSuppliers([]);
+      setMaterialPrintingMethods(materialPrintingMethodsRes || []);
+      setProductMaterials(productMaterialsRes || []);
+      setSubtypeMaterials(subtypeMaterialsRes || []);
     } catch (err: any) {
       console.error("[admin.loadCatalog]", err);
       toast.error(err?.message || "Falha ao carregar dados do catalogo.");
@@ -424,6 +423,59 @@ const Admin = () => {
     () => new Map(inventory.map((inv) => [inv.product_id, inv])),
     [inventory]
   );
+
+  const partOptions = useMemo(() => {
+    const options = parts.map((part) => ({
+      id: part.id,
+      slug: normalizePartSlug(part.slug || part.name),
+      name: part.name,
+      isVirtual: false,
+    }));
+
+    const slugSet = new Set(options.map((option) => option.slug));
+    DEFAULT_BODY_PARTS.forEach((part) => {
+      if (!slugSet.has(part.slug)) {
+        options.push({
+          id: `${VIRTUAL_PART_PREFIX}${part.slug}`,
+          slug: part.slug,
+          name: part.name,
+          isVirtual: true,
+        });
+      }
+    });
+
+    return options;
+  }, [parts]);
+
+  const resolveTypePartId = useCallback(
+    async (selectedPartId: string) => {
+      if (!selectedPartId) return "";
+      if (!selectedPartId.startsWith(VIRTUAL_PART_PREFIX)) return selectedPartId;
+
+      const slug = selectedPartId.slice(VIRTUAL_PART_PREFIX.length);
+      const existing = parts.find((part) => normalizePartSlug(part.slug || part.name) === slug);
+      if (existing) return existing.id;
+
+      const fallback = DEFAULT_BODY_PARTS.find((part) => part.slug === slug);
+      if (!fallback) return "";
+
+      const inserted = await apiRequest<Part>("/catalog/parts/ensure", {
+        method: "POST",
+        body: {
+          slug: fallback.slug,
+          name: fallback.name,
+          description: fallback.description,
+          sort_order: fallback.sort_order,
+          is_active: true,
+        },
+      });
+
+      setParts((prev) => [...prev, inserted]);
+      return inserted.id;
+    },
+    [parts]
+  );
+
   useEffect(() => {
     const next: Record<string, { on_hand: number; reserved: number }> = {};
     products.forEach((product) => {
@@ -438,20 +490,24 @@ const Admin = () => {
 
   const getPublicUrl = useCallback((path?: string | null) => {
     if (!path) return null;
-    const { data } = supabase.storage.from(PRODUCT_IMAGES_BUCKET).getPublicUrl(path);
-    return data?.publicUrl || null;
+    if (path.startsWith("http://") || path.startsWith("https://") || path.startsWith("/")) {
+      return path;
+    }
+    return path;
   }, []);
 
   const uploadImage = useCallback(async (file: File, folder: string) => {
-    const ext = file.name.split(".").pop() || "png";
-    const safeName = slugify(file.name.replace(/\.[^/.]+$/, "")) || "image";
-    const filename = `${Date.now()}-${safeName}.${ext}`;
-    const path = `${folder}/${filename}`;
-    const { error } = await supabase.storage
-      .from(PRODUCT_IMAGES_BUCKET)
-      .upload(path, file, { upsert: true, contentType: file.type || "image/*" });
-    if (error) throw error;
-    return path;
+    console.warn("[admin.uploadImage] Upload local ainda nao configurado", { folder, fileName: file.name });
+    toast.warning("Upload de imagem desativado sem Supabase Storage. Salve o registro e configure o caminho depois.");
+    return null;
+  }, []);
+
+  const invalidateCreateCatalogCache = useCallback(() => {
+    try {
+      localStorage.removeItem(CREATE_CATALOG_CACHE_KEY);
+    } catch {
+      // ignore cache cleanup failures
+    }
   }, []);
 
   const resetTypeForm = () => {
@@ -531,35 +587,44 @@ const Admin = () => {
 
   const handleSaveType = async (event: React.FormEvent) => {
     event.preventDefault();
-    const payload = {
-      part_id: typeForm.part_id,
-      name: typeForm.name.trim(),
-      slug: (typeForm.slug || typeForm.name).trim() ? slugify(typeForm.slug || typeForm.name) : "",
-      description: typeForm.description.trim() || null,
-      sort_order: toNumber(typeForm.sort_order),
-      is_active: typeForm.is_active,
-      card_image_path: typeForm.card_image_path || null,
-    };
-
-    if (!payload.part_id || !payload.name || !payload.slug) {
-      toast.error("Parte, nome e slug sao obrigatorios.");
-      return;
-    }
-
     try {
+      const resolvedPartId = await resolveTypePartId(typeForm.part_id);
+      const payload = {
+        part_id: resolvedPartId,
+        name: typeForm.name.trim(),
+        slug: (typeForm.slug || typeForm.name).trim() ? slugify(typeForm.slug || typeForm.name) : "",
+        description: typeForm.description.trim() || null,
+        sort_order: toNumber(typeForm.sort_order),
+        is_active: typeForm.is_active,
+        card_image_path: typeForm.card_image_path || null,
+      };
+
+      if (!payload.part_id || !payload.name || !payload.slug) {
+        toast.error("Corpo, nome e slug sao obrigatorios.");
+        return;
+      }
+
       if (typeImageFile) {
-        payload.card_image_path = await uploadImage(typeImageFile, "types");
+        const uploadedPath = await uploadImage(typeImageFile, "types");
+        if (uploadedPath) {
+          payload.card_image_path = uploadedPath;
+        }
       }
       if (typeForm.id) {
-        const { error } = await supabase.from("product_types").update(payload).eq("id", typeForm.id);
-        if (error) throw error;
+        await apiRequest(`/catalog/product-types/${typeForm.id}`, {
+          method: "PATCH",
+          body: payload,
+        });
         toast.success("Tipo atualizado.");
       } else {
-        const { error } = await supabase.from("product_types").insert(payload);
-        if (error) throw error;
+        await apiRequest("/catalog/product-types", {
+          method: "POST",
+          body: payload,
+        });
         toast.success("Tipo criado.");
       }
       resetTypeForm();
+      invalidateCreateCatalogCache();
       await loadCatalog();
     } catch (err: any) {
       console.error("[admin.saveType]", err);
@@ -580,41 +645,6 @@ const Admin = () => {
       is_active: subtypeForm.is_active,
       card_image_path: subtypeForm.card_image_path || null,
       model_3d_path: subtypeForm.model_3d_path || null,
-      decal_zones_json: subtypeDecalZones,
-      print_area_width_cm: toNullableNumber(subtypeForm.print_area_width_cm),
-      print_area_height_cm: toNullableNumber(subtypeForm.print_area_height_cm),
-      min_decal_area_cm2: toNullableNumber(subtypeForm.min_decal_area_cm2) ?? 5,
-      neck_zone_y_min: toNullableNumber(subtypeForm.neck_zone_y_min) ?? 0.82,
-      underarm_zone_y_min: toNullableNumber(subtypeForm.underarm_zone_y_min) ?? 0.45,
-      underarm_zone_y_max: toNullableNumber(subtypeForm.underarm_zone_y_max) ?? 0.72,
-      underarm_zone_abs_x_min: toNullableNumber(subtypeForm.underarm_zone_abs_x_min) ?? 0.55,
-    };
-
-    const legacyPayload: Record<string, any> = {
-      type_id: payload.type_id,
-      name: payload.name,
-      slug: payload.slug,
-      description: payload.description,
-      sort_order: payload.sort_order,
-      is_active: payload.is_active,
-      card_image_path: payload.card_image_path,
-      model_3d_path: payload.model_3d_path,
-    };
-
-    const isMissingSubtypeConstraintColumn = (error: any) => {
-      const message = String(error?.message || "");
-      return (
-        error?.code === "42703" ||
-        error?.code === "PGRST204" ||
-        message.includes("min_decal_area_cm2") ||
-        message.includes("print_area_width_cm") ||
-        message.includes("print_area_height_cm") ||
-        message.includes("neck_zone_y_min") ||
-        message.includes("underarm_zone_y_min") ||
-        message.includes("underarm_zone_y_max") ||
-        message.includes("underarm_zone_abs_x_min") ||
-        message.includes("decal_zones_json")
-      );
     };
 
     if (!payload.type_id || !payload.name || !payload.slug) {
@@ -624,7 +654,10 @@ const Admin = () => {
 
     try {
       if (subtypeImageFile) {
-        payload.card_image_path = await uploadImage(subtypeImageFile, "subtypes");
+        const uploadedPath = await uploadImage(subtypeImageFile, "subtypes");
+        if (uploadedPath) {
+          payload.card_image_path = uploadedPath;
+        }
       }
 
       // Upload do modelo 3D via Vite plugin (múltiplos arquivos: .gltf + .bin + texturas)
@@ -647,55 +680,33 @@ const Admin = () => {
         toast.success(`Modelo 3D salvo: ${fileNames}`);
       }
 
+      let savedSubtypeId = subtypeForm.id;
       if (subtypeForm.id) {
-        let { error } = await supabase
-          .from("product_subtypes")
-          .update(payload)
-          .eq("id", subtypeForm.id);
-
-        if (isMissingSubtypeConstraintColumn(error)) {
-          const fallback = await supabase
-            .from("product_subtypes")
-            .update(legacyPayload)
-            .eq("id", subtypeForm.id);
-          error = fallback.error;
-          if (!error) {
-            toast.warning("Subtipo salvo sem colunas novas. Execute os SQL subtype_print_constraints.sql e 07_add_decal_zones_json.sql no Supabase para habilitar todos os campos.");
-          }
-        }
-
-        if (error) throw error;
+        const updated = await apiRequest<ProductSubtype>(`/catalog/product-subtypes/${subtypeForm.id}`, {
+          method: "PATCH",
+          body: payload,
+        });
+        savedSubtypeId = updated?.id || subtypeForm.id;
         toast.success("Subtipo atualizado.");
       } else {
-        let { error } = await supabase.from("product_subtypes").insert(payload);
-
-        if (isMissingSubtypeConstraintColumn(error)) {
-          const fallback = await supabase.from("product_subtypes").insert(legacyPayload);
-          error = fallback.error;
-          if (!error) {
-            toast.warning("Subtipo salvo sem colunas novas. Execute os SQL subtype_print_constraints.sql e 07_add_decal_zones_json.sql no Supabase para habilitar todos os campos.");
-          }
-        }
-
-        if (error) throw error;
+        const created = await apiRequest<ProductSubtype>("/catalog/product-subtypes", {
+          method: "POST",
+          body: payload,
+        });
+        savedSubtypeId = created?.id || "";
         toast.success("Subtipo criado.");
       }
-      // Salva tecidos associados ao subtipo
-      const savedSubtypeId = subtypeForm.id
-        ? subtypeForm.id
-        : (await supabase.from("product_subtypes").select("id").eq("slug", payload.slug as string).single()).data?.id;
 
       if (savedSubtypeId) {
-        await supabase.from("subtype_materials").delete().eq("subtype_id", savedSubtypeId);
-        if (selectedSubtypeMaterialIds.length > 0) {
-          await supabase.from("subtype_materials").insert(
-            selectedSubtypeMaterialIds.map((mid) => ({ subtype_id: savedSubtypeId, material_id: mid }))
-          );
-        }
+        await apiRequest(`/catalog/subtype-materials/${savedSubtypeId}`, {
+          method: "PATCH",
+          body: { material_ids: selectedSubtypeMaterialIds },
+        });
       }
 
       // Invalida cache de modelos para que a nova config seja usada
       invalidateModelCache();
+      invalidateCreateCatalogCache();
       resetSubtypeForm();
       await loadCatalog();
     } catch (err: any) {
@@ -711,6 +722,7 @@ const Admin = () => {
     const payload = {
       type_id: productForm.type_id,
       subtype_id: productForm.subtype_id || null,
+      material_id: productForm.material_id,
       sku: productForm.sku.trim(),
       name: productForm.name.trim(),
       description: productForm.description.trim() || null,
@@ -720,89 +732,32 @@ const Admin = () => {
       cover_image_path: productForm.cover_image_path || null,
     };
 
-    const payloadLegacy = {
-      type_id: payload.type_id,
-      subtype_id: payload.subtype_id,
-      sku: payload.sku,
-      name: payload.name,
-      description: payload.description,
-      available: payload.available,
-      visible: payload.visible,
-      cover_image_path: payload.cover_image_path,
-    };
-
-    if (!payload.type_id || !payload.sku || !payload.name || !productForm.material_id) {
+    if (!payload.type_id || !payload.sku || !payload.name || !payload.material_id) {
       toast.error("Tipo, tecido, SKU e nome sao obrigatorios.");
       return;
     }
 
     try {
       if (productImageFile) {
-        payload.cover_image_path = await uploadImage(productImageFile, "products");
+        const uploadedPath = await uploadImage(productImageFile, "products");
+        if (uploadedPath) {
+          payload.cover_image_path = uploadedPath;
+        }
       }
 
-      let productId = productForm.id;
       if (productForm.id) {
-        let { data, error } = await supabase
-          .from("products")
-          .update(payload)
-          .eq("id", productForm.id)
-          .select("id")
-          .single();
-        if (error && String(error.message || "").includes("available_colors")) {
-          const fallback = await supabase
-            .from("products")
-            .update(payloadLegacy)
-            .eq("id", productForm.id)
-            .select("id")
-            .single();
-          data = fallback.data;
-          error = fallback.error;
-          if (!error) {
-            toast.warning("Produto salvo sem cores disponiveis. Execute o SQL 10_add_product_available_colors.sql no Supabase.");
-          }
-        }
-        if (error) throw error;
-        productId = data.id;
+        await apiRequest(`/catalog/products/${productForm.id}`, {
+          method: "PATCH",
+          body: payload,
+        });
         toast.success("Produto atualizado.");
       } else {
-        let { data, error } = await supabase
-          .from("products")
-          .insert(payload)
-          .select("id")
-          .single();
-        if (error && String(error.message || "").includes("available_colors")) {
-          const fallback = await supabase
-            .from("products")
-            .insert(payloadLegacy)
-            .select("id")
-            .single();
-          data = fallback.data;
-          error = fallback.error;
-          if (!error) {
-            toast.warning("Produto salvo sem cores disponiveis. Execute o SQL 10_add_product_available_colors.sql no Supabase.");
-          }
-        }
-        if (error) throw error;
-        productId = data.id;
+        await apiRequest("/catalog/products", {
+          method: "POST",
+          body: payload,
+        });
         toast.success("Produto criado.");
       }
-
-      if (!productId) {
-        throw new Error("Nao foi possivel identificar o produto salvo.");
-      }
-
-      const { error: deleteProductMaterialsError } = await supabase
-        .from("product_materials")
-        .delete()
-        .eq("product_id", productId);
-      if (deleteProductMaterialsError) throw deleteProductMaterialsError;
-
-      const { error: insertProductMaterialError } = await supabase.from("product_materials").insert({
-        product_id: productId,
-        material_id: productForm.material_id,
-      });
-      if (insertProductMaterialError) throw insertProductMaterialError;
 
       resetProductForm();
       await loadCatalog();
@@ -819,9 +774,9 @@ const Admin = () => {
 
     setLoading(true);
     try {
-      const { error } = await supabase.from("product_subtypes").delete().eq("id", id);
-      if (error) throw error;
+      await apiRequest(`/catalog/product-subtypes/${id}`, { method: "DELETE" });
       toast.success("Subtipo excluído com sucesso.");
+      invalidateCreateCatalogCache();
       await loadCatalog();
     } catch (err: any) {
       console.error("[admin.handleDeleteSubtype]", err);
@@ -846,15 +801,16 @@ const Admin = () => {
 
     try {
       if (materialForm.id) {
-        const { error } = await supabase
-          .from("materials")
-          .update(payload)
-          .eq("id", materialForm.id);
-        if (error) throw error;
+        await apiRequest(`/catalog/materials/${materialForm.id}`, {
+          method: "PATCH",
+          body: payload,
+        });
         toast.success("Tecido atualizado.");
       } else {
-        const { error } = await supabase.from("materials").insert(payload);
-        if (error) throw error;
+        await apiRequest("/catalog/materials", {
+          method: "POST",
+          body: payload,
+        });
         toast.success("Tecido criado.");
       }
       resetMaterialForm();
@@ -867,48 +823,21 @@ const Admin = () => {
 
   const handleSaveSupplier = async (event: React.FormEvent) => {
     event.preventDefault();
-    const payload = {
-      name: supplierForm.name.trim(),
-      email: supplierForm.email.trim() || null,
-      phone: supplierForm.phone.trim() || null,
-      is_active: supplierForm.is_active,
-    };
-
-    if (!payload.name) {
-      toast.error("Nome do fornecedor e obrigatorio.");
-      return;
-    }
-
-    try {
-      if (supplierForm.id) {
-        const { error } = await supabase.from("suppliers").update(payload).eq("id", supplierForm.id);
-        if (error) throw error;
-        toast.success("Fornecedor atualizado.");
-      } else {
-        const { error } = await supabase.from("suppliers").insert(payload);
-        if (error) throw error;
-        toast.success("Fornecedor criado.");
-      }
-      resetSupplierForm();
-      await loadCatalog();
-    } catch (err: any) {
-      console.error("[admin.saveSupplier]", err);
-      toast.error(err?.message || "Falha ao salvar fornecedor.");
-    }
+    toast.warning("Cadastro de fornecedor ainda nao foi migrado para a API local.");
   };
 
   const handleSaveInventory = async (productId: string) => {
     const values = inventoryEdits[productId];
     if (!values) return;
+
     try {
-      const payload = {
-        product_id: productId,
-        on_hand: Math.max(0, Math.floor(values.on_hand)),
-        reserved: Math.max(0, Math.floor(values.reserved)),
-        updated_at: new Date().toISOString(),
-      };
-      const { error } = await supabase.from("inventory").upsert(payload, { onConflict: "product_id" });
-      if (error) throw error;
+      await apiRequest(`/catalog/inventory/${productId}`, {
+        method: "PATCH",
+        body: {
+          on_hand: Math.max(0, Math.floor(values.on_hand)),
+          reserved: Math.max(0, Math.floor(values.reserved)),
+        },
+      });
       toast.success("Estoque atualizado.");
       await loadCatalog();
     } catch (err: any) {
@@ -923,19 +852,14 @@ const Admin = () => {
     checked: boolean
   ) => {
     try {
-      if (checked) {
-        const { error } = await supabase
-          .from("material_printing_methods")
-          .insert({ material_id: materialId, printing_method_id: printingMethodId });
-        if (error) throw error;
-      } else {
-        const { error } = await supabase
-          .from("material_printing_methods")
-          .delete()
-          .eq("material_id", materialId)
-          .eq("printing_method_id", printingMethodId);
-        if (error) throw error;
-      }
+      await apiRequest("/catalog/material-printing-methods", {
+        method: "PATCH",
+        body: {
+          material_id: materialId,
+          printing_method_id: printingMethodId,
+          checked,
+        },
+      });
       await loadCatalog();
     } catch (err: any) {
       console.error("[admin.toggleMaterialPrintingMethod]", err);
@@ -972,18 +896,18 @@ const Admin = () => {
                 <div>
                   <h2 className="text-lg font-semibold">Novo tipo</h2>
                   <p className="text-xs text-muted-foreground">
-                    Vincule o tipo a uma peca e escolha uma imagem para o card.
+                    Vincule o tipo a um corpo e escolha uma imagem para o card.
                   </p>
                 </div>
                 <div className="space-y-2">
-                  <Label>Peca</Label>
+                  <Label>Corpo</Label>
                   <select
                     value={typeForm.part_id}
                     onChange={(e) => setTypeForm((prev) => ({ ...prev, part_id: e.target.value }))}
                     className="w-full rounded-md border bg-background px-3 py-2 text-sm"
                   >
-                    <option value="">Selecione</option>
-                    {parts.map((part) => (
+                    <option value="">Selecione um corpo</option>
+                    {partOptions.map((part) => (
                       <option key={part.id} value={part.id}>
                         {part.name}
                       </option>
@@ -1037,7 +961,7 @@ const Admin = () => {
                   />
                 </div>
                 <div className="flex items-center gap-2">
-                  <Button type="submit" disabled={loading}>
+                  <Button type="submit">
                     {typeForm.id ? "Atualizar" : "Salvar"}
                   </Button>
                   {typeForm.id && (
@@ -1073,7 +997,7 @@ const Admin = () => {
                         <div>
                           <div className="text-sm font-semibold">{typeItem.name}</div>
                           <div className="text-xs text-muted-foreground">
-                            {partById.get(typeItem.part_id)?.name || "Sem peca"}
+                            {partById.get(typeItem.part_id)?.name || "Sem corpo"}
                           </div>
                         </div>
                       </div>
@@ -1300,7 +1224,7 @@ const Admin = () => {
                   />
                 </div>
                 <div className="flex items-center gap-2">
-                  <Button type="submit" disabled={loading}>
+                  <Button type="submit">
                     {subtypeForm.id ? "Atualizar" : "Salvar"}
                   </Button>
                   {subtypeForm.id && (
@@ -1448,7 +1372,7 @@ const Admin = () => {
                   />
                 </div>
                 <div className="flex items-center gap-2">
-                  <Button type="submit" disabled={loading}>
+                  <Button type="submit">
                     {materialForm.id ? "Atualizar" : "Salvar"}
                   </Button>
                   {materialForm.id && (
@@ -1585,7 +1509,7 @@ const Admin = () => {
                   />
                 </div>
                 <div className="flex items-center gap-2">
-                  <Button type="submit" disabled={loading}>
+                  <Button type="submit">
                     {supplierForm.id ? "Atualizar" : "Salvar"}
                   </Button>
                   {supplierForm.id && (
@@ -1748,7 +1672,7 @@ const Admin = () => {
                   />
                 </div>
                 <div className="flex items-center gap-2">
-                  <Button type="submit" disabled={loading}>
+                  <Button type="submit">
                     {productForm.id ? "Atualizar" : "Salvar"}
                   </Button>
                   {productForm.id && (

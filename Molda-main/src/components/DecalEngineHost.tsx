@@ -5,7 +5,6 @@ import React, { useEffect, useRef, useState } from "react";
 import initDecalDemo, { DecalDemoHandle } from "../../../decal-engine/src/usage";
 import { DEFAULT_GIZMO_THEME } from "../../../gizmo-theme";
 import { getModelConfigFromSelectionAsync, type ModelDecalZone } from "../lib/models";
-import { supabase } from "@/integrations/supabase/client";
 import type { DecalStateSnapshot, ExternalDecalData } from "../types/decals";
 
 type Selection = { part?: string | null; type?: string | null; subtype?: string | null };
@@ -45,6 +44,7 @@ export default function DecalEngineHost({
     if (a.id !== b.id) return false;
     if (a.label !== b.label) return false;
     if (a.src !== b.src) return false;
+    if (a.printType !== b.printType) return false;
     if (a.width !== b.width) return false;
     if (a.height !== b.height) return false;
     if (a.depth !== b.depth) return false;
@@ -94,8 +94,7 @@ export default function DecalEngineHost({
             part: selection?.part ?? undefined,
             type: selection?.type ?? undefined,
             subtype: selection?.subtype ?? undefined,
-          },
-          supabase
+          }
         );
         if (cancelled) return;
 
@@ -170,6 +169,7 @@ export default function DecalEngineHost({
         id: decal.id,
         label: decal.label,
         src: decal.dataUrl,
+        printType: decal.printType,
       };
 
       const t = decal.transform;
