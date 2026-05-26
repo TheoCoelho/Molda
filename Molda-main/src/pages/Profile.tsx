@@ -6,7 +6,7 @@ import { Input } from "@/components/ui/input";
 import { Textarea } from "@/components/ui/textarea";
 import { Avatar, AvatarFallback, AvatarImage } from "@/components/ui/avatar";
 import { useAuth, type Profile as OwnProfile } from "@/contexts/AuthContext";
-import { apiRequest } from "@/api/backend";
+import { apiRequest, getApiBaseUrl } from "@/api/backend";
 import { ensureBackendAccessToken } from "@/lib/backendAuth";
 import { Loader2 } from "lucide-react";
 
@@ -46,6 +46,7 @@ export default function Profile() {
   const [username, setUsername] = useState("");
   const [bio, setBio] = useState("");
   const [isPublic, setIsPublic] = useState(false);
+  const [avatarUploading, setAvatarUploading] = useState(false);
 
   const visibleProfile = useMemo(() => {
     if (isOwnView) return ownProfile;
@@ -149,6 +150,52 @@ export default function Profile() {
     }
   };
 
+  const handleAvatarUpload: React.ChangeEventHandler<HTMLInputElement> = async (event) => {
+    if (!isOwnView) return;
+    const file = event.target.files?.[0];
+    event.currentTarget.value = "";
+    if (!file) return;
+
+    setAvatarUploading(true);
+    setError(null);
+    try {
+      const auth = await ensureBackendAccessToken();
+      if (!auth?.token) {
+        throw new Error("Sessao expirada. Faca login novamente.");
+      }
+
+      const formData = new FormData();
+      formData.append("file", file);
+
+      const response = await fetch(`${getApiBaseUrl()}/profiles/me/avatar`, {
+        method: "POST",
+        headers: {
+          Authorization: `Bearer ${auth.token}`,
+        },
+        body: formData,
+      });
+
+      const payload = await response.json().catch(() => null);
+      if (!response.ok) {
+        const message = payload?.message || payload?.error || "Nao foi possivel enviar o avatar.";
+        throw new Error(message);
+      }
+
+      const avatarPath = payload?.avatar_path ?? payload?.profile?.avatar_path ?? null;
+      if (avatarPath) {
+        await updateOwnProfile({ avatar_path: avatarPath });
+      }
+
+      const refreshed = await getProfile();
+      setOwnProfile(refreshed);
+    } catch (err: any) {
+      console.error("[Profile] upload avatar", err);
+      setError(err?.message || "Nao foi possivel atualizar a imagem de perfil.");
+    } finally {
+      setAvatarUploading(false);
+    }
+  };
+
   const initials = (visibleProfile?.nickname || visibleProfile?.username || "U")
     .split(" ")
     .map((part) => part[0])
@@ -178,6 +225,13 @@ export default function Profile() {
               <div className="space-y-4">
                 {isOwnView ? (
                   <>
+                    <div className="space-y-2">
+                      <label className="text-sm text-muted-foreground">Imagem de perfil</label>
+                      <Input type="file" accept="image/*" onChange={handleAvatarUpload} disabled={avatarUploading} />
+                      <p className="text-xs text-muted-foreground">
+                        {avatarUploading ? "Enviando avatar..." : "Selecione uma imagem para atualizar seu avatar."}
+                      </p>
+                    </div>
                     <div className="grid sm:grid-cols-2 gap-3">
                       <div>
                         <label className="text-sm text-muted-foreground">Nickname</label>
