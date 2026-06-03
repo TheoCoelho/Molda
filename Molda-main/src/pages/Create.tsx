@@ -231,7 +231,7 @@ const Create = () => {
 
   const getBackendAuthContext = useCallback(async () => {
     const auth = await ensureBackendAccessToken();
-    if (!auth?.token || !auth.userId) {
+    if (!auth?.token || !auth.user?.id) {
       throw new Error("Sessao autenticada nao encontrada.");
     }
 

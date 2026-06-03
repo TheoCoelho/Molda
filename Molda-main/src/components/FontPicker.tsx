@@ -36,6 +36,7 @@ const PRELOAD_LOOKAHEAD = 24;
 const PRELOAD_CONCURRENCY = 4;
 const SCROLL_DAMPING = 0.28;
 const MAX_SCROLL_STEP = 72;
+const PRELOAD_ACTIVATION_DELAY_MS = 350;
 
 function toNumberArray(input?: Array<number | string>): number[] | undefined {
   if (!Array.isArray(input)) return undefined;
@@ -135,10 +136,6 @@ const FontRow = memo(function FontRow({
   const category = getFontCategoryMeta(item);
 
   const display = (item as any).label || item.family;
-
-  useEffect(() => {
-    onPrefetch(item);
-  }, [item, onPrefetch]);
 
   const handleStarClick: React.MouseEventHandler<HTMLButtonElement> = (e) => {
     e.stopPropagation();
@@ -244,6 +241,7 @@ export default function FontPicker({
   const [selectedCategory, setSelectedCategory] = useState<FontCategoryKey | "">("");
   const [isPopularAccordionOpen, setIsPopularAccordionOpen] = useState(false);
   const [showFilterMenu, setShowFilterMenu] = useState(false);
+  const [isPreviewPreloadEnabled, setIsPreviewPreloadEnabled] = useState(false);
   const scrollRef = useRef<HTMLDivElement | null>(null);
   const [resolvedFamilies, setResolvedFamilies] = useState<Set<string>>(new Set());
   const [loadingFamilies, setLoadingFamilies] = useState<Set<string>>(new Set());
@@ -254,10 +252,26 @@ export default function FontPicker({
   const [favorites, setFavorites] = useState<Set<string>>(new Set());
 
   const data = fonts && fonts.length ? fonts : FONT_LIBRARY;
+  const fontFamilies = useMemo(() => data.map((font) => font.family), [data]);
+  const popularityFamilies = useMemo(
+    () => (isPopularAccordionOpen ? fontFamilies : undefined),
+    [fontFamilies, isPopularAccordionOpen]
+  );
 
   // ===== NEW: fontes recentes =====
   const { addRecentFont, getRecentFontFamilies, clearRecentFonts } = useRecentFonts();
-  const { scores: popularityScores } = useFontPopularity(data.map((font) => font.family));
+  const { scores: popularityScores } = useFontPopularity(popularityFamilies);
+  const recentFamilies = useMemo(() => getRecentFontFamilies(), [getRecentFontFamilies]);
+
+  useEffect(() => {
+    const timer = window.setTimeout(() => {
+      setIsPreviewPreloadEnabled(true);
+    }, PRELOAD_ACTIVATION_DELAY_MS);
+
+    return () => {
+      window.clearTimeout(timer);
+    };
+  }, []);
 
   const compareByPopularity = useCallback(
     (left: FontItem, right: FontItem) => {
@@ -337,11 +351,11 @@ export default function FontPicker({
     }
     
     if (filterTag === "recentes") {
-      const recentFamilies = getRecentFontFamilies();
       if (!recentFamilies.length) return [];
       
       // Filtra apenas as fontes que estão na lista de recentes
-      const recentFonts = baseFiltered.filter((f) => recentFamilies.includes(f.family));
+      const recentSet = new Set(recentFamilies);
+      const recentFonts = baseFiltered.filter((f) => recentSet.has(f.family));
       
       // Ordena pelas mais recentes primeiro (mantém a ordem do getRecentFontFamilies)
       return recentFonts.sort((a, b) => {
@@ -352,7 +366,7 @@ export default function FontPicker({
     }
     
     return baseFiltered;
-  }, [baseFiltered, filterTag, favorites, getRecentFontFamilies]);
+  }, [baseFiltered, filterTag, favorites, recentFamilies]);
 
   const presetOptions = useMemo(() => listFontPresets(scopedFiltered), [scopedFiltered]);
 
@@ -480,6 +494,7 @@ export default function FontPicker({
   }, [query, filterTag, selectedPreset, selectedCategory, isPopularAccordionOpen]);
 
   useEffect(() => {
+    if (!isPreviewPreloadEnabled) return;
     if (shouldHideFullLibrary || !visibleFonts.length) return;
 
     const eagerFonts = visibleFonts.slice(0, Math.min(visibleFonts.length, PRELOAD_LOOKAHEAD));
@@ -532,7 +547,7 @@ export default function FontPicker({
     return () => {
       cancelled = true;
     };
-  }, [shouldHideFullLibrary, visibleFonts]);
+  }, [isPreviewPreloadEnabled, shouldHideFullLibrary, visibleFonts]);
 
   const startIndex = Math.max(
     0,
@@ -564,6 +579,7 @@ export default function FontPicker({
 
   // Pré-carregamento concorrente controlado na janela visível + lookahead.
   useEffect(() => {
+    if (!isPreviewPreloadEnabled) return;
     if (shouldHideFullLibrary || total === 0) return;
     let cancelled = false;
 
@@ -622,7 +638,7 @@ export default function FontPicker({
     return () => {
       cancelled = true;
     };
-  }, [shouldHideFullLibrary, visibleFonts, startIndex, endIndex, total]);
+  }, [isPreviewPreloadEnabled, shouldHideFullLibrary, visibleFonts, startIndex, endIndex, total]);
 
   const handleFontSelect = useCallback(async (f: FontItem) => {
     // Atualiza seleção imediatamente (não bloqueia a UI)
@@ -802,7 +818,7 @@ export default function FontPicker({
                   >Recentes</button>
                   
                   {/* Opção para limpar recentes - só aparece se houver fontes recentes */}
-                  {getRecentFontFamilies().length > 0 && (
+                  {recentFamilies.length > 0 && (
                     <>
                       <hr className="border-gray-200 my-1" />
                       <button

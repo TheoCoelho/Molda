@@ -1,4 +1,4 @@
-import React, { useEffect, useMemo, useState, useCallback } from "react";
+import React, { useEffect, useMemo, useState, useCallback, useRef } from "react";
 import { Button } from "../components/ui/button";
 import { Input } from "../components/ui/input";
 import { Label } from "../components/ui/label";
@@ -855,6 +855,14 @@ function BrushSectionAccordion(props: {
   const [openKey, setOpenKey] = useState<SubKey>(null);
   const [enabledKey, setEnabledKey] = useState<SubKey>(null);
   const activationDelayMs = 380;
+  const activationTimerRef = useRef<number | null>(null);
+
+  const clearActivationTimer = useCallback(() => {
+    if (activationTimerRef.current != null) {
+      window.clearTimeout(activationTimerRef.current);
+      activationTimerRef.current = null;
+    }
+  }, []);
 
   // Estados para biblioteca de formas
   const [searchQuery, setSearchQuery] = useState("");
@@ -872,15 +880,20 @@ function BrushSectionAccordion(props: {
 
   useEffect(() => {
     if (autoOpenTextPanelCounter == null) return;
+    clearActivationTimer();
     setOpenKey("texto");
     setEnabledKey(null);
-    setTool("select");
-    const t = window.setTimeout(() => {
+    activationTimerRef.current = window.setTimeout(() => {
+      if (!is2DActive) {
+        activationTimerRef.current = null;
+        return;
+      }
       setEnabledKey("texto");
       if (is2DActive) setTool("text");
+      activationTimerRef.current = null;
     }, activationDelayMs);
-    return () => window.clearTimeout(t);
-  }, [autoOpenTextPanelCounter, is2DActive, setTool]);
+    return clearActivationTimer;
+  }, [autoOpenTextPanelCounter, clearActivationTimer, is2DActive, setTool]);
 
   // Não force o retorno para "select" ao trocar de seção.
   // Mantemos a ferramenta escolhida ativa até o usuário alterá-la explicitamente.
@@ -912,51 +925,46 @@ function BrushSectionAccordion(props: {
   }, [tool, enabledKey, openKey]);
 
   const toggle = (key: Exclude<SubKey, null>) => {
-    console.log(`[BrushSectionAccordion] Toggling ${key}, current openKey: ${openKey}, current tool: ${tool}`);
+    clearActivationTimer();
 
     const normalizedKey = key;
     const currentNormalizedKey = openKey;
 
     if (currentNormalizedKey === normalizedKey) {
       if (normalizedKey === "texto" && is2DActive && tool === "select") {
-        console.log("[BrushSectionAccordion] Re-arming text tool while keeping Text panel open");
         setEnabledKey("texto");
         setTool("text");
         return;
       }
-      console.log(`[BrushSectionAccordion] Closing ${normalizedKey}, switching to select`);
       setEnabledKey(null);
       setTool("select");
       setOpenKey(null);
       return;
     }
 
-    console.log(`[BrushSectionAccordion] Opening ${normalizedKey}, temporarily switching to select`);
     setEnabledKey(null);
-    setTool("select");
     setOpenKey(normalizedKey);
 
-    window.setTimeout(() => {
-      console.log(`[BrushSectionAccordion] Activating ${normalizedKey}`);
-      setEnabledKey(normalizedKey);
+    activationTimerRef.current = window.setTimeout(() => {
       if (!is2DActive) {
-        console.log(`[BrushSectionAccordion] 2D not active, keeping tool as select`);
+        activationTimerRef.current = null;
         return;
       }
+      setEnabledKey(normalizedKey);
 
       if (normalizedKey === "pincel") {
-        console.log(`[BrushSectionAccordion] Setting tool to brush`);
         setTool("brush");
 
       } else if (normalizedKey === "texto") {
-        console.log(`[BrushSectionAccordion] Setting tool to text`);
         setTool("text");
       } else if (normalizedKey === "moldes") {
-        console.log(`[BrushSectionAccordion] Setting tool to stamp`);
         setTool("stamp");
       }
+      activationTimerRef.current = null;
     }, activationDelayMs);
   };
+
+  useEffect(() => clearActivationTimer, [clearActivationTimer]);
 
   // Fontes recentes + família ativa
   const { addRecentFont } = useRecentFonts();
@@ -1254,7 +1262,7 @@ function BrushSectionAccordion(props: {
   );
 }
 
-function AccordionItem({ icon, title, open, onToggle, children, grow }: { icon: React.ReactNode; title: string; open: boolean; onToggle: () => void; children: React.ReactNode; grow?: boolean }) {
+function AccordionItem({ icon, title, open, onToggle, children, grow, lazy = true }: { icon: React.ReactNode; title: string; open: boolean; onToggle: () => void; children: React.ReactNode; grow?: boolean; lazy?: boolean }) {
   // Quando grow=true e open, o painel ocupa o espaço disponível (flex-1) sem empurrar a sidebar
   const wrapperCls = [
     "border-b border-gray-200",
@@ -1273,6 +1281,8 @@ function AccordionItem({ icon, title, open, onToggle, children, grow }: { icon: 
       : "transition-all duration-500 ease-in-out opacity-100 translate-y-0 py-2 max-h-96 overflow-auto pr-1"
     : "transition-all duration-500 ease-in-out opacity-0 -translate-y-1 py-0";
 
+  const shouldRenderChildren = open || !lazy;
+
   return (
     <div className={wrapperCls}>
       <button type="button" onClick={onToggle} className="w-full flex items-center justify-between py-3" aria-expanded={open} aria-controls={`panel-${title}`} title={title}>
@@ -1283,7 +1293,7 @@ function AccordionItem({ icon, title, open, onToggle, children, grow }: { icon: 
         <ChevronDown className={`w-4 h-4 text-gray-600 transition-transform duration-500 ${open ? "rotate-180" : "rotate-0"}`} />
       </button>
       <div id={`panel-${title}`} className={panelWrapperCls}>
-        <div className={innerCls}>{children}</div>
+        <div className={innerCls}>{shouldRenderChildren ? children : null}</div>
       </div>
     </div>
   );

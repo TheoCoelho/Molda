@@ -1628,6 +1628,29 @@ const Creation = () => {
     editorRefs.current[activeCanvasTab]?.setActiveTextStyle({ fontFamily: selectedFontFamily });
   };
 
+  const insertImageIntoTabWhenReady = useCallback(
+    (
+      tabId: string,
+      src: string,
+      opts?: { x?: number; y?: number; scale?: number; meta?: Record<string, unknown> },
+      retries = 24
+    ) => {
+      const inst = editorRefs.current[tabId];
+      if (inst) {
+        inst.addImage(src, opts);
+        return;
+      }
+      if (retries <= 0) {
+        toast.error("Nao foi possivel inserir a imagem. Tente novamente.");
+        return;
+      }
+      window.setTimeout(() => {
+        insertImageIntoTabWhenReady(tabId, src, opts, retries - 1);
+      }, 60);
+    },
+    []
+  );
+
   const add2DTab = () => {
     void saveActiveTabSnapshot();
     const id = `2d-${Date.now()}`;
@@ -1734,7 +1757,7 @@ const Creation = () => {
     if (remoteSaveInFlightRef.current) return;
     if (!pendingRemotePayloadRef.current) return;
     const auth = await ensureBackendAccessToken();
-    if (!auth?.token || !auth.userId) return;
+    if (!auth?.token || !auth.user?.id) return;
 
     const payload = pendingRemotePayloadRef.current;
     pendingRemotePayloadRef.current = null;
@@ -1777,7 +1800,7 @@ const Creation = () => {
     async (payload: DraftPayload, options?: { immediate?: boolean }) => {
       pendingRemotePayloadRef.current = payload;
       const auth = await ensureBackendAccessToken();
-      if (!auth?.token || !auth.userId) return;
+      if (!auth?.token || !auth.user?.id) return;
 
       if (options?.immediate) {
         if (remoteSaveTimeoutRef.current) {
@@ -2201,7 +2224,7 @@ const Creation = () => {
               onImageInsert={(src, opts) => {
                 console.log('[Creation onImageInsert]', { activeIs2D, activeCanvasTab, editorRef: !!editorRefs.current[activeCanvasTab] });
                 if (activeIs2D) {
-                  editorRefs.current[activeCanvasTab]?.addImage(src, opts);
+                  insertImageIntoTabWhenReady(activeCanvasTab, src, opts);
                   return;
                 }
 
@@ -2210,10 +2233,7 @@ const Creation = () => {
                 if (existing2D) {
                   void saveActiveTabSnapshot();
                   setActiveCanvasTab(existing2D.id);
-                  // aguarda montagem do Editor2D
-                  setTimeout(() => {
-                    editorRefs.current[existing2D.id]?.addImage(src, opts);
-                  }, 60);
+                  insertImageIntoTabWhenReady(existing2D.id, src, opts);
                 } else {
                   // cria nova aba 2D e agenda a inserção nela
                   const newId = `2d-${Date.now()}`;
@@ -2231,9 +2251,7 @@ const Creation = () => {
                     tabVisibilityRef.current = next;
                     return next;
                   });
-                  setTimeout(() => {
-                    editorRefs.current[newId]?.addImage(src, opts);
-                  }, 100);
+                  insertImageIntoTabWhenReady(newId, src, opts);
                 }
               }}
               onImageInserted={() => {
