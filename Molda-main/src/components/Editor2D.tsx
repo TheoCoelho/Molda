@@ -832,7 +832,7 @@ const Editor2D = forwardRef<Editor2DHandle, Props>(function Editor2D(
     const active = c.getActiveObject?.();
     if (!active) return;
     const kind = computeSelectionKind();
-    if (kind !== "other") return;
+    if (kind !== "other" && kind !== "svg") return;
     // Aplica a cor ao objeto e a seus filhos (spray = Group de Rects)
     const applyColor = (obj: any) => {
       const curStroke = obj.get("stroke");

@@ -12,6 +12,7 @@ if (!API_KEY) {
 }
 
 const API_URL = `https://www.googleapis.com/webfonts/v1/webfonts?key=${API_KEY}&sort=alpha`;
+const ALLOWED_CATEGORIES = new Set(["serif", "display", "handwriting"]);
 
 function parseVariants(variants) {
   // variants: ["regular","italic","700","700italic",...]
@@ -43,7 +44,9 @@ function parseVariants(variants) {
   const data = await res.json();
   const items = data.items || [];
 
-  const mapped = items.map((f) => {
+  const mapped = items
+    .filter((f) => ALLOWED_CATEGORIES.has(String(f.category || "").toLowerCase()))
+    .map((f) => {
     const { weights, styles } = parseVariants(f.variants);
     return {
       id: `google:${f.family}`,

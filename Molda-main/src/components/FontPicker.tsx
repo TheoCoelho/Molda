@@ -15,9 +15,7 @@ import {
   getFontCategoryMeta,
   getFontPrimaryCategory,
   listFontCategories,
-  listFontPresets,
   type FontCategoryKey,
-  type FontPresetKey,
   type FontItem,
 } from "../fonts/library";
 import { ensureFontForFabric, wantVariantsFor } from "../utils/fonts";
@@ -105,6 +103,16 @@ function StarIcon({ filled }: { filled: boolean }) {
   ) : (
     <svg viewBox="0 0 24 24" width="20" height="20" aria-hidden="true" fill="none" stroke="currentColor" strokeWidth="2">
       <path d="M12 17.27 18.18 21l-1.64-7.03L22 9.24l-7.19-.61L12 2 9.19 8.63 2 9.24l5.46 4.73L5.82 21z" />
+    </svg>
+  );
+}
+
+function FilterListIcon() {
+  return (
+    <svg viewBox="0 0 24 24" width="20" height="20" aria-hidden="true" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
+      <path d="M4 6h16" />
+      <path d="M7 12h10" />
+      <path d="M10 18h4" />
     </svg>
   );
 }
@@ -223,7 +231,7 @@ const FontRow = memo(function FontRow({
  * - Virtualização simples (renderiza só o que está visível + overscan)
  * - content-visibility nos itens (pula layout/pintura fora da viewport)
  * - subsetting de glifos no carregamento (&text=)
- * - carregamento automático por IntersectionObserver (sem depender de hover)
+ * - prefetch progressivo de previews com ativação tardia
  * - Favoritos persistentes por usuário (Flask)
  */
 export default function FontPicker({
@@ -237,8 +245,7 @@ export default function FontPicker({
   const [internalSelected, setInternalSelected] = useState<string>("");
   const [query, setQuery] = useState("");
   const [filterTag, setFilterTag] = useState<"favoritos" | "recentes" | "">(""); // agora "favoritos" e "recentes" funcionam
-  const [selectedPreset, setSelectedPreset] = useState<FontPresetKey | "">("");
-  const [selectedCategory, setSelectedCategory] = useState<FontCategoryKey | "">("");
+  const [selectedCategory, setSelectedCategory] = useState<FontCategoryKey | "stylized" | "">("");
   const [isPopularAccordionOpen, setIsPopularAccordionOpen] = useState(false);
   const [showFilterMenu, setShowFilterMenu] = useState(false);
   const [isPreviewPreloadEnabled, setIsPreviewPreloadEnabled] = useState(false);
@@ -368,39 +375,31 @@ export default function FontPicker({
     return baseFiltered;
   }, [baseFiltered, filterTag, favorites, recentFamilies]);
 
-  const presetOptions = useMemo(() => listFontPresets(scopedFiltered), [scopedFiltered]);
-
-  const presetCounts = useMemo(() => {
-    const counts = new Map<FontPresetKey, number>();
-    for (const preset of Object.values(FONT_PRESET_META)) {
-      counts.set(
-        preset.key,
-        scopedFiltered.filter((font) => fontMatchesPreset(font, preset.key)).length
-      );
-    }
-    return counts;
-  }, [scopedFiltered]);
-
-  const presetFiltered = useMemo(() => {
-    if (!selectedPreset) return scopedFiltered;
-    return scopedFiltered.filter((font) => fontMatchesPreset(font, selectedPreset));
-  }, [scopedFiltered, selectedPreset]);
-
-  const categoryOptions = useMemo(() => listFontCategories(presetFiltered), [presetFiltered]);
+  const categoryOptions = useMemo(
+    () => listFontCategories(scopedFiltered),
+    [scopedFiltered]
+  );
 
   const categoryCounts = useMemo(() => {
-    const counts = new Map<FontCategoryKey, number>();
-    for (const font of presetFiltered) {
+    const counts = new Map<FontCategoryKey | "stylized", number>();
+    for (const font of scopedFiltered) {
       const key = getFontPrimaryCategory(font);
       counts.set(key, (counts.get(key) || 0) + 1);
     }
+    counts.set(
+      "stylized",
+      scopedFiltered.filter((font) => fontMatchesPreset(font, "stylized")).length
+    );
     return counts;
-  }, [presetFiltered]);
+  }, [scopedFiltered]);
 
   const filtered = useMemo(() => {
-    if (!selectedCategory) return presetFiltered;
-    return presetFiltered.filter((font) => getFontPrimaryCategory(font) === selectedCategory);
-  }, [presetFiltered, selectedCategory]);
+    if (!selectedCategory) return scopedFiltered;
+    if (selectedCategory === "stylized") {
+      return scopedFiltered.filter((font) => fontMatchesPreset(font, "stylized"));
+    }
+    return scopedFiltered.filter((font) => getFontPrimaryCategory(font) === selectedCategory);
+  }, [scopedFiltered, selectedCategory]);
 
   const isAllMode = selectedCategory === "";
 
@@ -423,15 +422,11 @@ export default function FontPicker({
   }, [isAllMode, isPopularAccordionOpen]);
 
   useEffect(() => {
-    if (!selectedPreset) return;
-    if (!presetOptions.some((option) => option.key === selectedPreset)) {
-      setSelectedPreset("");
-    }
-  }, [presetOptions, selectedPreset]);
-
-  useEffect(() => {
     if (!selectedCategory) return;
-    if (!categoryOptions.some((option) => option.key === selectedCategory)) {
+    if (
+      selectedCategory !== "stylized" &&
+      !categoryOptions.some((option) => option.key === selectedCategory)
+    ) {
       setSelectedCategory("");
     }
   }, [categoryOptions, selectedCategory]);
@@ -491,7 +486,7 @@ export default function FontPicker({
       container.scrollTop = 0;
     }
     setScrollTop(0);
-  }, [query, filterTag, selectedPreset, selectedCategory, isPopularAccordionOpen]);
+  }, [query, filterTag, selectedCategory, isPopularAccordionOpen]);
 
   useEffect(() => {
     if (!isPreviewPreloadEnabled) return;
@@ -794,12 +789,8 @@ export default function FontPicker({
                 title="Filtrar por"
                 onClick={() => setShowFilterMenu((v) => !v)}
               >
-                <span className="material-symbols-outlined" style={{ fontSize: 24 }}>
-                  filter_list
-                </span>
+                <FilterListIcon />
               </button>
-              {/* (ideal mover para index.html) */}
-              <link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=Material+Symbols+Outlined:opsz,wght,FILL,GRAD@20..48,100..700,0..1,-50..200&icon_names=filter_list" />
 
               {/* Menu suspenso de opções de filtro */}
               {showFilterMenu && (
@@ -837,59 +828,27 @@ export default function FontPicker({
               )}
             </div>
 
-            <div className="mt-3 flex flex-wrap gap-2">
-              <button
-                type="button"
-                className={[
-                  "rounded-full border px-3 py-1.5 text-xs font-medium transition-colors",
-                  selectedPreset === ""
-                    ? "border-slate-300 bg-slate-50 text-slate-700"
-                    : "border-gray-200 bg-white text-gray-600 hover:bg-gray-50",
-                ].join(" ")}
-                onClick={() => setSelectedPreset("")}
-                title="Mostra todas as famílias, sem recorte de estilo"
-              >
+            {isAllMode && (
+              <div className="mt-3 text-xs font-medium text-slate-600">
                 Todos os estilos
                 <span className="ml-2 text-[11px] text-gray-500">{scopedFiltered.length}</span>
-              </button>
+              </div>
+            )}
 
-              {presetOptions.map((preset) => (
-                <button
-                  key={preset.key}
-                  type="button"
-                  className={[
-                    "rounded-full border px-3 py-1.5 text-xs font-medium transition-colors",
-                    selectedPreset === preset.key
-                      ? preset.key === "stylized"
-                        ? "border-amber-300 bg-amber-50 text-amber-700"
-                        : "border-sky-300 bg-sky-50 text-sky-700"
-                      : "border-gray-200 bg-white text-gray-600 hover:bg-gray-50",
-                  ].join(" ")}
-                  onClick={() => {
-                    setSelectedPreset(preset.key);
-                    setSelectedCategory("");
-                  }}
-                  title={preset.description}
-                >
-                  {preset.label}
-                  <span className="ml-2 text-[11px] text-gray-500">{presetCounts.get(preset.key) || 0}</span>
-                </button>
-              ))}
-            </div>
-
-            <div className="mt-3 flex flex-wrap gap-2">
+            <div className="mt-2 flex items-center gap-1 overflow-x-auto pb-1 whitespace-nowrap scroll-thin">
               <button
                 type="button"
                 className={[
-                  "rounded-full border px-3 py-1.5 text-xs font-medium transition-colors",
-                  selectedCategory === ""
+                  "shrink-0 rounded-md border px-2 py-1 text-[11px] font-medium leading-none transition-colors",
+                  selectedCategory === "stylized"
                     ? "border-purple-300 bg-purple-50 text-purple-700"
                     : "border-gray-200 bg-white text-gray-600 hover:bg-gray-50",
                 ].join(" ")}
-                onClick={() => setSelectedCategory("")}
+                onClick={() => setSelectedCategory((prev) => (prev === "stylized" ? "" : "stylized"))}
+                title="Fontes com personalidade visual forte"
               >
-                Todas
-                <span className="ml-2 text-[11px] text-gray-500">{presetFiltered.length}</span>
+                Estilizadas
+                <span className="ml-1 text-[10px] text-gray-500">{categoryCounts.get("stylized") || 0}</span>
               </button>
 
               {categoryOptions.map((category) => (
@@ -897,16 +856,20 @@ export default function FontPicker({
                   key={category.key}
                   type="button"
                   className={[
-                    "rounded-full border px-3 py-1.5 text-xs font-medium transition-colors",
+                    "shrink-0 rounded-md border px-2 py-1 text-[11px] font-medium leading-none transition-colors",
                     selectedCategory === category.key
                       ? "border-purple-300 bg-purple-50 text-purple-700"
                       : "border-gray-200 bg-white text-gray-600 hover:bg-gray-50",
                   ].join(" ")}
-                  onClick={() => setSelectedCategory(category.key)}
+                  onClick={() =>
+                    setSelectedCategory((prev) =>
+                      prev === category.key ? "" : category.key
+                    )
+                  }
                   title={category.description}
                 >
                   {category.label}
-                  <span className="ml-2 text-[11px] text-gray-500">{categoryCounts.get(category.key) || 0}</span>
+                  <span className="ml-1 text-[10px] text-gray-500">{categoryCounts.get(category.key) || 0}</span>
                 </button>
               ))}
             </div>
