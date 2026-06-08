@@ -2528,6 +2528,7 @@ const Creation = () => {
                 >
                   <Canvas3DViewer
                     baseColor={baseColor}
+                    fabric={fabric}
                     externalDecals={decalsFor3D}
                     onDecalsChange={handleDecalStateChange}
                     decalZonesOverride={subtypeDecalZonesOverride}

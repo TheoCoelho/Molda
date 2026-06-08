@@ -12,6 +12,7 @@ type Props = {
   className?: string;
   selection?: Selection;
   baseColor?: string;
+  fabric?: string;
   decalZonesOverride?: ModelDecalZone[];
   decals?: ExternalDecalData[];
   onDecalsChange?: (state: DecalStateSnapshot[]) => void;
@@ -24,6 +25,7 @@ export default function DecalEngineHost({
   className,
   selection,
   baseColor = "#ffffff",
+  fabric,
   decalZonesOverride,
   decals = [],
   onDecalsChange,
@@ -118,6 +120,7 @@ export default function DecalEngineHost({
           interactive,
           background: null,
           baseColor,
+          fabric,
           gizmoTheme: DEFAULT_GIZMO_THEME,
           model: modelParam,
           hideMenu: true,
@@ -147,6 +150,13 @@ export default function DecalEngineHost({
     if (!api) return;
     api.setBaseColor(baseColor);
   }, [ready, baseColor]);
+
+  useEffect(() => {
+    if (!ready) return;
+    const api = apiRef.current;
+    if (!api) return;
+    api.setFabricType(fabric ?? null);
+  }, [ready, fabric]);
 
   useEffect(() => {
     if (!ready) return;

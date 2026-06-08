@@ -9,6 +9,7 @@ import type { DecalStateSnapshot, ExternalDecalData } from "../types/decals";
 
 type Props = {
   baseColor?: string;
+  fabric?: string;
   className?: string;
   externalDecals?: ExternalDecalData[];
   onDecalsChange?: (state: DecalStateSnapshot[]) => void;
@@ -23,6 +24,7 @@ type Props = {
 
 export default function Canvas3DViewer({
   baseColor = "#ffffff",
+  fabric,
   className,
   externalDecals = [],
   onDecalsChange,
@@ -52,6 +54,7 @@ export default function Canvas3DViewer({
         className="w-full h-full"
         selection={{ part, type, subtype }}
         baseColor={baseColor}
+        fabric={fabric}
         decalZonesOverride={decalZonesOverride}
         decals={externalDecals}
         onDecalsChange={onDecalsChange}

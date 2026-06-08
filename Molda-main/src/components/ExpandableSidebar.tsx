@@ -397,12 +397,12 @@ const ExpandableSidebar: React.FC<ExpandableSidebarProps> = (props) => {
   return (
     <aside
       aria-expanded={isExpanded}
-      className={`glass shadow-lg rounded-2xl border overflow-hidden transition-all duration-500 ease-in-out flex shrink-0 h-full min-h-0 ${isExpanded ? "w-64 md:w-72 xl:w-80" : "w-14"
+      className={`glass shadow-lg rounded-xl border overflow-hidden transition-all duration-500 ease-in-out flex shrink-0 h-full min-h-0 ${isExpanded ? "w-56 md:w-64 xl:w-72" : "w-12"
         }`}
     >
       {/* Coluna de ícones */}
-      <div className="w-14 flex flex-col bg-transparent border-r border-gray-200 dark:border-border h-full pt-4 pb-0">
-        <div className="flex-1 flex flex-col items-stretch justify-evenly gap-2">
+      <div className="flex h-full w-12 flex-col border-r border-gray-200 bg-transparent pt-3 pb-2 dark:border-border">
+        <div className="flex flex-1 flex-col items-stretch justify-evenly gap-1.5">
           {[
             { id: "settings", icon: Settings, label: "Configurações" },
             { id: "upload", icon: FileImage, label: "Upload" },
@@ -418,14 +418,14 @@ const ExpandableSidebar: React.FC<ExpandableSidebarProps> = (props) => {
                 key={s.id}
                 type="button"
                 onClick={() => handleIconClick(s.id as SectionId)}
-                className="group mx-2 h-10 w-10 rounded-xl flex items-center justify-center transition bg-transparent hover:bg-black/5 dark:hover:bg-white/10 hover:shadow-[0_8px_24px_-12px_rgba(0,0,0,0.25)] hover:scale-[1.16] focus:outline-none focus-visible:outline-none"
+                className="group mx-1.5 flex h-9 w-9 items-center justify-center rounded-lg bg-transparent transition hover:scale-[1.12] hover:bg-black/5 hover:shadow-[0_8px_24px_-12px_rgba(0,0,0,0.25)] focus:outline-none focus-visible:outline-none dark:hover:bg-white/10"
                 aria-label={s.label}
                 aria-pressed={isActive}
                 title={s.label}
               >
                 <Icon
-                  className={`w-5 h-5 transition-all ${isActive
-                    ? "text-black dark:text-white [filter:drop-shadow(0_0_10px_rgba(0,0,0,.40))] dark:[filter:drop-shadow(0_0_10px_rgba(255,255,255,.30))] scale-[1.30]"
+                  className={`h-[18px] w-[18px] transition-all ${isActive
+                    ? "text-black dark:text-white [filter:drop-shadow(0_0_10px_rgba(0,0,0,.40))] dark:[filter:drop-shadow(0_0_10px_rgba(255,255,255,.30))] scale-[1.22]"
                     : "text-black/70 dark:text-white/70 group-hover:text-black dark:group-hover:text-white"
                     }`}
                 />
@@ -437,7 +437,7 @@ const ExpandableSidebar: React.FC<ExpandableSidebarProps> = (props) => {
             <button
               type="button"
               onClick={() => handleIconClick("effects")}
-              className="group mx-2 h-10 w-10 rounded-xl flex items-center justify-center transition bg-transparent hover:bg-black/5 dark:hover:bg-white/10 hover:shadow-[0_8px_24px_-12px_rgba(0,0,0,0.25)] hover:scale-[1.16] focus:outline-none focus-visible:outline-none"
+              className="group mx-1.5 flex h-9 w-9 items-center justify-center rounded-lg bg-transparent transition hover:scale-[1.12] hover:bg-black/5 hover:shadow-[0_8px_24px_-12px_rgba(0,0,0,0.25)] focus:outline-none focus-visible:outline-none dark:hover:bg-white/10"
               aria-label="Efeitos"
               aria-pressed={activeSection === "effects"}
               title="Efeitos"
@@ -445,7 +445,7 @@ const ExpandableSidebar: React.FC<ExpandableSidebarProps> = (props) => {
               <Sparkles
                 className={`w-5 h-5 transition-all ${
                   activeSection === "effects"
-                    ? "text-violet-600 dark:text-violet-400 [filter:drop-shadow(0_0_8px_rgba(124,58,237,.5))] scale-[1.30]"
+                    ? "text-violet-600 dark:text-violet-400 [filter:drop-shadow(0_0_8px_rgba(124,58,237,.5))] scale-[1.22]"
                     : "text-black/70 dark:text-white/70 group-hover:text-violet-600 dark:group-hover:text-violet-400"
                 }`}
               />
@@ -459,7 +459,7 @@ const ExpandableSidebar: React.FC<ExpandableSidebarProps> = (props) => {
         <div
           className={`flex-1 min-w-0 min-h-0 max-h-full overflow-hidden flex flex-col`}
         >
-          <div className={activeSection === "brush" ? "flex h-full flex-1 min-h-0 max-h-full flex-col px-2" : activeSection === "upload" ? "flex-1 overflow-hidden flex flex-col" : activeSection === "effects" ? "flex-1 overflow-y-auto p-3" : "flex-1 overflow-y-auto rounded-2xl p-4 lg:p-6 pb-2"}>
+          <div className={activeSection === "brush" ? "flex h-full flex-1 min-h-0 max-h-full flex-col px-2" : activeSection === "upload" ? "flex flex-1 flex-col overflow-hidden" : activeSection === "effects" ? "flex-1 overflow-y-auto p-2.5" : "flex-1 overflow-y-auto rounded-xl p-3 lg:p-4 pb-2"}>
             {activeSection === "settings" && (
               <SettingsContent
                 projectId={projectId}
@@ -506,7 +506,7 @@ const ExpandableSidebar: React.FC<ExpandableSidebarProps> = (props) => {
                 </div>
 
                 {/* Content */}
-                <div className="flex-1 overflow-y-auto p-4 lg:p-5 pb-2">
+                <div className="flex-1 overflow-y-auto p-3 lg:p-4 pb-2">
                   {uploadSubTab === "encontrar" ? (
                     <DesignFinder
                       onImageInsert={(src, opts) => {
