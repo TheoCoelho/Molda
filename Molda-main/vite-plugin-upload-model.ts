@@ -26,6 +26,86 @@ export default function uploadModelPlugin(): Plugin {
     return {
         name: "vite-plugin-upload-model",
         configureServer(server) {
+            server.middlewares.use("/api/upload-texture", async (req, res) => {
+                if (req.method !== "POST") {
+                    res.statusCode = 405;
+                    res.end(JSON.stringify({ error: "Method not allowed" }));
+                    return;
+                }
+
+                try {
+                    const contentType = req.headers["content-type"] || "";
+                    const boundaryMatch = contentType.match(/boundary=(?:"([^"]+)"|([^\s;]+))/);
+                    if (!boundaryMatch) {
+                        res.statusCode = 400;
+                        res.end(JSON.stringify({ error: "Missing multipart boundary" }));
+                        return;
+                    }
+                    const boundary = boundaryMatch[1] || boundaryMatch[2];
+
+                    const chunks: Buffer[] = [];
+                    let totalSize = 0;
+                    await new Promise<void>((resolve, reject) => {
+                        req.on("data", (chunk: Buffer) => {
+                            totalSize += chunk.length;
+                            if (totalSize > MAX_FILE_SIZE) {
+                                reject(new Error(`File too large. Max: ${MAX_FILE_SIZE / 1024 / 1024}MB`));
+                                return;
+                            }
+                            chunks.push(chunk);
+                        });
+                        req.on("end", resolve);
+                        req.on("error", reject);
+                    });
+
+                    const body = Buffer.concat(chunks);
+                    const parts = parseMultipart(body, boundary);
+                    const filePart = parts.find((p) => p.filename);
+                    const categoryPart = parts.find((p) => p.name === "category");
+
+                    if (!filePart?.filename) {
+                        res.statusCode = 400;
+                        res.end(JSON.stringify({ error: "No file provided" }));
+                        return;
+                    }
+
+                    const ext = path.extname(filePart.filename).toLowerCase();
+                    if (![".png", ".jpg", ".jpeg", ".webp"].includes(ext)) {
+                        res.statusCode = 400;
+                        res.end(JSON.stringify({ error: "Unsupported texture format" }));
+                        return;
+                    }
+
+                    const rawCategory = categoryPart?.data?.toString("utf8").trim().toLowerCase();
+                    const category = rawCategory === "estamparia" ? "estamparia" : "tecidos";
+                    const baseName = slugify(path.basename(filePart.filename, ext)) || `texture-${Date.now()}`;
+                    const fileName = `${baseName}${ext}`;
+
+                    const textureDir = path.resolve(process.cwd(), "public", "textures", category);
+                    if (!existsSync(textureDir)) {
+                        mkdirSync(textureDir, { recursive: true });
+                    }
+
+                    const targetPath = path.join(textureDir, fileName);
+                    const ws = createWriteStream(targetPath);
+                    ws.write(filePart.data);
+                    ws.end();
+                    await new Promise<void>((resolve, reject) => {
+                        ws.on("finish", resolve);
+                        ws.on("error", reject);
+                    });
+
+                    const publicPath = `/textures/${category}/${fileName}`;
+                    res.statusCode = 200;
+                    res.setHeader("Content-Type", "application/json");
+                    res.end(JSON.stringify({ success: true, path: publicPath, filename: fileName, category }));
+                } catch (err: any) {
+                    console.error("[upload-texture] Error:", err);
+                    res.statusCode = 500;
+                    res.end(JSON.stringify({ error: err?.message || "Upload failed" }));
+                }
+            });
+
             server.middlewares.use("/api/upload-model", async (req, res) => {
                 if (req.method !== "POST") {
                     res.statusCode = 405;

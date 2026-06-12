@@ -1,4 +1,4 @@
-import { Controller, Get, Post, Put, Delete, Body, Param, UseGuards, Request } from '@nestjs/common';
+import { Controller, Get, Post, Put, Delete, Body, Param, UseGuards, Request, Query } from '@nestjs/common';
 import { AuthGuard } from '@nestjs/passport';
 import { DraftsService } from './drafts.service';
 
@@ -8,7 +8,7 @@ export class DraftsController {
 
   @Get()
   @UseGuards(AuthGuard('jwt'))
-  async getDrafts(@Request() req: any) {
+  async getDrafts(@Request() req: any, @Query('limit') _limit?: string) {
     return this.draftsService.getUserDrafts(req.user.userId);
   }
 

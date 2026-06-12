@@ -15,6 +15,9 @@ export class PrintingMethod {
   @Column({ type: 'text', nullable: true })
   description?: string;
 
+  @Column({ type: 'text', nullable: true })
+  texture_path?: string;
+
   @Column({ type: 'int', default: 0 })
   sort_order: number;
 

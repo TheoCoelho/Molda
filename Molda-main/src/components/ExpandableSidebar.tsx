@@ -226,9 +226,11 @@ interface ExpandableSidebarProps {
   setSize: (value: string) => void;
   fabric: string;
   setFabric: (value: string) => void;
+  setFabricTexturePath?: (value: string | null) => void;
   fabricLocked?: boolean;
   tabPrintTypes?: Record<string, string>;
   setTabPrintType?: (tabId: string, value: string) => void;
+  setTabPrintTexturePath?: (tabId: string, value: string | null) => void;
   visibleTabs?: { id: string; name: string; type: "2d" | "3d"; dataUrl: string | null }[];
   onExpandChange?: (isExpanded: boolean) => void;
 
@@ -309,9 +311,11 @@ const ExpandableSidebar: React.FC<ExpandableSidebarProps> = (props) => {
     setSize,
     fabric,
     setFabric,
+    setFabricTexturePath,
     fabricLocked,
     tabPrintTypes,
     setTabPrintType,
+    setTabPrintTexturePath,
     visibleTabs,
     onExpandChange,
     tool,
@@ -471,9 +475,11 @@ const ExpandableSidebar: React.FC<ExpandableSidebarProps> = (props) => {
                 setSize={setSize}
                 fabric={fabric}
                 setFabric={setFabric}
+                setFabricTexturePath={setFabricTexturePath}
                 fabricLocked={fabricLocked}
                 tabPrintTypes={tabPrintTypes}
                 setTabPrintType={setTabPrintType}
+                setTabPrintTexturePath={setTabPrintTexturePath}
                 visibleTabs={visibleTabs}
               />
             )}
@@ -603,29 +609,48 @@ function SettingsContent(props: {
   setSize: (v: string) => void;
   fabric: string;
   setFabric: (v: string) => void;
+  setFabricTexturePath?: (v: string | null) => void;
   fabricLocked?: boolean;
   tabPrintTypes?: Record<string, string>;
   setTabPrintType?: (tabId: string, value: string) => void;
+  setTabPrintTexturePath?: (tabId: string, value: string | null) => void;
   visibleTabs?: { id: string; name: string; type: "2d" | "3d"; dataUrl: string | null }[];
 }) {
-  const { projectId, projectName, setProjectName, baseColor, setBaseColor, size, setSize, fabric, setFabric, fabricLocked, tabPrintTypes, setTabPrintType, visibleTabs } = props;
+  const { projectId, projectName, setProjectName, baseColor, setBaseColor, size, setSize, fabric, setFabric, setFabricTexturePath, fabricLocked, tabPrintTypes, setTabPrintType, setTabPrintTexturePath, visibleTabs } = props;
   const placeholderName = generateCreativeName(projectId ?? undefined);
   const availableBaseColors = useMemo(() => [...DEFAULT_PRODUCT_COLOR_OPTIONS], []);
+  const LEATHER_MATERIAL_NAME = "Couro";
+  const LEATHER_MATERIAL_ID = "__custom_couro__";
 
-  const [dbMaterials, setDbMaterials] = useState<{ id: string; name: string }[]>([]);
+  const [dbMaterials, setDbMaterials] = useState<Array<{ id: string; name: string; texture_path?: string | null }>>([]);
   const [dbPrintingMethods] = useState<{ id: string; name: string; sort_order: number | null }[]>([
     { id: "digital", name: "Digital", sort_order: 1 },
     { id: "serigrafia", name: "Serigrafia", sort_order: 2 },
     { id: "bordado", name: "Bordado", sort_order: 3 },
+    { id: "couro", name: "Couro", sort_order: 4 },
+    { id: "linho", name: "Linho", sort_order: 5 },
   ]);
+  const [dbPrintingMethodsLive, setDbPrintingMethodsLive] = useState<Array<{ id: string; name: string; sort_order: number | null; texture_path?: string | null }>>([]);
 
   useEffect(() => {
     (async () => {
       try {
-        const materials = await apiRequest<Array<{ id: string; name: string }>>("/catalog/materials");
+        const [materials, methods] = await Promise.all([
+          apiRequest<Array<{ id: string; name: string; texture_path?: string | null }>>("/catalog/materials"),
+          apiRequest<Array<{ id: string; name: string; sort_order?: number | null; texture_path?: string | null }>>("/catalog/printing-methods"),
+        ]);
         setDbMaterials(materials);
+        setDbPrintingMethodsLive(
+          (methods || []).map((m) => ({
+            id: m.id,
+            name: m.name,
+            sort_order: m.sort_order ?? 0,
+            texture_path: m.texture_path ?? null,
+          }))
+        );
       } catch {
         setDbMaterials([]);
+        setDbPrintingMethodsLive([]);
       }
     })();
   }, []);
@@ -638,21 +663,36 @@ function SettingsContent(props: {
         .trim();
 
     const selectedMaterial =
-      dbMaterials.find((m) => m.name === fabric) ??
-      dbMaterials.find((m) => normalizeLabel(m.name) === normalizeLabel(fabric));
+      (() => {
+        const hasLeather = dbMaterials.some((m) => normalizeLabel(m.name) === normalizeLabel(LEATHER_MATERIAL_NAME));
+        const materialsForSelection = hasLeather
+          ? dbMaterials
+          : [...dbMaterials, { id: LEATHER_MATERIAL_ID, name: LEATHER_MATERIAL_NAME }];
+
+        return (
+          materialsForSelection.find((m) => m.name === fabric) ??
+          materialsForSelection.find((m) => normalizeLabel(m.name) === normalizeLabel(fabric))
+        );
+      })();
+
+    const hasLeatherInDb = dbMaterials.some((m) => normalizeLabel(m.name) === normalizeLabel(LEATHER_MATERIAL_NAME));
+    const materialsForSelection = hasLeatherInDb
+      ? dbMaterials
+      : [...dbMaterials, { id: LEATHER_MATERIAL_ID, name: LEATHER_MATERIAL_NAME }];
 
     // Quando os materiais do DB carregam, ajusta fabric para um nome canonico vindo do DB
     useEffect(() => {
-      if (dbMaterials.length === 0) return;
+      if (materialsForSelection.length === 0) return;
       if (selectedMaterial) {
         if (fabric !== selectedMaterial.name) setFabric(selectedMaterial.name);
         return;
       }
-      setFabric(dbMaterials[0].name);
-    }, [dbMaterials, selectedMaterial, fabric, setFabric]);
+      setFabric(materialsForSelection[0].name);
+    }, [materialsForSelection, selectedMaterial, fabric, setFabric]);
 
     const selectedMaterialId = selectedMaterial?.id ?? "";
-    const allowedMethods = selectedMaterial ? dbPrintingMethods : [];
+    const effectivePrintingMethods = dbPrintingMethodsLive.length > 0 ? dbPrintingMethodsLive : dbPrintingMethods;
+    const allowedMethods = selectedMaterial ? effectivePrintingMethods : [];
 
     // Reseta tabPrintTypes quando fabric muda e metodos disponiveis mudam
     const allowedMethodsKey = allowedMethods.map((m) => m.id).join(",");
@@ -664,10 +704,16 @@ function SettingsContent(props: {
         const current = tabPrintTypes?.[tab.id] ?? "";
         if (!current || !allowedNames.has(current)) {
           setTabPrintType(tab.id, allowedMethods[0].name);
+          setTabPrintTexturePath?.(tab.id, (allowedMethods[0] as any).texture_path ?? null);
         }
       });
     // eslint-disable-next-line react-hooks/exhaustive-deps
     }, [allowedMethodsKey, visibleTabsKey]);
+
+    useEffect(() => {
+      if (!selectedMaterial) return;
+      setFabricTexturePath?.(selectedMaterial.texture_path ?? null);
+    }, [selectedMaterial, setFabricTexturePath]);
 
     useEffect(() => {
       const normalizedBase = normalizeHexColor(baseColor);
@@ -730,14 +776,15 @@ function SettingsContent(props: {
             <select
               id="fabric"
               className="w-full px-2 py-2 border rounded text-sm bg-background text-foreground"
-              value={dbMaterials.length > 0 ? selectedMaterialId : fabric}
+              value={materialsForSelection.length > 0 ? selectedMaterialId : fabric}
               onChange={(e) => {
-                const material = dbMaterials.find((m) => m.id === e.target.value);
+                const material = materialsForSelection.find((m) => m.id === e.target.value);
                 setFabric(material?.name ?? e.target.value);
+                setFabricTexturePath?.(material?.texture_path ?? null);
               }}
             >
-              {dbMaterials.length > 0 ? (
-                dbMaterials.map((m) => (
+              {materialsForSelection.length > 0 ? (
+                materialsForSelection.map((m) => (
                   <option key={m.id} value={m.id}>{m.name}</option>
                 ))
               ) : (
@@ -746,6 +793,7 @@ function SettingsContent(props: {
                   <option>Poliéster</option>
                   <option>Moletom</option>
                   <option>Dry Fit</option>
+                  <option>Couro</option>
                 </>
               )}
             </select>
@@ -780,7 +828,12 @@ function SettingsContent(props: {
                       if (allowedMethods.length === 0) return "";
                       return allowedMethods.find((m) => m.name === cur) ? cur : allowedMethods[0].name;
                     })()}
-                    onChange={(e) => setTabPrintType?.(tab.id, e.target.value)}
+                    onChange={(e) => {
+                      const selectedName = e.target.value;
+                      setTabPrintType?.(tab.id, selectedName);
+                      const selectedMethod = allowedMethods.find((m) => m.name === selectedName) as any;
+                      setTabPrintTexturePath?.(tab.id, selectedMethod?.texture_path ?? null);
+                    }}
                   >
                     {allowedMethods.length > 0 ? (
                       allowedMethods.map((m) => (

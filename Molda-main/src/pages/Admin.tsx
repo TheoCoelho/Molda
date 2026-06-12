@@ -10,7 +10,7 @@ import { Label } from "@/components/ui/label";
 import { Checkbox } from "@/components/ui/checkbox";
 import { toast } from "sonner";
 import { cn } from "@/lib/utils";
-import { UPLOAD_MODEL_API } from "@/lib/constants/storage";
+import { UPLOAD_MODEL_API, UPLOAD_TEXTURE_API } from "@/lib/constants/storage";
 import { invalidateModelCache } from "@/lib/models";
 import DecalZoneEditor, { type DecalZoneDraft } from "@/components/admin/DecalZoneEditor";
 import { parseColorList } from "@/lib/productColors";
@@ -80,6 +80,7 @@ type Material = {
   id: string;
   name: string;
   description?: string | null;
+  texture_path?: string | null;
   is_active: boolean;
 };
 
@@ -96,6 +97,7 @@ type PrintingMethod = {
   code: string;
   name: string;
   description?: string | null;
+  texture_path?: string | null;
   sort_order?: number | null;
   is_active: boolean;
 };
@@ -284,8 +286,23 @@ const Admin = () => {
     id: "",
     name: "",
     description: "",
+    texture_path: "",
     is_active: true,
   });
+  const [materialTextureFile, setMaterialTextureFile] = useState<File | null>(null);
+  const [materialTexturePreview, setMaterialTexturePreview] = useState<string | null>(null);
+
+  const [printingMethodForm, setPrintingMethodForm] = useState({
+    id: "",
+    code: "",
+    name: "",
+    description: "",
+    texture_path: "",
+    sort_order: "0",
+    is_active: true,
+  });
+  const [printingTextureFile, setPrintingTextureFile] = useState<File | null>(null);
+  const [printingTexturePreview, setPrintingTexturePreview] = useState<string | null>(null);
 
   const [supplierForm, setSupplierForm] = useState({
     id: "",
@@ -371,6 +388,24 @@ const Admin = () => {
     }
     setProductImagePreview(null);
   }, [productImageFile]);
+
+  useEffect(() => {
+    if (materialTextureFile) {
+      const url = URL.createObjectURL(materialTextureFile);
+      setMaterialTexturePreview(url);
+      return () => URL.revokeObjectURL(url);
+    }
+    setMaterialTexturePreview(null);
+  }, [materialTextureFile]);
+
+  useEffect(() => {
+    if (printingTextureFile) {
+      const url = URL.createObjectURL(printingTextureFile);
+      setPrintingTexturePreview(url);
+      return () => URL.revokeObjectURL(url);
+    }
+    setPrintingTexturePreview(null);
+  }, [printingTextureFile]);
 
   const partById = useMemo(() => new Map(parts.map((p) => [p.id, p])), [parts]);
   const typeById = useMemo(() => new Map(types.map((t) => [t.id, t])), [types]);
@@ -502,6 +537,24 @@ const Admin = () => {
     return null;
   }, []);
 
+  const uploadTexture = useCallback(async (file: File, category: "tecidos" | "estamparia") => {
+    const formData = new FormData();
+    formData.append("file", file);
+    formData.append("category", category);
+
+    const response = await fetch(UPLOAD_TEXTURE_API, {
+      method: "POST",
+      body: formData,
+    });
+
+    const json = await response.json();
+    if (!response.ok || !json?.success || !json?.path) {
+      throw new Error(json?.error || "Falha ao enviar textura.");
+    }
+
+    return String(json.path);
+  }, []);
+
   const invalidateCreateCatalogCache = useCallback(() => {
     try {
       localStorage.removeItem(CREATE_CATALOG_CACHE_KEY);
@@ -571,8 +624,23 @@ const Admin = () => {
       id: "",
       name: "",
       description: "",
+      texture_path: "",
       is_active: true,
     });
+    setMaterialTextureFile(null);
+  };
+
+  const resetPrintingMethodForm = () => {
+    setPrintingMethodForm({
+      id: "",
+      code: "",
+      name: "",
+      description: "",
+      texture_path: "",
+      sort_order: "0",
+      is_active: true,
+    });
+    setPrintingTextureFile(null);
   };
 
   const resetSupplierForm = () => {
@@ -786,11 +854,69 @@ const Admin = () => {
     }
   };
 
+  const handleDeleteType = async (id: string, name: string) => {
+    if (!window.confirm(`Tem certeza que deseja excluir o tipo "${name}"?`)) {
+      return;
+    }
+
+    setLoading(true);
+    try {
+      await apiRequest(`/catalog/product-types/${id}`, { method: "DELETE" });
+      toast.success("Tipo excluído com sucesso.");
+      invalidateCreateCatalogCache();
+      await loadCatalog();
+    } catch (err: any) {
+      console.error("[admin.handleDeleteType]", err);
+      toast.error(err?.message || "Falha ao excluir tipo.");
+    } finally {
+      setLoading(false);
+    }
+  };
+
+  const handleDeleteMaterial = async (id: string, name: string) => {
+    if (!window.confirm(`Tem certeza que deseja excluir o tecido "${name}"?`)) {
+      return;
+    }
+
+    setLoading(true);
+    try {
+      await apiRequest(`/catalog/materials/${id}`, { method: "DELETE" });
+      toast.success("Tecido excluído com sucesso.");
+      invalidateCreateCatalogCache();
+      await loadCatalog();
+    } catch (err: any) {
+      console.error("[admin.handleDeleteMaterial]", err);
+      toast.error(err?.message || "Falha ao excluir tecido.");
+    } finally {
+      setLoading(false);
+    }
+  };
+
+  const handleDeletePrintingMethod = async (id: string, name: string) => {
+    if (!window.confirm(`Tem certeza que deseja excluir a estamparia "${name}"?`)) {
+      return;
+    }
+
+    setLoading(true);
+    try {
+      await apiRequest(`/catalog/printing-methods/${id}`, { method: "DELETE" });
+      toast.success("Estamparia excluída com sucesso.");
+      invalidateCreateCatalogCache();
+      await loadCatalog();
+    } catch (err: any) {
+      console.error("[admin.handleDeletePrintingMethod]", err);
+      toast.error(err?.message || "Falha ao excluir estamparia.");
+    } finally {
+      setLoading(false);
+    }
+  };
+
   const handleSaveMaterial = async (event: React.FormEvent) => {
     event.preventDefault();
-    const payload = {
+    const payload: Record<string, unknown> = {
       name: materialForm.name.trim(),
       description: materialForm.description.trim() || null,
+      texture_path: materialForm.texture_path.trim() || null,
       is_active: materialForm.is_active,
     };
 
@@ -800,6 +926,10 @@ const Admin = () => {
     }
 
     try {
+      if (materialTextureFile) {
+        payload.texture_path = await uploadTexture(materialTextureFile, "tecidos");
+      }
+
       if (materialForm.id) {
         await apiRequest(`/catalog/materials/${materialForm.id}`, {
           method: "PATCH",
@@ -818,6 +948,49 @@ const Admin = () => {
     } catch (err: any) {
       console.error("[admin.saveMaterial]", err);
       toast.error(err?.message || "Falha ao salvar material.");
+    }
+  };
+
+  const handleSavePrintingMethod = async (event: React.FormEvent) => {
+    event.preventDefault();
+    const payload: Record<string, unknown> = {
+      code: (printingMethodForm.code || printingMethodForm.name).trim(),
+      name: printingMethodForm.name.trim(),
+      description: printingMethodForm.description.trim() || null,
+      texture_path: printingMethodForm.texture_path.trim() || null,
+      sort_order: toNumber(printingMethodForm.sort_order),
+      is_active: printingMethodForm.is_active,
+    };
+
+    if (!payload.name || !payload.code) {
+      toast.error("Codigo e nome da estamparia sao obrigatorios.");
+      return;
+    }
+
+    try {
+      if (printingTextureFile) {
+        payload.texture_path = await uploadTexture(printingTextureFile, "estamparia");
+      }
+
+      if (printingMethodForm.id) {
+        await apiRequest(`/catalog/printing-methods/${printingMethodForm.id}`, {
+          method: "PATCH",
+          body: payload,
+        });
+        toast.success("Estamparia atualizada.");
+      } else {
+        await apiRequest("/catalog/printing-methods", {
+          method: "POST",
+          body: payload,
+        });
+        toast.success("Estamparia criada.");
+      }
+
+      resetPrintingMethodForm();
+      await loadCatalog();
+    } catch (err: any) {
+      console.error("[admin.savePrintingMethod]", err);
+      toast.error(err?.message || "Falha ao salvar estamparia.");
     }
   };
 
@@ -885,7 +1058,8 @@ const Admin = () => {
           <TabsList className="flex flex-wrap gap-2">
             <TabsTrigger value="types">Tipos</TabsTrigger>
             <TabsTrigger value="subtypes">Subtipos</TabsTrigger>
-            <TabsTrigger value="materials">Tecidos &amp; Estamparia</TabsTrigger>
+            <TabsTrigger value="tecidos">Tecidos</TabsTrigger>
+            <TabsTrigger value="estamparias">Estamparias</TabsTrigger>
             <TabsTrigger value="suppliers">Fornecedores</TabsTrigger>
             <TabsTrigger value="products">Produtos</TabsTrigger>
             <TabsTrigger value="inventory">Estoque</TabsTrigger>
@@ -1001,24 +1175,34 @@ const Admin = () => {
                           </div>
                         </div>
                       </div>
-                      <Button
-                        size="sm"
-                        variant="outline"
-                        onClick={() =>
-                          setTypeForm({
-                            id: typeItem.id,
-                            part_id: typeItem.part_id,
-                            name: typeItem.name,
-                            slug: typeItem.slug,
-                            description: typeItem.description || "",
-                            sort_order: String(typeItem.sort_order ?? 0),
-                            is_active: typeItem.is_active,
-                            card_image_path: typeItem.card_image_path || "",
-                          })
-                        }
-                      >
-                        Editar
-                      </Button>
+                      <div className="flex items-center gap-2">
+                        <Button
+                          size="sm"
+                          variant="outline"
+                          onClick={() =>
+                            setTypeForm({
+                              id: typeItem.id,
+                              part_id: typeItem.part_id,
+                              name: typeItem.name,
+                              slug: typeItem.slug,
+                              description: typeItem.description || "",
+                              sort_order: String(typeItem.sort_order ?? 0),
+                              is_active: typeItem.is_active,
+                              card_image_path: typeItem.card_image_path || "",
+                            })
+                          }
+                        >
+                          Editar
+                        </Button>
+                        <Button
+                          size="sm"
+                          variant="destructive"
+                          onClick={() => handleDeleteType(typeItem.id, typeItem.name)}
+                          disabled={loading}
+                        >
+                          Excluir
+                        </Button>
+                      </div>
                     </div>
                   ))
                 )}
@@ -1341,131 +1525,284 @@ const Admin = () => {
               </div>
             </div>
           </TabsContent>
-          <TabsContent value="materials" className="mt-6">
-            <div className="grid gap-6 lg:grid-cols-[320px_1fr]">
-              {/* Formulario de tecido */}
-              <form onSubmit={handleSaveMaterial} className="glass rounded-2xl border p-5 space-y-4 self-start">
-                <div>
-                  <h2 className="text-lg font-semibold">{materialForm.id ? "Editar tecido" : "Novo tecido"}</h2>
-                  <p className="text-xs text-muted-foreground">Adicione o tecido; configure as estamparias na matriz ao lado.</p>
+          <TabsContent value="tecidos" className="mt-6">
+            <div className="grid gap-6 lg:grid-cols-[380px_1fr]">
+              <div className="space-y-6 self-start">
+                <form onSubmit={handleSaveMaterial} className="glass rounded-2xl border p-5 space-y-4">
+                  <div>
+                    <h2 className="text-lg font-semibold">{materialForm.id ? "Editar tecido" : "Novo tecido"}</h2>
+                    <p className="text-xs text-muted-foreground">Categoria Tecido: textura aplicada na peça inteira.</p>
+                  </div>
+                  <div className="space-y-2">
+                    <Label>Nome</Label>
+                    <Input
+                      value={materialForm.name}
+                      onChange={(e) => setMaterialForm((prev) => ({ ...prev, name: e.target.value }))}
+                      placeholder="Algodao"
+                    />
+                  </div>
+                  <div className="space-y-2">
+                    <Label>Descricao</Label>
+                    <Textarea
+                      value={materialForm.description}
+                      onChange={(e) => setMaterialForm((prev) => ({ ...prev, description: e.target.value }))}
+                    />
+                  </div>
+                  <div className="space-y-2">
+                    <Label>Textura do tecido</Label>
+                    <Input
+                      type="file"
+                      accept=".png,.jpg,.jpeg,.webp"
+                      onChange={(e) => setMaterialTextureFile(e.target.files?.[0] || null)}
+                    />
+                    <Input
+                      value={materialForm.texture_path}
+                      onChange={(e) => setMaterialForm((prev) => ({ ...prev, texture_path: e.target.value }))}
+                      placeholder="/textures/tecidos/algodao.png"
+                    />
+                    {(materialTexturePreview || materialForm.texture_path) && (
+                      <img
+                        src={materialTexturePreview || (getPublicUrl(materialForm.texture_path) ?? undefined)}
+                        alt="Preview textura tecido"
+                        className="h-20 w-full rounded-lg border object-cover"
+                      />
+                    )}
+                  </div>
+                  <div className="flex items-center justify-between">
+                    <Label>Ativo</Label>
+                    <Switch
+                      checked={materialForm.is_active}
+                      onCheckedChange={(value) => setMaterialForm((prev) => ({ ...prev, is_active: value }))}
+                    />
+                  </div>
+                  <div className="flex items-center gap-2">
+                    <Button type="submit">{materialForm.id ? "Atualizar" : "Salvar"}</Button>
+                    {materialForm.id && (
+                      <Button type="button" variant="ghost" onClick={resetMaterialForm}>
+                        Cancelar
+                      </Button>
+                    )}
+                  </div>
+                </form>
+
+                <div className="glass rounded-2xl border overflow-auto">
+                  {materials.length === 0 || printingMethods.length === 0 ? (
+                    <div className="px-6 py-8 text-sm text-muted-foreground">
+                      {materials.length === 0
+                        ? "Nenhum tecido cadastrado. Adicione um tecido ao lado."
+                        : "Nenhum metodo de estamparia encontrado. Execute o SQL de seed."}
+                    </div>
+                  ) : (
+                    <table className="w-full text-sm border-collapse">
+                      <thead>
+                        <tr className="border-b bg-muted/40">
+                          <th className="px-4 py-3 text-left font-semibold text-xs uppercase tracking-widest text-muted-foreground min-w-[140px]">
+                            Tecido
+                          </th>
+                          {printingMethods.map((method) => (
+                            <th
+                              key={method.id}
+                              className="px-3 py-3 text-center font-medium text-xs max-w-[90px]"
+                              title={method.description || method.name}
+                            >
+                              <span className="block leading-tight">{method.name.split(" ")[0]}</span>
+                            </th>
+                          ))}
+                          <th className="px-3 py-3 w-[60px]"></th>
+                        </tr>
+                      </thead>
+                      <tbody>
+                        {materials.map((material) => {
+                          const enabledIds = new Set(materialPrintingMethodIds.get(material.id) ?? []);
+                          return (
+                            <tr
+                              key={material.id}
+                              className={cn(
+                                "border-b transition-colors hover:bg-muted/20",
+                                materialForm.id === material.id && "bg-muted/30",
+                                !material.is_active && "opacity-50"
+                              )}
+                            >
+                              <td className="px-4 py-3">
+                                <div className="font-medium">{material.name}</div>
+                                {material.description && (
+                                  <div className="text-xs text-muted-foreground truncate max-w-[120px]">{material.description}</div>
+                                )}
+                                {material.texture_path && (
+                                  <div className="text-[10px] text-muted-foreground truncate max-w-[140px]">{material.texture_path}</div>
+                                )}
+                              </td>
+                              {printingMethods.map((method) => (
+                                <td key={method.id} className="px-3 py-3 text-center">
+                                  <Checkbox
+                                    checked={enabledIds.has(method.id)}
+                                    disabled={loading}
+                                    onCheckedChange={(checked) =>
+                                      handleToggleMaterialPrintingMethod(material.id, method.id, checked === true)
+                                    }
+                                    aria-label={`${material.name} aceita ${method.name}`}
+                                  />
+                                </td>
+                              ))}
+                              <td className="px-3 py-3 text-right">
+                                <div className="flex items-center justify-end gap-2">
+                                  <Button
+                                    size="sm"
+                                    variant="ghost"
+                                    onClick={() =>
+                                      setMaterialForm({
+                                        id: material.id,
+                                        name: material.name,
+                                        description: material.description || "",
+                                        texture_path: material.texture_path || "",
+                                        is_active: material.is_active,
+                                      })
+                                    }
+                                  >
+                                    Editar
+                                  </Button>
+                                  <Button
+                                    size="sm"
+                                    variant="destructive"
+                                    onClick={() => handleDeleteMaterial(material.id, material.name)}
+                                    disabled={loading}
+                                  >
+                                    Excluir
+                                  </Button>
+                                </div>
+                              </td>
+                            </tr>
+                          );
+                        })}
+                      </tbody>
+                    </table>
+                  )}
                 </div>
-                <div className="space-y-2">
-                  <Label>Nome</Label>
-                  <Input
-                    value={materialForm.name}
-                    onChange={(e) => setMaterialForm((prev) => ({ ...prev, name: e.target.value }))}
-                    placeholder="Algodao"
-                  />
+              </div>
+            </div>
+          </TabsContent>
+
+          <TabsContent value="estamparias" className="mt-6">
+            <div className="grid gap-6 lg:grid-cols-[380px_1fr]">
+              <form onSubmit={handleSavePrintingMethod} className="glass rounded-2xl border p-5 space-y-4 self-start">
+                <div>
+                  <h2 className="text-lg font-semibold">{printingMethodForm.id ? "Editar estamparia" : "Nova estamparia"}</h2>
+                  <p className="text-xs text-muted-foreground">Categoria Estamparia: textura aplicada somente no decal.</p>
+                </div>
+                <div className="grid grid-cols-2 gap-2">
+                  <div className="space-y-2">
+                    <Label>Nome</Label>
+                    <Input
+                      value={printingMethodForm.name}
+                      onChange={(e) => setPrintingMethodForm((prev) => ({ ...prev, name: e.target.value }))}
+                      placeholder="Linho"
+                    />
+                  </div>
+                  <div className="space-y-2">
+                    <Label>Codigo</Label>
+                    <Input
+                      value={printingMethodForm.code}
+                      onChange={(e) => setPrintingMethodForm((prev) => ({ ...prev, code: e.target.value }))}
+                      placeholder="linho"
+                    />
+                  </div>
                 </div>
                 <div className="space-y-2">
                   <Label>Descricao</Label>
                   <Textarea
-                    value={materialForm.description}
-                    onChange={(e) => setMaterialForm((prev) => ({ ...prev, description: e.target.value }))}
+                    value={printingMethodForm.description}
+                    onChange={(e) => setPrintingMethodForm((prev) => ({ ...prev, description: e.target.value }))}
+                  />
+                </div>
+                <div className="space-y-2">
+                  <Label>Textura da estamparia</Label>
+                  <Input
+                    type="file"
+                    accept=".png,.jpg,.jpeg,.webp"
+                    onChange={(e) => setPrintingTextureFile(e.target.files?.[0] || null)}
+                  />
+                  <Input
+                    value={printingMethodForm.texture_path}
+                    onChange={(e) => setPrintingMethodForm((prev) => ({ ...prev, texture_path: e.target.value }))}
+                    placeholder="/textures/estamparia/linho.jpg"
+                  />
+                  {(printingTexturePreview || printingMethodForm.texture_path) && (
+                    <img
+                      src={printingTexturePreview || (getPublicUrl(printingMethodForm.texture_path) ?? undefined)}
+                      alt="Preview textura estamparia"
+                      className="h-20 w-full rounded-lg border object-cover"
+                    />
+                  )}
+                </div>
+                <div className="space-y-2">
+                  <Label>Ordem</Label>
+                  <Input
+                    type="number"
+                    value={printingMethodForm.sort_order}
+                    onChange={(e) => setPrintingMethodForm((prev) => ({ ...prev, sort_order: e.target.value }))}
                   />
                 </div>
                 <div className="flex items-center justify-between">
                   <Label>Ativo</Label>
                   <Switch
-                    checked={materialForm.is_active}
-                    onCheckedChange={(value) => setMaterialForm((prev) => ({ ...prev, is_active: value }))}
+                    checked={printingMethodForm.is_active}
+                    onCheckedChange={(value) => setPrintingMethodForm((prev) => ({ ...prev, is_active: value }))}
                   />
                 </div>
                 <div className="flex items-center gap-2">
-                  <Button type="submit">
-                    {materialForm.id ? "Atualizar" : "Salvar"}
-                  </Button>
-                  {materialForm.id && (
-                    <Button type="button" variant="ghost" onClick={resetMaterialForm}>
+                  <Button type="submit">{printingMethodForm.id ? "Atualizar" : "Salvar"}</Button>
+                  {printingMethodForm.id && (
+                    <Button type="button" variant="ghost" onClick={resetPrintingMethodForm}>
                       Cancelar
                     </Button>
                   )}
                 </div>
               </form>
 
-              {/* Matriz tecidos × estamparia */}
               <div className="glass rounded-2xl border overflow-auto">
-                {materials.length === 0 || printingMethods.length === 0 ? (
-                  <div className="px-6 py-8 text-sm text-muted-foreground">
-                    {materials.length === 0
-                      ? "Nenhum tecido cadastrado. Adicione um tecido ao lado."
-                      : "Nenhum metodo de estamparia encontrado. Execute o SQL de seed."}
+                <div className="border-b px-4 py-3">
+                  <p className="text-xs uppercase tracking-widest text-muted-foreground mb-2">Estamparias cadastradas</p>
+                  <div className="space-y-2">
+                    {printingMethods.map((method) => (
+                      <div key={method.id} className="flex items-center justify-between rounded border px-3 py-2">
+                        <div className="min-w-0">
+                          <p className="text-sm font-medium">{method.name}</p>
+                          <p className="text-xs text-muted-foreground">codigo: {method.code}</p>
+                          {method.texture_path && (
+                            <p className="text-[10px] text-muted-foreground truncate">{method.texture_path}</p>
+                          )}
+                        </div>
+                        <div className="flex items-center gap-2">
+                          <Button
+                            size="sm"
+                            variant="outline"
+                            onClick={() =>
+                              setPrintingMethodForm({
+                                id: method.id,
+                                code: method.code,
+                                name: method.name,
+                                description: method.description || "",
+                                texture_path: method.texture_path || "",
+                                sort_order: String(method.sort_order ?? 0),
+                                is_active: method.is_active,
+                              })
+                            }
+                          >
+                            Editar
+                          </Button>
+                          <Button
+                            size="sm"
+                            variant="destructive"
+                            onClick={() => handleDeletePrintingMethod(method.id, method.name)}
+                            disabled={loading}
+                          >
+                            Excluir
+                          </Button>
+                        </div>
+                      </div>
+                    ))}
                   </div>
-                ) : (
-                  <table className="w-full text-sm border-collapse">
-                    <thead>
-                      <tr className="border-b bg-muted/40">
-                        <th className="px-4 py-3 text-left font-semibold text-xs uppercase tracking-widest text-muted-foreground min-w-[140px]">
-                          Tecido
-                        </th>
-                        {printingMethods.map((method) => (
-                          <th
-                            key={method.id}
-                            className="px-3 py-3 text-center font-medium text-xs max-w-[90px]"
-                            title={method.description || method.name}
-                          >
-                            <span className="block leading-tight">{method.name.split(" ")[0]}</span>
-                          </th>
-                        ))}
-                        <th className="px-3 py-3 w-[60px]"></th>
-                      </tr>
-                    </thead>
-                    <tbody>
-                      {materials.map((material) => {
-                        const enabledIds = new Set(materialPrintingMethodIds.get(material.id) ?? []);
-                        return (
-                          <tr
-                            key={material.id}
-                            className={cn(
-                              "border-b transition-colors hover:bg-muted/20",
-                              materialForm.id === material.id && "bg-muted/30",
-                              !material.is_active && "opacity-50"
-                            )}
-                          >
-                            <td className="px-4 py-3">
-                              <div className="font-medium">{material.name}</div>
-                              {material.description && (
-                                <div className="text-xs text-muted-foreground truncate max-w-[120px]">{material.description}</div>
-                              )}
-                            </td>
-                            {printingMethods.map((method) => (
-                              <td key={method.id} className="px-3 py-3 text-center">
-                                <Checkbox
-                                  checked={enabledIds.has(method.id)}
-                                  disabled={loading}
-                                  onCheckedChange={(checked) =>
-                                    handleToggleMaterialPrintingMethod(
-                                      material.id,
-                                      method.id,
-                                      checked === true
-                                    )
-                                  }
-                                  aria-label={`${material.name} aceita ${method.name}`}
-                                />
-                              </td>
-                            ))}
-                            <td className="px-3 py-3 text-right">
-                              <Button
-                                size="sm"
-                                variant="ghost"
-                                onClick={() =>
-                                  setMaterialForm({
-                                    id: material.id,
-                                    name: material.name,
-                                    description: material.description || "",
-                                    is_active: material.is_active,
-                                  })
-                                }
-                              >
-                                Editar
-                              </Button>
-                            </td>
-                          </tr>
-                        );
-                      })}
-                    </tbody>
-                  </table>
-                )}
+                </div>
               </div>
             </div>
           </TabsContent>

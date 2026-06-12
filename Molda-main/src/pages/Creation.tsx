@@ -47,6 +47,7 @@ type DraftPayload = {
   baseColor: string;
   size: string;
   fabric: string;
+  fabricTexturePath?: string | null;
   notes: string;
   part: string | null;
   type: string | null;
@@ -57,6 +58,7 @@ type DraftPayload = {
   tabDecalPreviews: Record<string, string>;
   tabDecalPlacements: Record<string, DecalTransform>;
   tabPrintTypes?: Record<string, string>;
+  tabPrintTexturePaths?: Record<string, string>;
   activeCanvasTab: string;
   savedAt: string;
   draftKey: string;
@@ -243,13 +245,16 @@ const Creation = () => {
       setIsSubtypeFabricLocked(false);
       setSubtypePrintConstraints(null);
       setSubtypeDecalZonesOverride([]);
+      setFabricTexturePath(null);
 
       if (!subtype) return;
 
       try {
-        const [typeRows, subtypeRows] = await Promise.all([
+        const [typeRows, subtypeRows, subtypeMaterialRows, materialRows] = await Promise.all([
           apiRequest<Array<{ id: string; name?: string }>>("/catalog/product-types"),
           apiRequest<Array<SubtypePrintConstraints & { type_id?: string; name?: string }>>("/catalog/product-subtypes"),
+          apiRequest<Array<{ subtype_id: string; material_id: string }>>("/catalog/subtype-materials"),
+          apiRequest<Array<{ id: string; name?: string; texture_path?: string | null }>>("/catalog/materials"),
         ]);
 
         const typeId = type
@@ -278,6 +283,20 @@ const Creation = () => {
             decal_zones_json: subtypeMeta.decal_zones_json,
           });
           setSubtypeDecalZonesOverride(normalizeDbDecalZones(subtypeMeta.decal_zones_json));
+
+          const linkedMaterialIds = subtypeMaterialRows
+            .filter((row) => row.subtype_id === subtypeMeta.id)
+            .map((row) => row.material_id);
+
+          if (linkedMaterialIds.length > 0) {
+            const linkedMaterial = materialRows.find((row) => linkedMaterialIds.includes(row.id));
+            if (linkedMaterial?.name) {
+              setFixedSubtypeFabric(linkedMaterial.name);
+              setIsSubtypeFabricLocked(linkedMaterialIds.length === 1);
+              setFabric(linkedMaterial.name);
+              setFabricTexturePath(linkedMaterial.texture_path ?? null);
+            }
+          }
         }
       } catch (err) {
         console.warn("[creation.resolveSubtypeFabric]", err);
@@ -691,6 +710,8 @@ const Creation = () => {
   const [tabDecalPreviews, setTabDecalPreviews] = useState<Record<string, string>>({});
   const [tabDecalPlacements, setTabDecalPlacements] = useState<Record<string, DecalTransform>>({});
   const [tabPrintTypes, setTabPrintTypes] = useState<Record<string, string>>({});
+  const [tabPrintTexturePaths, setTabPrintTexturePaths] = useState<Record<string, string>>({});
+  const [fabricTexturePath, setFabricTexturePath] = useState<string | null>(null);
   /** Automatic gizmo dimensions derived from canvas content bounds (fallback for tabs without explicit placement). */
   const [tabDecalAutoSizes, setTabDecalAutoSizes] = useState<Record<string, { width: number; height: number }>>({});
   const tabDecalAutoSizesRef = useRef<Record<string, { width: number; height: number }>>({});
@@ -712,6 +733,8 @@ const Creation = () => {
   const tabDecalPlacementsRef = useRef<Record<string, DecalTransform>>(tabDecalPlacements);
   const decalHistoryRef = useRef<HistoryManager | null>(null);
   const tabPrintTypesRef = useRef<Record<string, string>>(tabPrintTypes);
+  const tabPrintTexturePathsRef = useRef<Record<string, string>>(tabPrintTexturePaths);
+  const fabricTexturePathRef = useRef<string | null>(fabricTexturePath);
   useEffect(() => {
     tabVisibilityRef.current = tabVisibility;
   }, [tabVisibility]);
@@ -724,6 +747,12 @@ const Creation = () => {
   useEffect(() => {
     tabPrintTypesRef.current = tabPrintTypes;
   }, [tabPrintTypes]);
+  useEffect(() => {
+    tabPrintTexturePathsRef.current = tabPrintTexturePaths;
+  }, [tabPrintTexturePaths]);
+  useEffect(() => {
+    fabricTexturePathRef.current = fabricTexturePath;
+  }, [fabricTexturePath]);
   useEffect(() => {
     tabDecalAutoSizesRef.current = tabDecalAutoSizes;
   }, [tabDecalAutoSizes]);
@@ -935,10 +964,11 @@ const Creation = () => {
           label: tab.name,
           dataUrl: tabDecalPreviews[tab.id],
           printType: tabPrintTypes[tab.id],
+          printTexturePath: tabPrintTexturePaths[tab.id],
           transform,
         };
       });
-  }, [canvasTabs, tabDecalPreviews, tabVisibility, tabDecalPlacements, tabDecalAutoSizes, tabPrintTypes]);
+  }, [canvasTabs, tabDecalPreviews, tabVisibility, tabDecalPlacements, tabDecalAutoSizes, tabPrintTypes, tabPrintTexturePaths]);
 
   const viabilityAlertItems = useMemo(() => {
     return Object.entries(decalViabilityAlerts).map(([id, messages]) => {
@@ -980,6 +1010,13 @@ const Creation = () => {
     if (typeof payload.baseColor === "string") setBaseColor(payload.baseColor);
     if (typeof payload.size === "string") setSize(payload.size);
     if (typeof payload.fabric === "string" && !isSubtypeFabricLocked) setFabric(payload.fabric);
+    if (typeof payload.fabricTexturePath === "string") {
+      fabricTexturePathRef.current = payload.fabricTexturePath;
+      setFabricTexturePath(payload.fabricTexturePath);
+    } else if (payload.fabricTexturePath === null) {
+      fabricTexturePathRef.current = null;
+      setFabricTexturePath(null);
+    }
     if (typeof payload.notes === "string") setNotes(payload.notes);
 
     let restoredTabs: CanvasTab[] = [];
@@ -1037,6 +1074,14 @@ const Creation = () => {
       const ptypes = payload.tabPrintTypes as Record<string, string>;
       tabPrintTypesRef.current = ptypes;
       setTabPrintTypes(ptypes);
+    }
+    if (payload.tabPrintTexturePaths && typeof payload.tabPrintTexturePaths === "object") {
+      const texturePaths = payload.tabPrintTexturePaths as Record<string, string>;
+      tabPrintTexturePathsRef.current = texturePaths;
+      setTabPrintTexturePaths(texturePaths);
+    } else {
+      tabPrintTexturePathsRef.current = {};
+      setTabPrintTexturePaths({});
     }
 
     if (typeof payload.isPermanent === "boolean") {
@@ -1861,6 +1906,7 @@ const Creation = () => {
       baseColor,
       size,
       fabric,
+      fabricTexturePath: fabricTexturePathRef.current,
       notes,
       part,
       type,
@@ -1871,6 +1917,7 @@ const Creation = () => {
       tabDecalPreviews: tabDecalPreviewsRef.current,
       tabDecalPlacements: tabDecalPlacementsRef.current,
       tabPrintTypes: tabPrintTypesRef.current,
+      tabPrintTexturePaths: tabPrintTexturePathsRef.current,
       activeCanvasTab,
       savedAt: nowIso,
       draftKey,
@@ -2193,10 +2240,23 @@ const Creation = () => {
               setSize={setSize}
               fabric={fabric}
               setFabric={setFabric}
+              setFabricTexturePath={(path) => {
+                setFabricTexturePath(path ?? null);
+              }}
               fabricLocked={isSubtypeFabricLocked || Boolean(fixedSubtypeFabric)}
               tabPrintTypes={tabPrintTypes}
               setTabPrintType={(tabId, value) => {
                 setTabPrintTypes((prev) => ({ ...prev, [tabId]: value }));
+              }}
+              setTabPrintTexturePath={(tabId, path) => {
+                setTabPrintTexturePaths((prev) => {
+                  if (!path) {
+                    const next = { ...prev };
+                    delete next[tabId];
+                    return next;
+                  }
+                  return { ...prev, [tabId]: path };
+                });
               }}
               visibleTabs={visibleTabsWithPreviews}
               onExpandChange={() => { }}
@@ -2529,6 +2589,7 @@ const Creation = () => {
                   <Canvas3DViewer
                     baseColor={baseColor}
                     fabric={fabric}
+                    fabricTexturePath={fabricTexturePath}
                     externalDecals={decalsFor3D}
                     onDecalsChange={handleDecalStateChange}
                     decalZonesOverride={subtypeDecalZonesOverride}

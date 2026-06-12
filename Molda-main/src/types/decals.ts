@@ -18,6 +18,7 @@ export type ExternalDecalData = {
   label?: string;
   dataUrl: string;
   printType?: string;
+  printTexturePath?: string;
   transform?: DecalTransform | null;
 };
 
