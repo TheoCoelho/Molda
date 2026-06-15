@@ -192,6 +192,8 @@ export class GalleryService {
     if (dto.isPublic !== undefined) item.is_public = Boolean(dto.isPublic);
     if (dto.title !== undefined) item.title = dto.title;
     if (dto.design_name !== undefined) item.design_name = dto.design_name;
+    if (dto.design_value !== undefined) item.design_value = Number(dto.design_value) || 0;
+    if (dto.designValue !== undefined) item.design_value = Number(dto.designValue) || 0;
 
     const saved = await this.galleryRepository.save(item);
     return this.toClientItem(baseUrl, saved);
