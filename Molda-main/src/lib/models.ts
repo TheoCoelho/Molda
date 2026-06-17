@@ -1,4 +1,6 @@
 // src/lib/models.ts
+import { apiRequest } from "@/api/backend";
+
 export type Selection = {
   part?: string | null;
   type?: string | null;
@@ -349,7 +351,58 @@ export function getModelConfigFromSelection(sel: Selection): ModelConfig {
  * Atualmente retorna o fallback local do registry.
  */
 const _dbCache = new Map<string, { config: ModelConfig; ts: number }>();
+let _catalogCache:
+  | {
+      parts: Array<{ id: string; slug?: string | null; name?: string | null }>;
+      types: Array<{ id: string; part_id?: string | null; slug?: string | null; name?: string | null }>;
+      subtypes: Array<{
+        id: string;
+        type_id?: string | null;
+        slug?: string | null;
+        name?: string | null;
+        model_3d_path?: string | null;
+        decal_zones_json?: unknown;
+      }>;
+      ts: number;
+    }
+  | null = null;
 const DB_CACHE_TTL = 60_000; // 1 minuto
+
+const matchesSelectionValue = (candidate: string | null | undefined, raw: string | null | undefined, canonical: string | null | undefined) => {
+  const normalizedCandidate = slug(candidate);
+  if (!normalizedCandidate) return false;
+  return normalizedCandidate === slug(raw) || normalizedCandidate === slug(canonical);
+};
+
+async function getCatalogIndex() {
+  if (_catalogCache && Date.now() - _catalogCache.ts < DB_CACHE_TTL) {
+    return _catalogCache;
+  }
+
+  const [parts, types, subtypes] = await Promise.all([
+    apiRequest<Array<{ id: string; slug?: string | null; name?: string | null }>>("/catalog/parts"),
+    apiRequest<Array<{ id: string; part_id?: string | null; slug?: string | null; name?: string | null }>>("/catalog/product-types"),
+    apiRequest<
+      Array<{
+        id: string;
+        type_id?: string | null;
+        slug?: string | null;
+        name?: string | null;
+        model_3d_path?: string | null;
+        decal_zones_json?: unknown;
+      }>
+    >("/catalog/product-subtypes"),
+  ]);
+
+  _catalogCache = {
+    parts: parts ?? [],
+    types: types ?? [],
+    subtypes: subtypes ?? [],
+    ts: Date.now(),
+  };
+
+  return _catalogCache;
+}
 
 export async function getModelConfigFromSelectionAsync(
   sel: Selection
@@ -363,8 +416,50 @@ export async function getModelConfigFromSelectionAsync(
     return cached.config;
   }
 
-  // Fallback to hardcoded registry
   const fallback = REGISTRY[key] ?? REGISTRY["torso:shirt:basic"] ?? {};
+
+  try {
+    const catalog = await getCatalogIndex();
+    const partById = new Map(catalog.parts.map((part) => [part.id, part]));
+
+    const matchingTypes = catalog.types.filter((typeRow) => {
+      const typeMatches =
+        matchesSelectionValue(typeRow.slug, sel.type, canon.type) ||
+        matchesSelectionValue(typeRow.name, sel.type, canon.type);
+      if (!typeMatches) return false;
+      if (!sel.part && !canon.part) return true;
+      const part = typeRow.part_id ? partById.get(typeRow.part_id) : null;
+      return (
+        matchesSelectionValue(part?.slug, sel.part, canon.part) ||
+        matchesSelectionValue(part?.name, sel.part, canon.part)
+      );
+    });
+
+    const typeIds = new Set(matchingTypes.map((row) => row.id));
+    const matchedSubtype = catalog.subtypes.find((subtypeRow) => {
+      const subtypeMatches =
+        matchesSelectionValue(subtypeRow.slug, sel.subtype, canon.subtype) ||
+        matchesSelectionValue(subtypeRow.name, sel.subtype, canon.subtype);
+      if (!subtypeMatches) return false;
+      if (typeIds.size === 0) return true;
+      return !!subtypeRow.type_id && typeIds.has(subtypeRow.type_id);
+    });
+
+    if (matchedSubtype) {
+      const resolved: ModelConfig = {
+        ...fallback,
+        src: matchedSubtype.model_3d_path || fallback.src,
+        decalZones: normalizeDbDecalZones(matchedSubtype.decal_zones_json).length
+          ? normalizeDbDecalZones(matchedSubtype.decal_zones_json)
+          : fallback.decalZones,
+      };
+      _dbCache.set(key, { config: resolved, ts: Date.now() });
+      return resolved;
+    }
+  } catch {
+    // Mantem fallback local quando o catalogo nao estiver disponivel.
+  }
+
   _dbCache.set(key, { config: fallback, ts: Date.now() });
   return fallback;
 }
@@ -377,6 +472,7 @@ export function invalidateModelCache(sel?: Selection) {
   } else {
     _dbCache.clear();
   }
+  _catalogCache = null;
 }
 
 

@@ -28,6 +28,8 @@ const getBackendBaseUrl = () => {
   return stripTrailingSlash(fromEnv);
 };
 
+export const getApiBaseUrl = () => getBackendBaseUrl();
+
 const buildUrl = (path: string) => {
   if (/^https?:\/\//i.test(path)) return path;
   const normalizedPath = path.startsWith("/") ? path : `/${path}`;
@@ -88,9 +90,13 @@ export async function apiRequest<T>(path: string, options: ApiRequestOptions = {
 
   let payload: BodyInit | undefined;
   if (body !== undefined) {
-    payload = JSON.stringify(body);
-    if (!finalHeaders["Content-Type"]) {
-      finalHeaders["Content-Type"] = "application/json";
+    if (typeof FormData !== "undefined" && body instanceof FormData) {
+      payload = body;
+    } else {
+      payload = JSON.stringify(body);
+      if (!finalHeaders["Content-Type"]) {
+        finalHeaders["Content-Type"] = "application/json";
+      }
     }
   }
 

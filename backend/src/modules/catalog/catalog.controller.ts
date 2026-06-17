@@ -111,12 +111,18 @@ export class CatalogController {
     return this.catalogService.updateProductType(id, payload);
   }
 
+  @Delete('product-types/:id')
+  async deleteProductType(@Param('id') id: string) {
+    return this.catalogService.deleteProductType(id);
+  }
+
   @Post('materials')
   async createMaterial(
     @Body()
     payload: {
       name: string;
       description?: string | null;
+      texture_path?: string | null;
       is_active?: boolean;
     },
   ) {
@@ -130,10 +136,52 @@ export class CatalogController {
     payload: {
       name?: string;
       description?: string | null;
+      texture_path?: string | null;
       is_active?: boolean;
     },
   ) {
     return this.catalogService.updateMaterial(id, payload);
+  }
+
+  @Delete('materials/:id')
+  async deleteMaterial(@Param('id') id: string) {
+    return this.catalogService.deleteMaterial(id);
+  }
+
+  @Post('printing-methods')
+  async createPrintingMethod(
+    @Body()
+    payload: {
+      code?: string;
+      name: string;
+      description?: string | null;
+      texture_path?: string | null;
+      sort_order?: number;
+      is_active?: boolean;
+    },
+  ) {
+    return this.catalogService.createPrintingMethod(payload);
+  }
+
+  @Patch('printing-methods/:id')
+  async updatePrintingMethod(
+    @Param('id') id: string,
+    @Body()
+    payload: {
+      code?: string;
+      name?: string;
+      description?: string | null;
+      texture_path?: string | null;
+      sort_order?: number;
+      is_active?: boolean;
+    },
+  ) {
+    return this.catalogService.updatePrintingMethod(id, payload);
+  }
+
+  @Delete('printing-methods/:id')
+  async deletePrintingMethod(@Param('id') id: string) {
+    return this.catalogService.deletePrintingMethod(id);
   }
 
   @Post('products')
@@ -208,6 +256,7 @@ export class CatalogController {
       name: string;
       description?: string | null;
       card_image_path?: string | null;
+      model_3d_path?: string | null;
       sort_order?: number;
       is_active?: boolean;
     },
@@ -225,6 +274,7 @@ export class CatalogController {
       name?: string;
       description?: string | null;
       card_image_path?: string | null;
+      model_3d_path?: string | null;
       sort_order?: number;
       is_active?: boolean;
     },

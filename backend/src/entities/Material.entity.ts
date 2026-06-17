@@ -12,6 +12,9 @@ export class Material {
   @Column({ type: 'text', nullable: true })
   description?: string;
 
+  @Column({ type: 'text', nullable: true })
+  texture_path?: string;
+
   @Column({ type: 'boolean', default: true })
   is_active: boolean;
 

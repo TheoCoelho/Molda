@@ -22,6 +22,9 @@ export class ProductSubtype {
   @Column({ type: 'text', nullable: true })
   card_image_path?: string;
 
+  @Column({ type: 'text', nullable: true })
+  model_3d_path?: string;
+
   @Column({ type: 'int', default: 0 })
   sort_order: number;
 

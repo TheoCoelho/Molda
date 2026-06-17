@@ -13,6 +13,7 @@ export type ExternalDecalPayload = {
   label?: string;
   src: string;
   printType?: string;
+  printTexturePath?: string;
   locked?: boolean;
   width?: number;
   height?: number;
@@ -26,6 +27,8 @@ export type DecalDemoHandle = {
   upsertExternalDecal: (payload: ExternalDecalPayload) => void;
   removeExternalDecal: (id: string) => void;
   setBaseColor: (color: string) => void;
+  setFabricType: (fabric: string | null) => void;
+  setFabricTexturePath: (path: string | null) => void;
   activateZoneTool: (options?: { behavior?: "block" | "constrain"; name?: string }) => void;
   deactivateZoneTool: () => void;
   clearConstrainZones: () => void;
@@ -94,6 +97,8 @@ export type InitDecalDemoOptions = {
   interactive?: boolean;
   background?: THREE.ColorRepresentation | null;
   baseColor?: string;
+  fabric?: string | null;
+  fabricTexturePath?: string | null;
   gizmoTheme?: Partial<GizmoTheme>;
   model?: string;
   hideMenu?: boolean;
@@ -283,6 +288,118 @@ export async function initDecalDemo(container: HTMLElement, opts?: InitDecalDemo
   let projector: ProjectorLike | null = null;
   const textureLoader = new THREE.TextureLoader();
   let currentModelBaseColor = new THREE.Color(opts?.baseColor || "#ffffff");
+  let currentFabricType = opts?.fabric ?? null;
+  let currentFabricTexturePath = opts?.fabricTexturePath ?? null;
+  let leatherTexture: THREE.Texture | null = null;
+  let leatherTextureRequested = false;
+  let linenTexture: THREE.Texture | null = null;
+  let linenTextureRequested = false;
+  const LEATHER_TEXTURE_CANDIDATES = [
+    "/texture/tecidos/leather.png",
+    "/textures/tecidos/leather.png",
+    "/texture/tecidos/Leather037.png",
+    "/textures/tecidos/Leather037.png",
+  ];
+  const LINEN_TEXTURE_CANDIDATES = [
+    "/textures/tecidos/linean/textures/rough_linen_diff_4k.jpg",
+    "/texture/tecidos/linean/textures/rough_linen_diff_4k.jpg",
+    "/textures/tecidos/linen/textures/rough_linen_diff_4k.jpg",
+    "/texture/tecidos/linen/textures/rough_linen_diff_4k.jpg",
+  ];
+  const externalTextureCache = new Map<string, THREE.Texture>();
+  const externalTexturePending = new Map<string, Array<(texture: THREE.Texture | null) => void>>();
+
+  const loadTextureFromPath = (path: string | null | undefined, onReady: (texture: THREE.Texture | null) => void) => {
+    if (!path) {
+      onReady(null);
+      return;
+    }
+    const cached = externalTextureCache.get(path);
+    if (cached) {
+      onReady(cached);
+      return;
+    }
+    const pending = externalTexturePending.get(path);
+    if (pending) {
+      pending.push(onReady);
+      return;
+    }
+    externalTexturePending.set(path, [onReady]);
+    textureLoader.load(
+      path,
+      (texture) => {
+        configureTiledTexture(texture, 10);
+        externalTextureCache.set(path, texture);
+        const listeners = externalTexturePending.get(path) ?? [];
+        externalTexturePending.delete(path);
+        listeners.forEach((listener) => listener(texture));
+      },
+      undefined,
+      () => {
+        const listeners = externalTexturePending.get(path) ?? [];
+        externalTexturePending.delete(path);
+        listeners.forEach((listener) => listener(null));
+      }
+    );
+  };
+
+  const configureTiledTexture = (texture: THREE.Texture, repeat: number) => {
+    texture.wrapS = THREE.RepeatWrapping;
+    texture.wrapT = THREE.RepeatWrapping;
+    texture.repeat.set(repeat, repeat);
+    texture.colorSpace = THREE.SRGBColorSpace;
+    texture.needsUpdate = true;
+  };
+
+  const requestLeatherTexture = () => {
+    if (leatherTextureRequested) return;
+    leatherTextureRequested = true;
+
+    const tryLoad = (index: number) => {
+      if (index >= LEATHER_TEXTURE_CANDIDATES.length) return;
+      const src = LEATHER_TEXTURE_CANDIDATES[index];
+      textureLoader.load(
+        src,
+        (tex) => {
+          leatherTexture = tex;
+          const repeat = resolveFabricMaterialProfile("leather").textureRepeat;
+          configureTiledTexture(tex, repeat);
+          setModelFabricType(currentFabricType);
+          decals.forEach((record) =>
+            applyDecalVisualStyleToMesh(record.projector.getMesh?.() ?? record.mesh, record.printType, record.printTexturePath)
+          );
+        },
+        undefined,
+        () => tryLoad(index + 1)
+      );
+    };
+
+    tryLoad(0);
+  };
+
+  const requestLinenTexture = () => {
+    if (linenTextureRequested) return;
+    linenTextureRequested = true;
+
+    const tryLoad = (index: number) => {
+      if (index >= LINEN_TEXTURE_CANDIDATES.length) return;
+      const src = LINEN_TEXTURE_CANDIDATES[index];
+      textureLoader.load(
+        src,
+        (tex) => {
+          linenTexture = tex;
+          configureTiledTexture(tex, 12);
+          decals.forEach((record) =>
+            applyDecalVisualStyleToMesh(record.projector.getMesh?.() ?? record.mesh, record.printType, record.printTexturePath)
+          );
+        },
+        undefined,
+        () => tryLoad(index + 1)
+      );
+    };
+
+    tryLoad(0);
+  };
 
   const createFabricMaps = () => {
     const size = 256;
@@ -344,26 +461,137 @@ export async function initDecalDemo(container: HTMLElement, opts?: InitDecalDemo
 
   const fabricMaps = createFabricMaps();
 
-  const applyFabricLookToMaterial = (material: THREE.Material) => {
+  type FabricMaterialProfile = {
+    roughness: number;
+    metalness: number;
+    envMapIntensity: number;
+    bumpScale: number;
+    textureRepeat: number;
+  };
+
+  const normalizeFabricType = (value?: string | null): "cotton" | "polyester" | "knit" | "fleece" | "dryfit" | "leather" | "default" => {
+    if (!value) return "default";
+    const normalized = value
+      .toLowerCase()
+      .normalize("NFD")
+      .replace(/[\u0300-\u036f]/g, "")
+      .trim();
+
+    if (normalized.includes("algod")) return "cotton";
+    if (normalized.includes("poliester")) return "polyester";
+    if (normalized.includes("malha")) return "knit";
+    if (normalized.includes("moletom")) return "fleece";
+    if (normalized.includes("dry fit") || normalized.includes("dryfit")) return "dryfit";
+    if (normalized.includes("couro") || normalized.includes("leather")) return "leather";
+    return "default";
+  };
+
+  const resolveFabricMaterialProfile = (fabricType?: string | null): FabricMaterialProfile => {
+    const normalized = normalizeFabricType(fabricType);
+    switch (normalized) {
+      case "cotton":
+        return { roughness: 0.95, metalness: 0.01, envMapIntensity: 0.35, bumpScale: 0.03, textureRepeat: 24 };
+      case "polyester":
+        return { roughness: 0.74, metalness: 0.02, envMapIntensity: 0.62, bumpScale: 0.012, textureRepeat: 30 };
+      case "knit":
+        return { roughness: 0.9, metalness: 0.01, envMapIntensity: 0.4, bumpScale: 0.024, textureRepeat: 20 };
+      case "fleece":
+        return { roughness: 0.98, metalness: 0, envMapIntensity: 0.26, bumpScale: 0.045, textureRepeat: 14 };
+      case "dryfit":
+        return { roughness: 0.64, metalness: 0.03, envMapIntensity: 0.72, bumpScale: 0.01, textureRepeat: 34 };
+      case "leather":
+        return { roughness: 0.56, metalness: 0.02, envMapIntensity: 0.68, bumpScale: 0.05, textureRepeat: 8 };
+      default:
+        return { roughness: 0.92, metalness: 0.02, envMapIntensity: 0.45, bumpScale: 0.02, textureRepeat: 20 };
+    }
+  };
+
+  const applyFabricLookToMaterial = (material: THREE.Material, fabricType?: string | null) => {
     const anyMat = material as any;
     if (!anyMat) return;
+    const profile = resolveFabricMaterialProfile(fabricType ?? currentFabricType);
+    const normalizedFabric = normalizeFabricType(fabricType ?? currentFabricType);
+    const applyLoadedTexture = (texture: THREE.Texture) => {
+      const repeat = Math.max(2, profile.textureRepeat);
+      texture.repeat.set(repeat, repeat);
+      if ("map" in anyMat) anyMat.map = texture;
+      if ("bumpMap" in anyMat) anyMat.bumpMap = texture;
+      if ("roughnessMap" in anyMat) anyMat.roughnessMap = null;
+      anyMat.needsUpdate = true;
+    };
 
-    if ("roughness" in anyMat) anyMat.roughness = 0.92;
-    if ("metalness" in anyMat) anyMat.metalness = 0.02;
-    if ("envMapIntensity" in anyMat) anyMat.envMapIntensity = 0.45;
+    if ("roughness" in anyMat) anyMat.roughness = profile.roughness;
+    if ("metalness" in anyMat) anyMat.metalness = profile.metalness;
+    if ("envMapIntensity" in anyMat) anyMat.envMapIntensity = profile.envMapIntensity;
+
+    anyMat.userData = anyMat.userData || {};
+    if (!("__moldaOriginalMap" in anyMat.userData)) {
+      anyMat.userData.__moldaOriginalMap = "map" in anyMat ? anyMat.map ?? null : null;
+    }
+
+    if (currentFabricTexturePath) {
+      loadTextureFromPath(currentFabricTexturePath, (texture) => {
+        if (!texture) return;
+        if (!root) {
+          applyLoadedTexture(texture);
+          return;
+        }
+
+        root.traverse((node) => {
+          if (!(node instanceof THREE.Mesh)) return;
+          if ((node.userData as Record<string, unknown>).__decalId) return;
+
+          const applyToMeshMaterial = (meshMaterial: THREE.Material) => {
+            const meshAnyMat = meshMaterial as any;
+            if (!meshAnyMat) return;
+            if ("map" in meshAnyMat) meshAnyMat.map = texture;
+            if ("bumpMap" in meshAnyMat) meshAnyMat.bumpMap = texture;
+            if ("roughnessMap" in meshAnyMat) meshAnyMat.roughnessMap = null;
+            meshAnyMat.needsUpdate = true;
+          };
+
+          if (Array.isArray(node.material)) {
+            node.material.forEach(applyToMeshMaterial);
+          } else {
+            applyToMeshMaterial(node.material);
+          }
+        });
+      });
+    }
 
     if (fabricMaps) {
       const maxAnisotropy = renderer.capabilities.getMaxAnisotropy?.() ?? 1;
       fabricMaps.bumpMap.anisotropy = maxAnisotropy;
       fabricMaps.roughnessMap.anisotropy = maxAnisotropy;
+      fabricMaps.bumpMap.repeat.set(profile.textureRepeat, profile.textureRepeat);
+      fabricMaps.roughnessMap.repeat.set(profile.textureRepeat, profile.textureRepeat);
+
+      if (!currentFabricTexturePath && normalizedFabric === "leather") {
+        requestLeatherTexture();
+        if (leatherTexture && "map" in anyMat) {
+          anyMat.map = leatherTexture;
+        }
+      } else if (!currentFabricTexturePath && "map" in anyMat) {
+        anyMat.map = anyMat.userData.__moldaOriginalMap ?? null;
+      }
 
       if ("bumpMap" in anyMat) {
-        anyMat.bumpMap = fabricMaps.bumpMap;
-        anyMat.bumpScale = 0.02;
+        anyMat.bumpMap = currentFabricTexturePath
+          ? anyMat.bumpMap ?? null
+          : normalizedFabric === "leather" && leatherTexture
+            ? leatherTexture
+            : fabricMaps.bumpMap;
+        anyMat.bumpScale = profile.bumpScale;
       }
       if ("roughnessMap" in anyMat) {
-        anyMat.roughnessMap = fabricMaps.roughnessMap;
+        anyMat.roughnessMap = currentFabricTexturePath
+          ? anyMat.roughnessMap ?? null
+          : normalizedFabric === "leather" && leatherTexture
+            ? null
+            : fabricMaps.roughnessMap;
       }
+    } else if (!currentFabricTexturePath && "map" in anyMat) {
+      anyMat.map = anyMat.userData.__moldaOriginalMap ?? null;
     }
   };
 
@@ -392,6 +620,31 @@ export async function initDecalDemo(container: HTMLElement, opts?: InitDecalDemo
     });
   };
 
+  const setModelFabricType = (fabric: string | null) => {
+    currentFabricType = fabric;
+    if (!root) return;
+    root.traverse((node) => {
+      if (!(node instanceof THREE.Mesh)) return;
+      if ((node.userData as Record<string, unknown>).__decalId) return;
+
+      const applyFabric = (material: THREE.Material) => {
+        applyFabricLookToMaterial(material, currentFabricType);
+        material.needsUpdate = true;
+      };
+
+      if (Array.isArray(node.material)) {
+        node.material.forEach(applyFabric);
+      } else {
+        applyFabric(node.material);
+      }
+    });
+  };
+
+  const setModelFabricTexturePath = (texturePath: string | null) => {
+    currentFabricTexturePath = texturePath;
+    setModelFabricType(currentFabricType);
+  };
+
   type GalleryItem = {
     id: string;
     label: string;
@@ -410,6 +663,7 @@ export async function initDecalDemo(container: HTMLElement, opts?: InitDecalDemo
     id: string;
     galleryItemId: string;
     printType: string | null;
+    printTexturePath: string | null;
     locked: boolean;
     projector: ProjectorLike;
     texture: THREE.Texture;
@@ -428,7 +682,7 @@ export async function initDecalDemo(container: HTMLElement, opts?: InitDecalDemo
   const pendingExternalDecals = new Set<string>();
   const pendingExternalPayloads = new Map<string, ExternalDecalPayload>();
 
-  const normalizePrintType = (value?: string | null): "dtf" | "embroidery" | "default" => {
+  const normalizePrintType = (value?: string | null): "dtf" | "embroidery" | "screen" | "digital" | "leather" | "linen" | "default" => {
     if (!value) return "default";
     const normalized = value
       .toLowerCase()
@@ -438,45 +692,166 @@ export async function initDecalDemo(container: HTMLElement, opts?: InitDecalDemo
 
     if (normalized.includes("bordad") || normalized.includes("embroid")) return "embroidery";
     if (normalized.includes("dtf")) return "dtf";
+    if (normalized.includes("serigraf")) return "screen";
+    if (normalized.includes("digital")) return "digital";
+    if (normalized.includes("couro") || normalized.includes("leather")) return "leather";
+    if (normalized.includes("linho") || normalized.includes("linen")) return "linen";
     return "default";
   };
 
-  const applyDecalVisualStyleToMesh = (mesh: THREE.Mesh | null, printType?: string | null) => {
+  const applyDecalVisualStyleToMesh = (mesh: THREE.Mesh | null, printType?: string | null, printTexturePath?: string | null) => {
     if (!mesh) return;
 
     const style = normalizePrintType(printType);
 
     const applyToMaterial = (material: THREE.Material) => {
       if (material instanceof THREE.MeshBasicMaterial || material instanceof THREE.MeshStandardMaterial) {
+        const mat = material as THREE.MeshBasicMaterial | THREE.MeshStandardMaterial;
+        const matUserData = (mat.userData ??= {}) as {
+          __moldaOriginalMap?: THREE.Texture | null;
+          __moldaOriginalAlphaMap?: THREE.Texture | null;
+          __moldaOriginalBumpMap?: THREE.Texture | null;
+        };
+        if (!("__moldaOriginalMap" in matUserData)) {
+          matUserData.__moldaOriginalMap = mat.map ?? null;
+        }
+        if (!("__moldaOriginalAlphaMap" in matUserData)) {
+          matUserData.__moldaOriginalAlphaMap = mat.alphaMap ?? null;
+        }
+        if (mat instanceof THREE.MeshStandardMaterial && !("__moldaOriginalBumpMap" in matUserData)) {
+          matUserData.__moldaOriginalBumpMap = mat.bumpMap ?? null;
+        }
+
         if (style === "embroidery") {
-          material.transparent = true;
-          material.opacity = 0.9;
-          material.alphaTest = 0.16;
-          material.color.setRGB(0.9, 0.9, 0.9);
-          if (material instanceof THREE.MeshStandardMaterial) {
-            material.roughness = 0.98;
-            material.metalness = 0;
+          mat.map = matUserData.__moldaOriginalMap ?? null;
+          mat.alphaMap = matUserData.__moldaOriginalAlphaMap ?? null;
+          mat.transparent = true;
+          mat.opacity = 0.9;
+          mat.alphaTest = 0.16;
+          mat.color.setRGB(0.9, 0.9, 0.9);
+          if (mat instanceof THREE.MeshStandardMaterial) {
+            mat.bumpMap = matUserData.__moldaOriginalBumpMap ?? null;
+            mat.roughness = 0.98;
+            mat.metalness = 0;
+          }
+        } else if (style === "screen") {
+          mat.map = matUserData.__moldaOriginalMap ?? null;
+          mat.alphaMap = matUserData.__moldaOriginalAlphaMap ?? null;
+          mat.transparent = true;
+          mat.opacity = 0.98;
+          mat.alphaTest = 0.06;
+          mat.color.setRGB(0.98, 0.98, 0.98);
+          if (mat instanceof THREE.MeshStandardMaterial) {
+            mat.bumpMap = matUserData.__moldaOriginalBumpMap ?? null;
+            mat.roughness = 0.84;
+            mat.metalness = 0;
+          }
+        } else if (style === "digital") {
+          mat.map = matUserData.__moldaOriginalMap ?? null;
+          mat.alphaMap = matUserData.__moldaOriginalAlphaMap ?? null;
+          mat.transparent = true;
+          mat.opacity = 1;
+          mat.alphaTest = 0.025;
+          mat.color.setRGB(1, 1, 1);
+          if (mat instanceof THREE.MeshStandardMaterial) {
+            mat.bumpMap = matUserData.__moldaOriginalBumpMap ?? null;
+            mat.roughness = 0.62;
+            mat.metalness = 0;
+          }
+        } else if (style === "dtf") {
+          mat.map = matUserData.__moldaOriginalMap ?? null;
+          mat.alphaMap = matUserData.__moldaOriginalAlphaMap ?? null;
+          mat.transparent = true;
+          mat.opacity = 0.99;
+          mat.alphaTest = 0.04;
+          mat.color.setRGB(1, 1, 1);
+          if (mat instanceof THREE.MeshStandardMaterial) {
+            mat.bumpMap = matUserData.__moldaOriginalBumpMap ?? null;
+            mat.roughness = 0.58;
+            mat.metalness = 0;
+          }
+        } else if (style === "leather") {
+          mat.transparent = true;
+          mat.opacity = 0.96;
+          mat.alphaTest = 0.09;
+          mat.color.setRGB(0.95, 0.95, 0.95);
+          if (mat instanceof THREE.MeshStandardMaterial) {
+            mat.roughness = 0.52;
+            mat.metalness = 0.03;
+            requestLeatherTexture();
+            if (leatherTexture) {
+              mat.map = leatherTexture;
+              mat.alphaMap = matUserData.__moldaOriginalMap ?? matUserData.__moldaOriginalAlphaMap ?? null;
+              mat.bumpMap = leatherTexture;
+              mat.bumpScale = 0.035;
+            }
+          } else {
+            requestLeatherTexture();
+            if (leatherTexture) {
+              mat.map = leatherTexture;
+              mat.alphaMap = matUserData.__moldaOriginalMap ?? matUserData.__moldaOriginalAlphaMap ?? null;
+            }
+          }
+        } else if (style === "linen") {
+          mat.transparent = true;
+          mat.opacity = 0.98;
+          mat.alphaTest = 0.08;
+          mat.color.setRGB(1, 1, 1);
+          requestLinenTexture();
+          if (linenTexture) {
+            mat.map = linenTexture;
+            mat.alphaMap = matUserData.__moldaOriginalMap ?? matUserData.__moldaOriginalAlphaMap ?? null;
+            if (mat instanceof THREE.MeshStandardMaterial) {
+              mat.bumpMap = linenTexture;
+              mat.bumpScale = 0.018;
+              mat.roughness = 0.88;
+              mat.metalness = 0.01;
+            }
           }
         } else {
-          material.transparent = true;
-          material.opacity = 1;
-          material.alphaTest = 0.03;
-          material.color.setRGB(1, 1, 1);
-          if (material instanceof THREE.MeshStandardMaterial) {
-            material.roughness = 0.7;
-            material.metalness = 0;
+          mat.map = matUserData.__moldaOriginalMap ?? null;
+          mat.alphaMap = matUserData.__moldaOriginalAlphaMap ?? null;
+          mat.transparent = true;
+          mat.opacity = 1;
+          mat.alphaTest = 0.03;
+          mat.color.setRGB(1, 1, 1);
+          if (mat instanceof THREE.MeshStandardMaterial) {
+            mat.bumpMap = matUserData.__moldaOriginalBumpMap ?? null;
+            mat.roughness = 0.7;
+            mat.metalness = 0;
           }
         }
-        material.needsUpdate = true;
+
+        if (printTexturePath) {
+          loadTextureFromPath(printTexturePath, (texture) => {
+            if (!texture) return;
+            mat.map = texture;
+            mat.alphaMap = matUserData.__moldaOriginalMap ?? matUserData.__moldaOriginalAlphaMap ?? null;
+            if (mat instanceof THREE.MeshStandardMaterial) {
+              mat.bumpMap = texture;
+              mat.bumpScale = Math.max(mat.bumpScale ?? 0, 0.012);
+            }
+            mat.needsUpdate = true;
+          });
+        }
+
+        mat.needsUpdate = true;
         return;
       }
 
       if (material instanceof THREE.ShaderMaterial) {
         if (material.uniforms?.opacity) {
-          material.uniforms.opacity.value = style === "embroidery" ? 0.9 : 1;
+          if (style === "embroidery") material.uniforms.opacity.value = 0.9;
+          else if (style === "screen") material.uniforms.opacity.value = 0.98;
+          else material.uniforms.opacity.value = 1;
         }
         if (material.uniforms?.feather) {
-          material.uniforms.feather.value = style === "embroidery" ? 0.045 : 0.02;
+          if (style === "embroidery") material.uniforms.feather.value = 0.045;
+          else if (style === "screen") material.uniforms.feather.value = 0.028;
+          else if (style === "digital") material.uniforms.feather.value = 0.018;
+          else if (style === "leather") material.uniforms.feather.value = 0.03;
+          else if (style === "linen") material.uniforms.feather.value = 0.026;
+          else material.uniforms.feather.value = 0.02;
         }
         material.needsUpdate = true;
       }
@@ -1022,6 +1397,7 @@ export async function initDecalDemo(container: HTMLElement, opts?: InitDecalDemo
       const ext = pendingExternalPayloads.get(item.id);
       const locked = !!ext?.locked;
       const printType = ext?.printType ?? null;
+      const printTexturePath = ext?.printTexturePath ?? null;
       if (ext) {
         if (typeof ext.width === "number") width = ext.width;
         if (typeof ext.height === "number") height = ext.height;
@@ -1072,12 +1448,13 @@ export async function initDecalDemo(container: HTMLElement, opts?: InitDecalDemo
       if (mesh) {
         mesh.userData = mesh.userData || {};
         (mesh.userData as Record<string, unknown>).__decalId = item.id;
-        applyDecalVisualStyleToMesh(mesh, printType);
+        applyDecalVisualStyleToMesh(mesh, printType, printTexturePath);
       }
       const record: DecalRecord = {
         id: item.id,
         galleryItemId: item.id,
         printType,
+        printTexturePath,
         locked,
         projector: adapter,
         texture,
@@ -1158,6 +1535,7 @@ export async function initDecalDemo(container: HTMLElement, opts?: InitDecalDemo
   record.texture = texture;
   record.aspect = getTextureAspect(texture);
   record.printType = payload.printType ?? null;
+  record.printTexturePath = payload.printTexturePath ?? null;
         record.locked = !!payload.locked;
         const hasWidth = typeof payload.width === "number";
         const hasHeight = typeof payload.height === "number";
@@ -1206,7 +1584,7 @@ export async function initDecalDemo(container: HTMLElement, opts?: InitDecalDemo
             record.angle
           );
         }
-        applyDecalVisualStyleToMesh(record.projector.getMesh?.() ?? record.mesh, record.printType);
+        applyDecalVisualStyleToMesh(record.projector.getMesh?.() ?? record.mesh, record.printType, record.printTexturePath);
         if (record.locked) {
           galleryState.selectedIds.delete(id);
           if (activeDecalId === id) setActiveDecal(null);
@@ -1299,7 +1677,7 @@ export async function initDecalDemo(container: HTMLElement, opts?: InitDecalDemo
         mesh.userData = mesh.userData || {};
         (mesh.userData as Record<string, unknown>).__decalId = record.id;
       }
-      applyDecalVisualStyleToMesh(record.mesh, record.printType);
+      applyDecalVisualStyleToMesh(record.mesh, record.printType, record.printTexturePath);
     }
     queueEmitDecalState();
   }
@@ -3066,6 +3444,11 @@ export async function initDecalDemo(container: HTMLElement, opts?: InitDecalDemo
       fabricMaps.bumpMap.dispose();
       fabricMaps.roughnessMap.dispose();
     }
+    leatherTexture?.dispose();
+    linenTexture?.dispose();
+    externalTextureCache.forEach((texture) => texture.dispose());
+    externalTextureCache.clear();
+    externalTexturePending.clear();
     container.innerHTML = "";
   };
 
@@ -3073,6 +3456,8 @@ export async function initDecalDemo(container: HTMLElement, opts?: InitDecalDemo
     upsertExternalDecal: upsertExternalDecalWithNotify,
     removeExternalDecal: removeExternalDecalWithNotify,
     setBaseColor: (color: string) => setModelBaseColor(color),
+    setFabricType: (fabric: string | null) => setModelFabricType(fabric),
+    setFabricTexturePath: (path: string | null) => setModelFabricTexturePath(path),
     activateZoneTool: (options?: { behavior?: "block" | "constrain"; name?: string }) => {
       zoneToolActive = true;
       zoneToolBehavior = options?.behavior ?? "constrain";

@@ -12,6 +12,8 @@ type Props = {
   className?: string;
   selection?: Selection;
   baseColor?: string;
+  fabric?: string;
+  fabricTexturePath?: string | null;
   decalZonesOverride?: ModelDecalZone[];
   decals?: ExternalDecalData[];
   onDecalsChange?: (state: DecalStateSnapshot[]) => void;
@@ -24,6 +26,8 @@ export default function DecalEngineHost({
   className,
   selection,
   baseColor = "#ffffff",
+  fabric,
+  fabricTexturePath,
   decalZonesOverride,
   decals = [],
   onDecalsChange,
@@ -45,6 +49,7 @@ export default function DecalEngineHost({
     if (a.label !== b.label) return false;
     if (a.src !== b.src) return false;
     if (a.printType !== b.printType) return false;
+    if (a.printTexturePath !== b.printTexturePath) return false;
     if (a.width !== b.width) return false;
     if (a.height !== b.height) return false;
     if (a.depth !== b.depth) return false;
@@ -118,6 +123,8 @@ export default function DecalEngineHost({
           interactive,
           background: null,
           baseColor,
+          fabric,
+          fabricTexturePath,
           gizmoTheme: DEFAULT_GIZMO_THEME,
           model: modelParam,
           hideMenu: true,
@@ -152,6 +159,20 @@ export default function DecalEngineHost({
     if (!ready) return;
     const api = apiRef.current;
     if (!api) return;
+    api.setFabricType(fabric ?? null);
+  }, [ready, fabric]);
+
+  useEffect(() => {
+    if (!ready) return;
+    const api = apiRef.current;
+    if (!api) return;
+    api.setFabricTexturePath(fabricTexturePath ?? null);
+  }, [ready, fabricTexturePath]);
+
+  useEffect(() => {
+    if (!ready) return;
+    const api = apiRef.current;
+    if (!api) return;
 
     const nextIds = new Set(decals.map((d) => d.id));
     const nextPayloads = new Map<string, Parameters<DecalDemoHandle["upsertExternalDecal"]>[0]>();
@@ -170,6 +191,7 @@ export default function DecalEngineHost({
         label: decal.label,
         src: decal.dataUrl,
         printType: decal.printType,
+        printTexturePath: decal.printTexturePath,
       };
 
       const t = decal.transform;

@@ -10,6 +10,7 @@ import HistoryManager from "../lib/HistoryManager";
 import { installFabricEraser } from "../lib/fabricEraser";
 import { incrementFontPopularity } from "../api/fontPopularity";
 import { applyGizmoThemeToFabric, DEFAULT_GIZMO_THEME } from "../../../gizmo-theme";
+import { getApiBaseUrl } from "@/api/backend";
 
 // Tipos alinhados com ExpandableSidebar
 export type Tool = "select" | "brush" | "line" | "curve" | "text" | "stamp";
@@ -363,6 +364,45 @@ type PreviewBackup = {
 };
 
 const GIZMO_THEME = DEFAULT_GIZMO_THEME;
+
+function normalizeImageSourceForCanvas(raw: string): string {
+  const input = String(raw || "").trim();
+  if (!input) return "";
+
+  // Keep fully-qualified/data/blob URLs untouched.
+  if (/^(https?:|data:|blob:)/i.test(input)) return input;
+
+  const normalizedSlashes = input.replace(/\\+/g, "/");
+
+  // Protocol-relative URL.
+  if (normalizedSlashes.startsWith("//")) {
+    return `${window.location.protocol}${normalizedSlashes}`;
+  }
+
+  // Absolute path to backend storage should use backend origin.
+  if (normalizedSlashes.startsWith("/storage/")) {
+    return `${getApiBaseUrl()}${normalizedSlashes}`;
+  }
+
+  // Relative storage path from legacy records.
+  if (/^storage\//i.test(normalizedSlashes)) {
+    return `${getApiBaseUrl()}/${normalizedSlashes.replace(/^\/+/, "")}`;
+  }
+
+  // Generic absolute path keeps current origin.
+  if (normalizedSlashes.startsWith("/")) {
+    return normalizedSlashes;
+  }
+
+  // If it looks like a bare local path that contains storage/gallery, map to backend.
+  if (/(^|\/)storage\//i.test(normalizedSlashes)) {
+    const idx = normalizedSlashes.toLowerCase().indexOf("storage/");
+    const tail = normalizedSlashes.slice(idx);
+    return `${getApiBaseUrl()}/${tail.replace(/^\/+/, "")}`;
+  }
+
+  return normalizedSlashes;
+}
 
 const CANVAS_SELECTION_OPTIONS = {
   selectionColor: GIZMO_THEME.areaFill,
@@ -756,6 +796,7 @@ const Editor2D = forwardRef<Editor2DHandle, Props>(function Editor2D(
   const imageAdjOpIdRef = useRef(0);
   const imageAdjRunningRef = useRef(false);
   const imageAdjPendingRef = useRef<ImageAdjustments | null>(null);
+  const selectableObjectsStateRef = useRef<boolean | null>(null);
 
   const runSilently = (cb: () => void) => {
     historyGuardRef.current += 1;
@@ -831,7 +872,7 @@ const Editor2D = forwardRef<Editor2DHandle, Props>(function Editor2D(
     const active = c.getActiveObject?.();
     if (!active) return;
     const kind = computeSelectionKind();
-    if (kind !== "other") return;
+    if (kind !== "other" && kind !== "svg") return;
     // Aplica a cor ao objeto e a seus filhos (spray = Group de Rects)
     const applyColor = (obj: any) => {
       const curStroke = obj.get("stroke");
@@ -7264,10 +7305,20 @@ const Editor2D = forwardRef<Editor2DHandle, Props>(function Editor2D(
   };
 
   const setObjectsSelectable = (c: FabricCanvas, value: boolean) => {
+    if (selectableObjectsStateRef.current === value) return;
+
+    let changed = false;
     c.getObjects().forEach((o: any) => {
+      if (o.selectable === value && o.evented === value) return;
       o.selectable = value;
       o.evented = value;
+      changed = true;
     });
+
+    selectableObjectsStateRef.current = value;
+    if (changed) {
+      try { c.requestRenderAll(); } catch { }
+    }
   };
 
   const attachLineListeners = (
@@ -9018,54 +9069,92 @@ const Editor2D = forwardRef<Editor2DHandle, Props>(function Editor2D(
   };
 
   const addImage = (src: string, opts?: { x?: number; y?: number; scale?: number; meta?: Record<string, unknown> }) => {
-    const c = canvasRef.current;
-    const fabric = fabricRef.current;
-    if (c && fabric) {
-      // Cancel any active drawing tools when adding image
-      cancelContinuousLine();
+    // Cancel any active drawing tools when adding image
+    cancelContinuousLine();
 
-      void ensureCanvasReady();
-      fabric.Image.fromURL(
-        src,
-        (img: any) => {
-          const x = opts?.x ?? c.getWidth() / 2;
-          const y = opts?.y ?? c.getHeight() / 2;
-          const scale = opts?.scale ?? 0.5;
+    void (async () => {
+      const resolvedSrc = normalizeImageSourceForCanvas(src);
+      if (!resolvedSrc) {
+        console.warn("[Editor2D] URL de imagem vazia ao inserir no canvas", src);
+        return;
+      }
 
-          img.set({
-            left: x - (img.width * scale) / 2,
-            top: y - (img.height * scale) / 2,
-            scaleX: scale,
-            scaleY: scale,
-            erasable: true,
+      await ensureCanvasReady();
+
+      const c = canvasRef.current;
+      const fabric = fabricRef.current;
+      if (!c || !fabric) {
+        console.warn("[Editor2D] Canvas/Fabric indisponivel ao inserir imagem", src);
+        return;
+      }
+
+      const loadImage = (crossOrigin?: "anonymous") =>
+        new Promise<any>((resolve) => {
+          const imageOptions = crossOrigin ? { crossOrigin } : undefined;
+          fabric.Image.fromURL(resolvedSrc, (img: any) => resolve(img || null), imageOptions);
+        });
+
+      let img = await loadImage("anonymous");
+      // Alguns endpoints de storage nao retornam CORS para canvas; fallback sem crossOrigin.
+      if (!img) {
+        img = await loadImage();
+      }
+      if (!img) {
+        // Retry encoded URL for filenames with spaces/special chars.
+        const encodedSrc = encodeURI(resolvedSrc);
+        if (encodedSrc !== resolvedSrc) {
+          img = await new Promise<any>((resolve) => {
+            fabric.Image.fromURL(encodedSrc, (nextImg: any) => resolve(nextImg || null), { crossOrigin: "anonymous" });
           });
+        }
+      }
+      if (!img) {
+        console.warn("[Editor2D] Falha ao carregar imagem para insercao", src);
+        return;
+      }
 
-          // guarda a origem para permitir re-aplicar filtros sem degradar (dataURL em cascata)
-          try {
-            (img as any).__moldaOriginalSrc = src;
-          } catch { }
-          try {
-            const meta = opts?.meta || {};
-            if (typeof meta.galleryItemId === "string" && meta.galleryItemId.length) {
-              (img as any).__moldaGalleryItemId = meta.galleryItemId;
-            }
-            if (typeof meta.galleryGroupId === "string" && meta.galleryGroupId.length) {
-              (img as any).__moldaGalleryGroupId = meta.galleryGroupId;
-            }
-            if (typeof meta.galleryOriginalName === "string" && meta.galleryOriginalName.length) {
-              (img as any).__moldaGalleryOriginalName = meta.galleryOriginalName;
-            }
-            if (typeof meta.galleryIsVariant === "boolean") {
-              (img as any).__moldaGalleryIsVariant = meta.galleryIsVariant;
-            }
-          } catch { }
-          c.add(img);
-          c.setActiveObject(img);
-          try { c.requestRenderAll?.(); } catch { }
-        },
-        { crossOrigin: "anonymous" }
+      const x = opts?.x ?? c.getWidth() / 2;
+      const y = opts?.y ?? c.getHeight() / 2;
+      const width = Number(img.width ?? 0) || Number(img.getScaledWidth?.() ?? 0) || 1;
+      const height = Number(img.height ?? 0) || Number(img.getScaledHeight?.() ?? 0) || 1;
+      const fitScale = Math.min(
+        1,
+        (Math.max(1, c.getWidth()) * 0.7) / Math.max(1, width),
+        (Math.max(1, c.getHeight()) * 0.7) / Math.max(1, height)
       );
-    }
+      const scale = typeof opts?.scale === "number" ? opts.scale : fitScale;
+
+      img.set({
+        left: x - (width * scale) / 2,
+        top: y - (height * scale) / 2,
+        scaleX: scale,
+        scaleY: scale,
+        erasable: true,
+      });
+
+      // guarda a origem para permitir re-aplicar filtros sem degradar (dataURL em cascata)
+      try {
+        (img as any).__moldaOriginalSrc = resolvedSrc;
+      } catch { }
+      try {
+        const meta = opts?.meta || {};
+        if (typeof meta.galleryItemId === "string" && meta.galleryItemId.length) {
+          (img as any).__moldaGalleryItemId = meta.galleryItemId;
+        }
+        if (typeof meta.galleryGroupId === "string" && meta.galleryGroupId.length) {
+          (img as any).__moldaGalleryGroupId = meta.galleryGroupId;
+        }
+        if (typeof meta.galleryOriginalName === "string" && meta.galleryOriginalName.length) {
+          (img as any).__moldaGalleryOriginalName = meta.galleryOriginalName;
+        }
+        if (typeof meta.galleryIsVariant === "boolean") {
+          (img as any).__moldaGalleryIsVariant = meta.galleryIsVariant;
+        }
+      } catch { }
+      c.add(img);
+      c.setActiveObject(img);
+      try { c.requestRenderAll?.(); } catch { }
+    })();
   };
 
   const DEFAULT_IMAGE_ADJ: ImageAdjustments = {
@@ -12208,23 +12297,25 @@ const Editor2D = forwardRef<Editor2DHandle, Props>(function Editor2D(
 
   // ----------------------- tool switching -----------------------
   useEffect(() => {
-    console.log("[Editor2D] Tool effect:", {
-      canvasReady,
-      tool,
-      brushVariant,
-      hasCanvas: !!canvasRef.current,
-      currentHostCursor: hostRef.current?.style?.cursor || "unknown"
-    });
     if (!canvasReady) return;
     const c = canvasRef.current;
     if (!c) {
-      console.log("[Editor2D] No canvas in tool effect, setting default cursor");
       setHostCursor("default");
       return;
     }
     const fabric = fabricRef.current;
     if (!fabric) {
-      console.log("[Editor2D] No fabric in tool effect");
+      return;
+    }
+
+    // Apenas o editor ativo deve processar mudancas de ferramenta.
+    if (!isActive) {
+      detachLineListeners(c);
+      c.isDrawingMode = false;
+      c.selection = false;
+      c.skipTargetFind = true;
+      setHostCursor("default");
+      try { c.defaultCursor = "default"; } catch { }
       return;
     }
 
@@ -12271,7 +12362,6 @@ const Editor2D = forwardRef<Editor2DHandle, Props>(function Editor2D(
 
     // SELECT
     if (tool === "select") {
-      console.log("[Editor2D] Setting up SELECT tool - resetting cursor to default");
       // Keep current selection when switching to select.
       c.isDrawingMode = false;
       c.selection = true;
@@ -12281,13 +12371,11 @@ const Editor2D = forwardRef<Editor2DHandle, Props>(function Editor2D(
       // Reset canvas default cursor to ensure no custom cursors remain
       try { c.defaultCursor = "default"; } catch { }
       c.renderAll();
-      console.log("[Editor2D] SELECT tool setup complete, cursor should be default");
       return;
     }
 
     // TEXT (click-to-add: clicar em área vazia cria uma caixa de texto)
     if (tool === "text") {
-      console.log("[Editor2D] Setting up TEXT tool - click-to-add mode");
       c.isDrawingMode = false;
       c.selection = true;
       c.skipTargetFind = false;
@@ -12323,7 +12411,6 @@ const Editor2D = forwardRef<Editor2DHandle, Props>(function Editor2D(
       };
       c.on("mouse:down", onTextMouseDown);
 
-      console.log("[Editor2D] TEXT tool setup complete, click-to-add active");
       // Cleanup: remove o handler quando a ferramenta mudar
       return () => {
         try { c.off("mouse:down", onTextMouseDown); } catch { }
@@ -12333,7 +12420,6 @@ const Editor2D = forwardRef<Editor2DHandle, Props>(function Editor2D(
     // STAMP (carimbo/moldes): clica/arrasta para inserir repetidamente a imagem selecionada
     // OPTIMIZED: uses cached fabric.Image, throttling, and density control
     if (tool === "stamp") {
-      console.log("[Editor2D] Setting up STAMP tool - setting circular cursor");
       c.isDrawingMode = false;
       c.selection = false;
       c.skipTargetFind = true;
@@ -12344,7 +12430,6 @@ const Editor2D = forwardRef<Editor2DHandle, Props>(function Editor2D(
       const cursor = buildCircularCursor(sizePx);
       setHostCursor(cursor);
       try { (c as any).defaultCursor = cursor; } catch { }
-      console.log("[Editor2D] STAMP tool setup complete, circular cursor applied");
 
       const session = stampSessionRef.current;
       session.active = false;

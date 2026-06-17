@@ -36,6 +36,7 @@ type UpsertProductSubtypePayload = {
   name?: string;
   description?: string | null;
   card_image_path?: string | null;
+  model_3d_path?: string | null;
   sort_order?: number;
   is_active?: boolean;
 };
@@ -43,6 +44,16 @@ type UpsertProductSubtypePayload = {
 type UpsertMaterialPayload = {
   name?: string;
   description?: string | null;
+  texture_path?: string | null;
+  is_active?: boolean;
+};
+
+type UpsertPrintingMethodPayload = {
+  code?: string;
+  name?: string;
+  description?: string | null;
+  texture_path?: string | null;
+  sort_order?: number;
   is_active?: boolean;
 };
 
@@ -219,6 +230,21 @@ export class CatalogService {
     return this.productTypesRepository.save(existing);
   }
 
+  async deleteProductType(id: string) {
+    const existing = await this.productTypesRepository.findOne({ where: { id } });
+    if (!existing) {
+      throw new NotFoundException('Tipo nao encontrado.');
+    }
+
+    const productsUsingType = await this.productsRepository.count({ where: { type_id: id } });
+    if (productsUsingType > 0) {
+      throw new BadRequestException('Nao e possivel excluir o tipo: existem produtos vinculados.');
+    }
+
+    await this.productTypesRepository.delete({ id });
+    return { id, deleted: true };
+  }
+
   async getProductSubtypes(typeId?: string) {
     const query = this.productSubtypesRepository.createQueryBuilder('ps');
 
@@ -244,6 +270,7 @@ export class CatalogService {
       slug,
       description: this.asNullableTrimmed(payload.description),
       card_image_path: this.asNullableTrimmed(payload.card_image_path),
+      model_3d_path: this.asNullableTrimmed(payload.model_3d_path),
       sort_order: Number.isFinite(payload.sort_order as number) ? Number(payload.sort_order) : 0,
       is_active: payload.is_active ?? true,
     });
@@ -262,6 +289,7 @@ export class CatalogService {
     if (payload.slug !== undefined) existing.slug = normalizeSlug(String(payload.slug));
     if (payload.description !== undefined) existing.description = this.asNullableTrimmed(payload.description);
     if (payload.card_image_path !== undefined) existing.card_image_path = this.asNullableTrimmed(payload.card_image_path);
+    if (payload.model_3d_path !== undefined) existing.model_3d_path = this.asNullableTrimmed(payload.model_3d_path);
     if (payload.sort_order !== undefined) existing.sort_order = Number(payload.sort_order) || 0;
     if (payload.is_active !== undefined) existing.is_active = !!payload.is_active;
 
@@ -297,6 +325,7 @@ export class CatalogService {
     const entity = this.materialsRepository.create({
       name,
       description: this.asNullableTrimmed(payload.description),
+      texture_path: this.asNullableTrimmed(payload.texture_path),
       is_active: payload.is_active ?? true,
     });
 
@@ -311,6 +340,7 @@ export class CatalogService {
 
     if (payload.name !== undefined) existing.name = String(payload.name).trim();
     if (payload.description !== undefined) existing.description = this.asNullableTrimmed(payload.description);
+    if (payload.texture_path !== undefined) existing.texture_path = this.asNullableTrimmed(payload.texture_path);
     if (payload.is_active !== undefined) existing.is_active = !!payload.is_active;
 
     if (!existing.name) {
@@ -318,6 +348,24 @@ export class CatalogService {
     }
 
     return this.materialsRepository.save(existing);
+  }
+
+  async deleteMaterial(id: string) {
+    const existing = await this.materialsRepository.findOne({ where: { id } });
+    if (!existing) {
+      throw new NotFoundException('Material nao encontrado.');
+    }
+
+    const productsUsingMaterial = await this.productMaterialsRepository.count({ where: { material_id: id } });
+    if (productsUsingMaterial > 0) {
+      throw new BadRequestException('Nao e possivel excluir o tecido: existem produtos vinculados.');
+    }
+
+    await this.subtypeMaterialsRepository.delete({ material_id: id });
+    await this.materialPrintingMethodsRepository.delete({ material_id: id });
+    await this.materialsRepository.delete({ id });
+
+    return { id, deleted: true };
   }
 
   async getProducts() {
@@ -490,5 +538,56 @@ export class CatalogService {
     return this.printingMethodsRepository.find({
       order: { sort_order: 'ASC' },
     });
+  }
+
+  async createPrintingMethod(payload: UpsertPrintingMethodPayload) {
+    const code = normalizeSlug(String(payload.code || payload.name || ''));
+    const name = String(payload.name || '').trim();
+    if (!code || !name) {
+      throw new BadRequestException('code e name sao obrigatorios.');
+    }
+
+    const entity = this.printingMethodsRepository.create({
+      code,
+      name,
+      description: this.asNullableTrimmed(payload.description),
+      texture_path: this.asNullableTrimmed(payload.texture_path),
+      sort_order: this.toSortOrder(payload.sort_order),
+      is_active: payload.is_active ?? true,
+    });
+
+    return this.printingMethodsRepository.save(entity);
+  }
+
+  async updatePrintingMethod(id: string, payload: UpsertPrintingMethodPayload) {
+    const existing = await this.printingMethodsRepository.findOne({ where: { id } });
+    if (!existing) {
+      throw new NotFoundException('Metodo de estamparia nao encontrado.');
+    }
+
+    if (payload.code !== undefined) existing.code = normalizeSlug(String(payload.code));
+    if (payload.name !== undefined) existing.name = String(payload.name).trim();
+    if (payload.description !== undefined) existing.description = this.asNullableTrimmed(payload.description);
+    if (payload.texture_path !== undefined) existing.texture_path = this.asNullableTrimmed(payload.texture_path);
+    if (payload.sort_order !== undefined) existing.sort_order = this.toSortOrder(payload.sort_order);
+    if (payload.is_active !== undefined) existing.is_active = !!payload.is_active;
+
+    if (!existing.code || !existing.name) {
+      throw new BadRequestException('code e name sao obrigatorios.');
+    }
+
+    return this.printingMethodsRepository.save(existing);
+  }
+
+  async deletePrintingMethod(id: string) {
+    const existing = await this.printingMethodsRepository.findOne({ where: { id } });
+    if (!existing) {
+      throw new NotFoundException('Metodo de estamparia nao encontrado.');
+    }
+
+    await this.materialPrintingMethodsRepository.delete({ printing_method_id: id });
+    await this.printingMethodsRepository.delete({ id });
+
+    return { id, deleted: true };
   }
 }

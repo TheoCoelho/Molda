@@ -14,7 +14,11 @@ import { GOOGLE_FONTS } from "./google-library";
 
 // Biblioteca final = locais + todas do Google
 export const FONT_LIBRARY: FontItem[] = [
-  ...GOOGLE_FONTS
+  ...GOOGLE_FONTS.filter((font) => {
+    const firstCategory = Array.isArray(font.categories) ? font.categories[0] : undefined;
+    const key = normalizeFontCategory(firstCategory);
+    return key === "serif" || key === "display" || key === "handwriting";
+  })
 ];
 
 export type FontCategoryKey =
@@ -94,7 +98,7 @@ export const FONT_PRESET_META: Record<FontPresetKey, FontPresetMeta> = {
     label: "Uso comum",
     description: "Fontes mais neutras e funcionais para leitura, texto e uso recorrente.",
     aliases: ["comum", "normal", "neutra", "texto", "padrao", "uso comum"],
-    categories: ["sans-serif", "serif", "monospace"],
+    categories: ["serif"],
   },
   stylized: {
     key: "stylized",

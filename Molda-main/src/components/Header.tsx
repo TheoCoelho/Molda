@@ -72,48 +72,54 @@ const Header = () => {
   };
 
   return (
-    <header className="sticky top-0 z-40 w-full border-b glass-strong">
-      <div className="mx-auto w-full max-w-7xl px-4 sm:px-6 lg:px-10 xl:px-16 2xl:px-24 h-16 flex items-center justify-between">
+    <header className="sticky top-0 z-40 w-full border-b border-border/70 bg-background/80 backdrop-blur-xl">
+      <div className="relative mx-auto flex h-12 w-full max-w-7xl items-center justify-between px-3 sm:px-4 lg:px-6 xl:px-10 2xl:px-14">
         <Link to="/" className="inline-flex items-center gap-2">
-          <div className="h-7 w-7 rounded-lg bg-[linear-gradient(135deg,hsl(var(--primary))_0%,hsl(var(--brand-keppel))_100%)]" />
-          <span className="font-semibold tracking-tight">Molda</span>
+          <div className="h-5 w-5 rounded-md bg-[linear-gradient(135deg,hsl(var(--primary))_0%,hsl(var(--brand-keppel))_100%)]" />
+          <span className="text-sm font-semibold tracking-tight">Molda</span>
         </Link>
 
-        <nav className="hidden md:flex items-center gap-6 text-sm">
+        <div className="absolute left-1/2 -translate-x-1/2 md:hidden">
+          <SparkleButton to="/create" ariaLabel="Criar" className="sp-compact" >
+            Criar
+          </SparkleButton>
+        </div>
+
+        <nav className="hidden md:flex items-center gap-4 text-xs sm:text-sm">
           <SparkleButton to="/create" ariaLabel="Criar" className="text-sm" >
             Criar
           </SparkleButton>
         </nav>
 
-        <div className="flex items-center gap-4">
+        <div className="flex items-center gap-2">
           <Button
             variant="ghost"
             size="icon"
             onClick={toggleTheme}
             aria-label={theme === "dark" ? "Ativar modo claro" : "Ativar modo escuro"}
-            className="rounded-full"
+            className="h-7 w-7 rounded-full"
           >
             {theme === "dark" ? (
-              <Sun className="h-4 w-4" />
+              <Sun className="h-3.5 w-3.5" />
             ) : (
-              <Moon className="h-4 w-4" />
+              <Moon className="h-3.5 w-3.5" />
             )}
           </Button>
           {loading ? (
-            <div className="w-8 h-8 animate-pulse bg-gray-200 rounded-full" />
+            <div className="h-6 w-6 animate-pulse rounded-full bg-gray-200" />
           ) : !user?.id ? (
             <>
               <Button
                 variant="outline"
                 onClick={() => navigate("/login")}
-                className="rounded-full px-6"
+                className="h-7 rounded-full px-3 text-xs"
               >
                 Login
               </Button>
               <Button
                 variant="cta"
                 onClick={() => navigate("/register")}
-                className="rounded-full px-6"
+                className="h-7 rounded-full px-3 text-xs"
               >
                 Registrar
               </Button>
@@ -125,7 +131,7 @@ const Header = () => {
                   variant="ghost"
                   className="rounded-full p-0 hover:bg-[hsl(var(--muted))]"
                 >
-                  <Avatar className="w-10 h-10">
+                  <Avatar className="h-8 w-8">
                     <AvatarImage src={avatarUrl ?? undefined} />
                     <AvatarFallback className="bg-gradient-to-r from-[hsl(var(--primary))] to-[hsl(var(--brand-keppel))] text-white">
                       {getUserInitials()}
